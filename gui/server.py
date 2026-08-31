@@ -12,6 +12,7 @@ weights, never puts the UI into ``engine-package.zip``.
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import threading
 import time
@@ -230,8 +231,18 @@ def main() -> None:
     parser.add_argument("--no-open", action="store_true", help="Do not open a browser tab.")
     arguments = parser.parse_args()
 
-    server = ThreadingHTTPServer((arguments.host, arguments.port), Handler)
+    port = arguments.port
+    while True:
+        try:
+            server = ThreadingHTTPServer((arguments.host, port), Handler)
+            break
+        except OSError as exc:
+            if exc.errno != errno.EADDRINUSE or port >= arguments.port + 20:
+                raise
+            port += 1
     url = f"http://{arguments.host}:{server.server_port}"
+    if server.server_port != arguments.port:
+        print(f"Port {arguments.port} is busy; using {server.server_port} instead.")
     print(f"FunChessEngine GUI: {url}")
     if not arguments.no_open:
         threading.Timer(0.35, webbrowser.open, args=(url,)).start()
