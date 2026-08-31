@@ -24,8 +24,16 @@ The server binds to `127.0.0.1:8765` by default and opens the browser automatica
 - Human controls White, Black, both sides, or neither.
 - Human-vs-engine automatic replies and engine-vs-engine autoplay.
 - Move list, game result/check status, static white-perspective evaluation, and an evaluation bar.
-- Last engine search time, searched node count, and completed iterative-deepening depth.
+- Responsive board sizing that is bounded by the available column, viewport height, and a user
+  configurable maximum instead of stretching with the page.
+- Persistent display customization: four board themes, four interface accents, board-size and
+  piece-scale sliders, coordinate/legal-target/last-move toggles, and automatic human-side
+  orientation.
+- White-perspective or side-to-move evaluation display.
+- Last engine search time, searched node count, completed iterative-deepening depth, search score,
+  aspiration re-search count, and principal variation.
 - Optional development search cap while retaining the production time manager by default.
+- Keyboard shortcuts for board flip, undo, engine move, and clearing the current selection.
 
 The server and UI use only the Python standard library plus `python-chess`, and all browser assets
 are local. Nothing loads from a CDN or external service.

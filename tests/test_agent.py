@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import unittest
 
 import chess
@@ -15,6 +16,26 @@ class AgentTests(unittest.TestCase):
         board = chess.Board()
         move = chess.Move.from_uci(agent.get_move(board.fen(), 2_000))
         self.assertIn(move, board.legal_moves)
+        self.assertGreaterEqual(agent.LAST_SEARCH_INFO.depth, 1)
+        self.assertGreater(agent.LAST_SEARCH_INFO.nodes, 0)
+        self.assertTrue(agent.LAST_SEARCH_INFO.pv)
+        self.assertEqual(agent.LAST_SEARCH_INFO.pv[0], move.uci())
+
+    def test_exchange_filter_only_marks_obvious_defended_loss(self) -> None:
+        defended = chess.Board("4k3/8/2p5/3p4/4Q3/8/8/4K3 w - - 0 1")
+        hanging = chess.Board("4k3/8/8/3p4/4Q3/8/8/4K3 w - - 0 1")
+        capture = chess.Move.from_uci("e4d5")
+
+        self.assertTrue(agent._likely_losing_capture(defended, capture))
+        self.assertFalse(agent._likely_losing_capture(hanging, capture))
+        self.assertEqual(defended.fen(), "4k3/8/2p5/3p4/4Q3/8/8/4K3 w - - 0 1")
+
+    def test_check_extension_is_bounded_and_recorded_in_tt_depth(self) -> None:
+        board = chess.Board("4k3/8/8/8/8/8/4r3/4K3 w - - 0 1")
+        self.assertTrue(board.is_check())
+        agent.DEADLINE_NS = time.monotonic_ns() + 1_000_000_000
+        agent.negamax(board, 1, -agent.INF, agent.INF, 0)
+        self.assertEqual(agent.TT[agent._key(board)].depth, 2)
 
     def test_prefers_seeded_threefold_when_losing(self) -> None:
         fen = "7k/8/8/5K2/8/8/2Q5/8 b - - 0 1"
@@ -37,6 +58,7 @@ class AgentTests(unittest.TestCase):
         self.assertFalse(agent.SEEN_POSITIONS)
         self.assertFalse(agent.HISTORY)
         self.assertFalse(agent.TT)
+        self.assertEqual(agent.LAST_SEARCH_INFO, agent.SearchInfo())
 
 
 if __name__ == "__main__":

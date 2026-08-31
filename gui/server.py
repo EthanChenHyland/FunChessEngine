@@ -45,6 +45,9 @@ class GameSession:
         self.last_engine_ms = 0
         self.last_engine_nodes = 0
         self.last_engine_depth: int | None = None
+        self.last_engine_score: int | None = None
+        self.last_engine_pv: tuple[str, ...] = ()
+        self.last_engine_researches = 0
         self.history: list[tuple[int, int]] = []
 
     def reset(self, fen: str = chess.STARTING_FEN, clock_ms: int = DEFAULT_CLOCK_MS) -> None:
@@ -59,6 +62,9 @@ class GameSession:
             self.last_engine_ms = 0
             self.last_engine_nodes = 0
             self.last_engine_depth = None
+            self.last_engine_score = None
+            self.last_engine_pv = ()
+            self.last_engine_researches = 0
             self.history.clear()
 
     def state(self) -> dict[str, Any]:
@@ -87,6 +93,9 @@ class GameSession:
                 "last_engine_ms": self.last_engine_ms,
                 "last_engine_nodes": self.last_engine_nodes,
                 "last_engine_depth": self.last_engine_depth,
+                "last_engine_score": self.last_engine_score,
+                "last_engine_pv": self.last_engine_pv,
+                "last_engine_researches": self.last_engine_researches,
             }
 
     @staticmethod
@@ -147,9 +156,12 @@ class GameSession:
             self.board.push(move)
             self.last_move = move
             self.last_engine_ms = int(elapsed_ms)
-            self.last_engine_nodes = int(agent.NODES)
-            entry = agent.TT.get(agent._key(chess.Board(fen)))
-            self.last_engine_depth = entry.depth if entry is not None else None
+            info = agent.LAST_SEARCH_INFO
+            self.last_engine_nodes = int(info.nodes)
+            self.last_engine_depth = int(info.depth)
+            self.last_engine_score = int(info.score)
+            self.last_engine_pv = tuple(info.pv)
+            self.last_engine_researches = int(info.aspiration_researches)
             return uci
 
     def undo(self) -> None:

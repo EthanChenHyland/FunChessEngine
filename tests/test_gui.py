@@ -30,6 +30,11 @@ class GameSessionTests(unittest.TestCase):
         self.assertIsNotNone(state["last_move"])
         self.assertGreaterEqual(state["last_engine_ms"], 0)
         self.assertGreater(state["last_engine_nodes"], 0)
+        self.assertGreaterEqual(state["last_engine_depth"], 1)
+        self.assertIsInstance(state["last_engine_score"], int)
+        self.assertTrue(state["last_engine_pv"])
+        self.assertEqual(state["last_engine_pv"][0], uci)
+        self.assertGreaterEqual(state["last_engine_researches"], 0)
 
     def test_reset_accepts_fen_and_resets_clock(self) -> None:
         fen = "8/8/8/8/8/4k3/8/4K3 w - - 0 1"

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>FunChessEngine Engine Lab</title>
+  <title>FunChessEngine · Default Lab</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -11,26 +11,30 @@
     <header class="topbar">
       <div>
         <p class="eyebrow">AI CHESSATHON · ENGINE LAB</p>
-        <h1>Chess Engine Control Room</h1>
+        <h1>FunChessEngine Control Room</h1>
       </div>
       <div class="engine-badge"><span class="pulse"></span> local engine</div>
     </header>
 
     <section class="workspace">
       <div class="board-column">
-        <div class="player-row player-black">
-          <div><strong>Black</strong><span>Engine / Human</span></div>
-          <div id="blackClock" class="clock">02:00.0</div>
-        </div>
-        <div id="board" class="board" aria-label="Chess board"></div>
-        <div class="player-row player-white">
-          <div><strong>White</strong><span>Engine / Human</span></div>
-          <div id="whiteClock" class="clock">02:00.0</div>
-        </div>
-        <div class="board-actions">
-          <button id="flipBtn" class="secondary">Flip board</button>
-          <button id="undoBtn" class="secondary">Undo</button>
-          <button id="engineBtn" class="primary">Engine move</button>
+        <div class="board-stage" id="boardStage">
+          <div class="player-row player-black">
+            <div><strong>Black</strong><span id="blackRole">Engine</span></div>
+            <div id="blackClock" class="clock">02:00.0</div>
+          </div>
+          <div class="board-frame">
+            <div id="board" class="board" aria-label="Chess board"></div>
+          </div>
+          <div class="player-row player-white">
+            <div><strong>White</strong><span id="whiteRole">Human</span></div>
+            <div id="whiteClock" class="clock">02:00.0</div>
+          </div>
+          <div class="board-actions">
+            <button id="flipBtn" class="secondary" title="Flip board (F)">Flip board</button>
+            <button id="undoBtn" class="secondary" title="Undo move (U)">Undo</button>
+            <button id="engineBtn" class="primary" title="Play engine move (E)">Engine move</button>
+          </div>
         </div>
       </div>
 
@@ -39,12 +43,13 @@
           <button class="tab active" data-tab="game">Game</button>
           <button class="tab" data-tab="position">Position</button>
           <button class="tab" data-tab="engine">Engine</button>
+          <button class="tab" data-tab="display">Display</button>
         </nav>
 
         <div id="gameTab" class="tab-panel active">
           <div class="status-card">
             <div>
-              <span class="label">Position evaluation</span>
+              <span id="evalLabel" class="label">White perspective</span>
               <strong id="evalText">+0.00</strong>
             </div>
             <div id="turnPill" class="turn-pill">White to move</div>
@@ -69,6 +74,9 @@
         <div id="positionTab" class="tab-panel">
           <label for="fenInput">FEN</label>
           <textarea id="fenInput" rows="5" spellcheck="false"></textarea>
+          <div class="inline-actions">
+            <button id="copyFenBtn" class="secondary compact">Copy FEN</button>
+          </div>
           <div class="row two">
             <div>
               <label for="clockInput">Clock (seconds)</label>
@@ -84,6 +92,14 @@
             <div><span>Last search</span><strong id="searchTime">—</strong></div>
             <div><span>Nodes</span><strong id="nodes">—</strong></div>
             <div><span>Depth</span><strong id="depth">—</strong></div>
+            <div><span>Search score</span><strong id="searchScore">—</strong></div>
+          </div>
+          <div class="pv-card">
+            <div class="setting-heading">
+              <span class="label">Principal variation</span>
+              <span id="researches" class="setting-value">0 researches</span>
+            </div>
+            <code id="pvLine">No completed search yet.</code>
           </div>
           <label for="budgetInput">Development search cap (ms)</label>
           <input id="budgetInput" type="number" min="10" step="50" placeholder="Use game clock">
@@ -91,12 +107,83 @@
           <button id="analyzeBtn" class="primary full">Calculate engine move</button>
           <div class="architecture">
             <span>Search stack</span>
-            <p>Iterative deepening · PVS · LMR · transposition table · quiescence · killer/history ordering.</p>
+            <p>Iterative deepening · aspiration windows · PVS · LMR · bounded check extension · transposition table · exchange-aware quiescence · killer/history ordering.</p>
           </div>
+        </div>
+
+        <div id="displayTab" class="tab-panel">
+          <div class="setting-group">
+            <label for="themeSelect">Board theme</label>
+            <select id="themeSelect">
+              <option value="forest">Forest</option>
+              <option value="walnut">Walnut</option>
+              <option value="ocean">Ocean</option>
+              <option value="slate">Slate</option>
+            </select>
+          </div>
+          <div class="row two display-selects">
+            <div>
+              <label for="accentSelect">Interface accent</label>
+              <select id="accentSelect">
+                <option value="lime">Lime</option>
+                <option value="cyan">Cyan</option>
+                <option value="violet">Violet</option>
+                <option value="amber">Amber</option>
+              </select>
+            </div>
+            <div>
+              <label for="evalPerspectiveSelect">Evaluation view</label>
+              <select id="evalPerspectiveSelect">
+                <option value="white">White</option>
+                <option value="turn">Side to move</option>
+              </select>
+            </div>
+          </div>
+          <div class="setting-group">
+            <div class="setting-heading">
+              <label for="boardSizeInput">Maximum board size</label>
+              <span id="boardSizeValue" class="setting-value">720 px</span>
+            </div>
+            <input id="boardSizeInput" type="range" min="480" max="820" step="20" value="720">
+            <p class="hint">The board still caps itself to the visible viewport on desktop so the controls stay reachable.</p>
+          </div>
+          <div class="setting-group">
+            <div class="setting-heading">
+              <label for="pieceSizeInput">Piece scale</label>
+              <span id="pieceSizeValue" class="setting-value">78%</span>
+            </div>
+            <input id="pieceSizeInput" type="range" min="66" max="90" step="2" value="78">
+          </div>
+          <div class="toggle-list">
+            <label class="toggle"><span><strong>Coordinates</strong><small>Show files and ranks on board edges</small></span><input id="coordsToggle" type="checkbox" checked><i></i></label>
+            <label class="toggle"><span><strong>Legal moves</strong><small>Show destination dots and capture rings</small></span><input id="targetsToggle" type="checkbox" checked><i></i></label>
+            <label class="toggle"><span><strong>Last move</strong><small>Highlight the previous move</small></span><input id="lastMoveToggle" type="checkbox" checked><i></i></label>
+            <label class="toggle"><span><strong>Auto orientation</strong><small>Face the board toward the selected human side</small></span><input id="autoOrientToggle" type="checkbox" checked><i></i></label>
+          </div>
+          <button id="resetDisplayBtn" class="secondary full">Reset display settings</button>
+          <p class="shortcut-hint">Keyboard: <kbd>F</kbd> flip · <kbd>U</kbd> undo · <kbd>E</kbd> engine · <kbd>Esc</kbd> clear selection</p>
         </div>
       </aside>
     </section>
   </main>
+
+  <dialog id="promotionDialog" class="promotion-dialog" aria-labelledby="promotionTitle">
+    <form method="dialog">
+      <div class="dialog-head">
+        <div>
+          <p class="eyebrow">PROMOTION</p>
+          <h2 id="promotionTitle">Choose a piece</h2>
+        </div>
+        <button class="dialog-close" value="cancel" aria-label="Cancel promotion">×</button>
+      </div>
+      <div class="promotion-options">
+        <button value="q" data-promotion="q"><span>♕</span>Queen</button>
+        <button value="r" data-promotion="r"><span>♖</span>Rook</button>
+        <button value="b" data-promotion="b"><span>♗</span>Bishop</button>
+        <button value="n" data-promotion="n"><span>♘</span>Knight</button>
+      </div>
+    </form>
+  </dialog>
   <script src="/app.js"></script>
 </body>
 </html>

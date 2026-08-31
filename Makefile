@@ -14,7 +14,7 @@ arena:
 	$(UV) run python -m harness.arena --opponent baselines/greedy --games 20
 
 benchmark:
-	$(UV) run python -m harness.benchmark
+	$(UV) run python -m harness.benchmark $(if $(COMPARE),--compare "$(COMPARE)") $(if $(CLOCK_MS),--clock-ms "$(CLOCK_MS)")
 
 gui:
 	$(UV) run python -m gui.server

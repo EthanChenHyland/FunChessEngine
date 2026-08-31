@@ -1,11 +1,10 @@
 # FunChessEngine
-FunChessEngine is a standalone classical chess engine with local testing and analysis tools.
-engine package, baselines to beat, and a local harness that speaks the same protocol and enforces the
-same clock as the platform, so you can see whether a change actually helped before you package it.
+
+FunChessEngine is an original classical chess engine and fully local chess workstation. The project keeps development tooling, GUI code, tests,
+and benchmarks outside the engine package so `engine-package.zip` remains small and auditable.
 
 ```
-git clone https://github.com/EthanChenHyland/FunChessEngine.git
-cd FunChessEngine
+cd /Users/ethius/VSCode/FunChessEngine
 make setup
 make play
 make gui
@@ -16,6 +15,10 @@ Use `make zip` to build a portable `engine-package.zip` containing the standalon
 
 `make gui` launches the local Engine Lab in your browser. The GUI is development-only and is
 kept under `gui/`, so it is not included in the engine package zip.
+
+The Engine Lab includes a responsive board, human/engine and engine/engine play, FEN loading,
+search telemetry/PV, themes, accent colors, board/piece sizing, orientation preferences, and
+display toggles. Preferences are stored locally in the browser.
 
 ## Writing an agent
 
@@ -32,11 +35,16 @@ The project includes a legal random baseline, so the loop works before you write
 make play                                          # one game, real time control
 make arena                                         # 20 fast games, prints a score
 make benchmark                                     # varied-position depth/node benchmark
+make benchmark COMPARE=../old-engine               # side-by-side search comparison
 make gui                                           # local browser Engine Lab
 make play FEN="<fen>"                              # start from a given position
 uv run python -m harness.play --black baselines/minimax --pgn game.pgn
 uv run python -m harness.arena --opponent ../my-old-version --games 200
 ```
+
+Offline teacher labels can also be generated from a separately installed UCI engine for training
+your own future evaluation/policy model; see `docs/TRAINING.md`. The teacher itself is never
+packaged or called by the runtime engine.
 
 Local harness runs can capture stdout/stderr for diagnostics.
 

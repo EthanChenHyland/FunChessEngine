@@ -10,7 +10,8 @@ Strength comes from:
 * iterative-deepening negamax with alpha-beta pruning;
 * a persistent transposition table;
 * quiescence search to avoid stopping in the middle of exchanges;
-* hash/capture/killer/history move ordering;
+* aspiration windows plus hash/capture/killer/history move ordering;
+* bounded check extensions and conservative exchange-aware pruning;
 * a tapered hand-written evaluation with piece-square, pawn, king-safety,
   mobility, bishop-pair and rook-file terms;
 * clock-aware search that always keeps a completed iteration to return.
@@ -28,6 +29,9 @@ import chess
 INF = 1_000_000
 MATE = 900_000
 MAX_PLY = 128
+ASPIRATION_WINDOW = 45
+CHECK_EXTENSION_LIMIT = 1
+EXCHANGE_PRUNE_MARGIN = 90
 
 # Bound flags for the transposition table.
 EXACT = 0
@@ -141,6 +145,18 @@ class TTEntry:
     move: chess.Move | None
 
 
+@dataclass(slots=True)
+class SearchInfo:
+    """Small local-search snapshot used only for local telemetry."""
+
+    depth: int = 0
+    score: int = 0
+    nodes: int = 0
+    elapsed_ms: int = 0
+    aspiration_researches: int = 0
+    pv: tuple[str, ...] = ()
+
+
 class SearchTimeout(Exception):
     """Internal control flow used to abort an unfinished iteration."""
 
@@ -153,6 +169,7 @@ SEEN_POSITIONS: dict[object, int] = {}
 
 DEADLINE_NS = 0
 NODES = 0
+LAST_SEARCH_INFO = SearchInfo()
 
 
 def _key(board: chess.Board) -> object:
@@ -179,7 +196,7 @@ def _repetition_key(board: chess.Board) -> object:
 def reset_game_state() -> None:
     """Clear persistent search state (useful for local tools/new GUI games)."""
 
-    global DEADLINE_NS, NODES
+    global DEADLINE_NS, LAST_SEARCH_INFO, NODES
     TT.clear()
     HISTORY.clear()
     SEEN_POSITIONS.clear()
@@ -188,6 +205,7 @@ def reset_game_state() -> None:
         killers[1] = None
     DEADLINE_NS = 0
     NODES = 0
+    LAST_SEARCH_INFO = SearchInfo()
 
 
 def _pst_square(square: int, color: chess.Color) -> int:
@@ -329,12 +347,48 @@ def _check_time() -> None:
         raise SearchTimeout
 
 
-def _capture_score(board: chess.Board, move: chess.Move) -> int:
+def _captured_piece_type(board: chess.Board, move: chess.Move) -> int | None:
     victim = board.piece_type_at(move.to_square)
     if victim is None and board.is_en_passant(move):
         victim = chess.PAWN
+    return victim
+
+
+def _capture_score(board: chess.Board, move: chess.Move) -> int:
+    victim = _captured_piece_type(board, move)
     attacker = board.piece_type_at(move.from_square) or chess.PAWN
     return 10_000 + MG_VALUE[victim or chess.PAWN] * 10 - MG_VALUE[attacker]
+
+
+def _likely_losing_capture(board: chess.Board, move: chess.Move) -> bool:
+    """Identify only obvious high-value-for-low-value defended captures.
+
+    This is intentionally much simpler than a full static-exchange evaluator.
+    It only rejects a capture when the attacker is substantially more valuable
+    than the victim *and* the opponent has a legal immediate recapture.  Checks
+    and promotions are never classified as losing here, preserving forcing
+    tactical resources near the quiescence horizon.
+    """
+
+    if move.promotion is not None:
+        return False
+    victim = _captured_piece_type(board, move)
+    attacker = board.piece_type_at(move.from_square)
+    if victim is None or attacker is None:
+        return False
+    if MG_VALUE[attacker] <= MG_VALUE[victim] + EXCHANGE_PRUNE_MARGIN:
+        return False
+
+    board.push(move)
+    try:
+        if board.is_check():
+            return False
+        return any(
+            reply.to_square == move.to_square and board.is_capture(reply)
+            for reply in board.legal_moves
+        )
+    finally:
+        board.pop()
 
 
 def _move_score(
@@ -403,10 +457,10 @@ def quiescence(board: chess.Board, alpha: int, beta: int, ply: int) -> int:
         # Delta pruning: if even winning a modestly optimistic victim cannot
         # reach alpha, skip obviously hopeless captures (promotions are kept).
         if move.promotion is None:
-            victim = board.piece_type_at(move.to_square)
-            if victim is None and board.is_en_passant(move):
-                victim = chess.PAWN
+            victim = _captured_piece_type(board, move)
             if victim is not None and stand_pat + MG_VALUE[victim] + 120 < alpha:
+                continue
+            if _likely_losing_capture(board, move):
                 continue
         board.push(move)
         score = -quiescence(board, -beta, -alpha, ply + 1)
@@ -418,11 +472,24 @@ def quiescence(board: chess.Board, alpha: int, beta: int, ply: int) -> int:
     return alpha
 
 
-def negamax(board: chess.Board, depth: int, alpha: int, beta: int, ply: int) -> int:
+def negamax(
+    board: chess.Board,
+    depth: int,
+    alpha: int,
+    beta: int,
+    ply: int,
+    check_extensions: int = 0,
+) -> int:
     _check_time()
     terminal = _terminal_score(board, ply)
     if terminal is not None:
         return terminal
+    # Spend at most one extra ply per branch when the side to move is in check.
+    # Quiescence already searches evasions at depth zero; extending only positive
+    # depth keeps the tree bounded while giving forcing checks a fuller reply.
+    if board.is_check() and depth > 0 and check_extensions < CHECK_EXTENSION_LIMIT:
+        depth += 1
+        check_extensions += 1
     if depth <= 0:
         return quiescence(board, alpha, beta, ply)
     if ply >= MAX_PLY - 1:
@@ -457,15 +524,23 @@ def negamax(board: chess.Board, depth: int, alpha: int, beta: int, ply: int) -> 
         # quiet moves get a conservative one-ply reduction; if the reduced
         # search says they may improve alpha, immediately verify at full depth.
         if index == 0:
-            score = -negamax(board, depth - 1, -beta, -alpha, ply + 1)
+            score = -negamax(
+                board, depth - 1, -beta, -alpha, ply + 1, check_extensions
+            )
         else:
             reduced = depth >= 4 and index >= 4 and quiet and not board.is_check()
             probe_depth = depth - 2 if reduced else depth - 1
-            score = -negamax(board, probe_depth, -alpha - 1, -alpha, ply + 1)
+            score = -negamax(
+                board, probe_depth, -alpha - 1, -alpha, ply + 1, check_extensions
+            )
             if reduced and score > alpha:
-                score = -negamax(board, depth - 1, -alpha - 1, -alpha, ply + 1)
+                score = -negamax(
+                    board, depth - 1, -alpha - 1, -alpha, ply + 1, check_extensions
+                )
             if alpha < score < beta:
-                score = -negamax(board, depth - 1, -beta, -alpha, ply + 1)
+                score = -negamax(
+                    board, depth - 1, -beta, -alpha, ply + 1, check_extensions
+                )
         board.pop()
 
         if score > best_score:
@@ -490,6 +565,62 @@ def negamax(board: chess.Board, depth: int, alpha: int, beta: int, ply: int) -> 
         flag = LOWER
     TT[key] = TTEntry(depth, best_score, flag, best_move)
     return best_score
+
+
+def _search_root(
+    board: chess.Board,
+    depth: int,
+    alpha: int,
+    beta: int,
+    preferred_move: chess.Move,
+) -> tuple[int, chess.Move]:
+    """Search one complete root pass within the supplied score window."""
+
+    best_move = preferred_move
+    best_score = -INF
+    for move in _ordered_moves(board, preferred_move, 0):
+        board.push(move)
+        child_repetition_key = _repetition_key(board)
+        score = -negamax(board, depth - 1, -beta, -alpha, 1)
+        board.pop()
+
+        # The referee automatically claims threefold. If this exact post-move
+        # position has already occurred twice, the move is an immediate draw.
+        if SEEN_POSITIONS.get(child_repetition_key, 0) >= 2:
+            score = 0
+
+        if score > best_score:
+            best_score = score
+            best_move = move
+        if score > alpha:
+            alpha = score
+        if alpha >= beta:
+            break
+    return best_score, best_move
+
+
+def _principal_variation(board: chess.Board, max_length: int = 16) -> tuple[str, ...]:
+    """Follow legal TT moves to expose a compact principal variation locally."""
+
+    pv: list[str] = []
+    seen: set[object] = set()
+    pushed = 0
+    try:
+        for _ in range(max_length):
+            key = _key(board)
+            if key in seen:
+                break
+            seen.add(key)
+            entry = TT.get(key)
+            if entry is None or entry.move is None or entry.move not in board.legal_moves:
+                break
+            pv.append(entry.move.uci())
+            board.push(entry.move)
+            pushed += 1
+    finally:
+        for _ in range(pushed):
+            board.pop()
+    return tuple(pv)
 
 
 def _time_budget_ms(board: chess.Board, time_left_ms: int) -> int:
@@ -525,7 +656,7 @@ def _trim_state() -> None:
 def get_move(fen: str, time_left_ms: int) -> str:
     """Return a legal UCI move before the game clock expires."""
 
-    global DEADLINE_NS, NODES
+    global DEADLINE_NS, LAST_SEARCH_INFO, NODES
 
     board = chess.Board(fen)
     legal = list(board.legal_moves)
@@ -541,6 +672,7 @@ def get_move(fen: str, time_left_ms: int) -> str:
         child_key = _repetition_key(board)
         board.pop()
         SEEN_POSITIONS[child_key] = SEEN_POSITIONS.get(child_key, 0) + 1
+        LAST_SEARCH_INFO = SearchInfo(depth=0, score=0, nodes=0, elapsed_ms=0, pv=(forced.uci(),))
         return forced.uci()
 
     _trim_state()
@@ -551,6 +683,7 @@ def get_move(fen: str, time_left_ms: int) -> str:
     margin_ms = min(25, max(3, budget_ms // 12))
     DEADLINE_NS = time.monotonic_ns() + max(1, budget_ms - margin_ms) * 1_000_000
     NODES = 0
+    started_ns = time.monotonic_ns()
 
     # Always have a legal fallback, preferably the previous hash move.
     root_entry = TT.get(root_key)
@@ -562,33 +695,33 @@ def get_move(fen: str, time_left_ms: int) -> str:
     legal.sort(key=lambda move: _move_score(board, move, best_move, 0), reverse=True)
     best_move = legal[0]
 
+    aspiration_researches = 0
+    completed_depth = 0
     for depth in range(1, 64):
         if time.monotonic_ns() >= DEADLINE_NS:
             break
-        alpha = -INF
-        beta = INF
-        iteration_best = best_move
-        iteration_score = -INF
         try:
-            moves = _ordered_moves(board, best_move, 0)
-            for move in moves:
-                board.push(move)
-                child_repetition_key = _repetition_key(board)
-                score = -negamax(board, depth - 1, -beta, -alpha, 1)
-                board.pop()
+            if completed_depth == 0:
+                alpha = -INF
+                beta = INF
+            else:
+                alpha = best_score - ASPIRATION_WINDOW
+                beta = best_score + ASPIRATION_WINDOW
 
-                # The referee automatically claims threefold. If this exact
-                # post-move position has already occurred twice, the move is a
-                # draw regardless of its static/search score. That lets a
-                # losing engine seek the draw and a winning engine avoid it.
-                if SEEN_POSITIONS.get(child_repetition_key, 0) >= 2:
-                    score = 0
+            iteration_score, iteration_best = _search_root(
+                board, depth, alpha, beta, best_move
+            )
 
-                if score > iteration_score:
-                    iteration_score = score
-                    iteration_best = move
-                if score > alpha:
-                    alpha = score
+            # Aspiration windows improve pruning when the score is stable. If
+            # the new iteration lands outside the narrow window, verify it once
+            # with a full window rather than trusting a bound as the root score.
+            if completed_depth > 0 and (
+                iteration_score <= alpha or iteration_score >= beta
+            ):
+                aspiration_researches += 1
+                iteration_score, iteration_best = _search_root(
+                    board, depth, -INF, INF, iteration_best
+                )
         except SearchTimeout:
             # If timeout happened while a move was pushed, negamax/quiescence
             # unwind through this frame only after their own pop sites.  Ensure
@@ -599,7 +732,18 @@ def get_move(fen: str, time_left_ms: int) -> str:
 
         best_move = iteration_best
         best_score = iteration_score
+        completed_depth = depth
         TT[root_key] = TTEntry(depth, best_score, EXACT, best_move)
+
+        elapsed_ms = max(0, (time.monotonic_ns() - started_ns) // 1_000_000)
+        LAST_SEARCH_INFO = SearchInfo(
+            depth=completed_depth,
+            score=best_score,
+            nodes=NODES,
+            elapsed_ms=int(elapsed_ms),
+            aspiration_researches=aspiration_researches,
+            pv=_principal_variation(board),
+        )
 
         # A forced mate does not need another iteration.
         if best_score >= MATE - 256:
@@ -609,4 +753,14 @@ def get_move(fen: str, time_left_ms: int) -> str:
     played_key = _repetition_key(board)
     board.pop()
     SEEN_POSITIONS[played_key] = SEEN_POSITIONS.get(played_key, 0) + 1
+    if completed_depth == 0:
+        elapsed_ms = max(0, (time.monotonic_ns() - started_ns) // 1_000_000)
+        LAST_SEARCH_INFO = SearchInfo(
+            depth=0,
+            score=best_score,
+            nodes=NODES,
+            elapsed_ms=int(elapsed_ms),
+            aspiration_researches=aspiration_researches,
+            pv=(best_move.uci(),),
+        )
     return best_move.uci()

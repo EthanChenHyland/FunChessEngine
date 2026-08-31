@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import sys
 import time
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import ModuleType
 
@@ -27,6 +29,75 @@ LINES = (
     "d2d4 d7d5 c2c4 c7c6 g1f3 g8f6 b1c3 d5c4 a2a4 c8f5",
     "e2e4 c7c5 g1f3 b8c6 d2d4 c5d4 f3d4 g7g6 c2c4 f8g7",
 )
+
+
+@dataclass(frozen=True)
+class BenchRow:
+    index: int
+    move: str
+    depth: int
+    nodes: int
+    elapsed_ms: int
+    nps: int
+
+
+def benchmark(engine: ModuleType, clock_ms: int) -> list[BenchRow]:
+    rows: list[BenchRow] = []
+    for index, board in enumerate(positions(), start=1):
+        reset = getattr(engine, "reset_game_state", None)
+        if callable(reset):
+            reset()
+        started = time.monotonic_ns()
+        uci = engine.get_move(board.fen(), clock_ms)
+        elapsed = max(1, (time.monotonic_ns() - started) // 1_000_000)
+        move = chess.Move.from_uci(uci)
+        if move not in board.legal_moves:
+            raise RuntimeError(f"position {index}: illegal engine move {uci}")
+        nodes = int(getattr(engine, "NODES", 0))
+        key_fn = getattr(engine, "_key", None)
+        table = getattr(engine, "TT", {})
+        entry = table.get(key_fn(board)) if callable(key_fn) else None
+        depth = int(getattr(entry, "depth", 0)) if entry is not None else 0
+        rows.append(
+            BenchRow(
+                index=index,
+                move=uci,
+                depth=depth,
+                nodes=nodes,
+                elapsed_ms=elapsed,
+                nps=nodes * 1000 // elapsed,
+            )
+        )
+    return rows
+
+
+def summary(rows: list[BenchRow]) -> dict[str, float | int]:
+    total_ms = sum(row.elapsed_ms for row in rows)
+    total_nodes = sum(row.nodes for row in rows)
+    total_depth = sum(row.depth for row in rows)
+    count = max(1, len(rows))
+    return {
+        "positions": len(rows),
+        "mean_depth": total_depth / count,
+        "nodes": total_nodes,
+        "elapsed_ms": total_ms,
+        "aggregate_nps": total_nodes * 1000 // max(1, total_ms),
+    }
+
+
+def print_rows(rows: list[BenchRow]) -> None:
+    print("#  move   depth      nodes       ms   nps")
+    for row in rows:
+        print(
+            f"{row.index:2d} {row.move:6s} {row.depth:5d} {row.nodes:10,d} "
+            f"{row.elapsed_ms:8,d} {row.nps:7,d}"
+        )
+    stats = summary(rows)
+    print(
+        f"\nmean depth {stats['mean_depth']:.2f} | "
+        f"{stats['nodes']:,} nodes | {stats['elapsed_ms']:,} ms | "
+        f"{stats['aggregate_nps']:,} aggregate nps"
+    )
 
 
 def positions() -> list[chess.Board]:
@@ -56,40 +127,46 @@ def load_agent(path: Path) -> ModuleType:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark search speed on varied positions.")
     parser.add_argument("--agent", type=Path, default=Path("."))
+    parser.add_argument("--compare", type=Path)
     parser.add_argument("--clock-ms", type=int, default=10_000)
+    parser.add_argument("--json", type=Path, dest="json_path")
     arguments = parser.parse_args()
 
     engine = load_agent(arguments.agent.resolve())
-    boards = positions()
-    total_ms = total_nodes = total_depth = 0
-    print("#  move   depth      nodes       ms   nps")
-    for index, board in enumerate(boards, start=1):
-        reset = getattr(engine, "reset_game_state", None)
-        if callable(reset):
-            reset()
-        started = time.monotonic_ns()
-        uci = engine.get_move(board.fen(), arguments.clock_ms)
-        elapsed = max(1, (time.monotonic_ns() - started) // 1_000_000)
-        move = chess.Move.from_uci(uci)
-        if move not in board.legal_moves:
-            raise RuntimeError(f"position {index}: illegal engine move {uci}")
-        nodes = int(getattr(engine, "NODES", 0))
-        key_fn = getattr(engine, "_key", None)
-        table = getattr(engine, "TT", {})
-        entry = table.get(key_fn(board)) if callable(key_fn) else None
-        depth = int(getattr(entry, "depth", 0)) if entry is not None else 0
-        nps = nodes * 1000 // elapsed
-        total_ms += elapsed
-        total_nodes += nodes
-        total_depth += depth
-        print(f"{index:2d} {uci:6s} {depth:5d} {nodes:10,d} {elapsed:8,d} {nps:7,d}")
+    rows = benchmark(engine, arguments.clock_ms)
+    print_rows(rows)
 
-    count = len(boards)
-    print(
-        f"\nmean depth {total_depth / count:.2f} | "
-        f"{total_nodes:,} nodes | {total_ms:,} ms | "
-        f"{total_nodes * 1000 // max(1, total_ms):,} aggregate nps"
-    )
+    payload: dict[str, object] = {
+        "agent": str(arguments.agent.resolve()),
+        "clock_ms": arguments.clock_ms,
+        "summary": summary(rows),
+        "positions": [asdict(row) for row in rows],
+    }
+
+    if arguments.compare is not None:
+        print(f"\ncomparison: {arguments.compare}")
+        other_rows = benchmark(load_agent(arguments.compare.resolve()), arguments.clock_ms)
+        print_rows(other_rows)
+        left = summary(rows)
+        right = summary(other_rows)
+        depth_delta = float(left["mean_depth"]) - float(right["mean_depth"])
+        nps_delta = int(left["aggregate_nps"]) - int(right["aggregate_nps"])
+        changed_moves = sum(a.move != b.move for a, b in zip(rows, other_rows, strict=True))
+        print(
+            f"\ndelta vs comparison: depth {depth_delta:+.2f}, "
+            f"nps {nps_delta:+,}, changed moves {changed_moves}/{len(rows)}"
+        )
+        payload["comparison"] = {
+            "agent": str(arguments.compare.resolve()),
+            "summary": right,
+            "positions": [asdict(row) for row in other_rows],
+            "depth_delta": depth_delta,
+            "nps_delta": nps_delta,
+            "changed_moves": changed_moves,
+        }
+
+    if arguments.json_path is not None:
+        arguments.json_path.write_text(json.dumps(payload, indent=2) + "\n")
 
 
 if __name__ == "__main__":
