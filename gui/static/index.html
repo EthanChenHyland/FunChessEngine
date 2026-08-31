@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>FunChessEngine Engine Lab</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">AI CHESSATHON · ENGINE LAB</p>
+        <h1>Chess Engine Control Room</h1>
+      </div>
+      <div class="engine-badge"><span class="pulse"></span> local engine</div>
+    </header>
+
+    <section class="workspace">
+      <div class="board-column">
+        <div class="player-row player-black">
+          <div><strong>Black</strong><span>Engine / Human</span></div>
+          <div id="blackClock" class="clock">02:00.0</div>
+        </div>
+        <div id="board" class="board" aria-label="Chess board"></div>
+        <div class="player-row player-white">
+          <div><strong>White</strong><span>Engine / Human</span></div>
+          <div id="whiteClock" class="clock">02:00.0</div>
+        </div>
+        <div class="board-actions">
+          <button id="flipBtn" class="secondary">Flip board</button>
+          <button id="undoBtn" class="secondary">Undo</button>
+          <button id="engineBtn" class="primary">Engine move</button>
+        </div>
+      </div>
+
+      <aside class="side-panel">
+        <nav class="tabs">
+          <button class="tab active" data-tab="game">Game</button>
+          <button class="tab" data-tab="position">Position</button>
+          <button class="tab" data-tab="engine">Engine</button>
+        </nav>
+
+        <div id="gameTab" class="tab-panel active">
+          <div class="status-card">
+            <div>
+              <span class="label">Position evaluation</span>
+              <strong id="evalText">+0.00</strong>
+            </div>
+            <div id="turnPill" class="turn-pill">White to move</div>
+          </div>
+          <div class="eval-track"><div id="evalBar" class="eval-bar"></div></div>
+          <div id="statusLine" class="status-line">Ready.</div>
+          <div class="play-controls">
+            <div>
+              <label for="humanSide">Human control</label>
+              <select id="humanSide">
+                <option value="both">Both sides</option>
+                <option value="white" selected>White</option>
+                <option value="black">Black</option>
+                <option value="none">Engine vs engine</option>
+              </select>
+            </div>
+            <button id="autoBtn" class="secondary align-end">Start autoplay</button>
+          </div>
+          <div id="moves" class="moves"></div>
+        </div>
+
+        <div id="positionTab" class="tab-panel">
+          <label for="fenInput">FEN</label>
+          <textarea id="fenInput" rows="5" spellcheck="false"></textarea>
+          <div class="row two">
+            <div>
+              <label for="clockInput">Clock (seconds)</label>
+              <input id="clockInput" type="number" min="1" value="120">
+            </div>
+            <button id="loadFenBtn" class="primary align-end">Load position</button>
+          </div>
+          <button id="newGameBtn" class="secondary full">New standard game</button>
+        </div>
+
+        <div id="engineTab" class="tab-panel">
+          <div class="metrics">
+            <div><span>Last search</span><strong id="searchTime">—</strong></div>
+            <div><span>Nodes</span><strong id="nodes">—</strong></div>
+            <div><span>Depth</span><strong id="depth">—</strong></div>
+          </div>
+          <label for="budgetInput">Development search cap (ms)</label>
+          <input id="budgetInput" type="number" min="10" step="50" placeholder="Use game clock">
+          <p class="hint">Leave blank to let the engine time manager choose from the current clock.</p>
+          <button id="analyzeBtn" class="primary full">Calculate engine move</button>
+          <div class="architecture">
+            <span>Search stack</span>
+            <p>Iterative deepening · PVS · LMR · transposition table · quiescence · killer/history ordering.</p>
+          </div>
+        </div>
+      </aside>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

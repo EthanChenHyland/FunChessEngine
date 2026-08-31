@@ -8,10 +8,14 @@ git clone https://github.com/EthanChenHyland/FunChessEngine.git
 cd FunChessEngine
 make setup
 make play
+make gui
 ```
 
 That plays your agent against a baseline over a full 120 s + 0.5 s game and prints the result.
 Use `make zip` to build a portable `engine-package.zip` containing the standalone engine.
+
+`make gui` launches the local Engine Lab in your browser. The GUI is development-only and is
+kept under `gui/`, so it is not included in the engine package zip.
 
 ## Writing an agent
 
@@ -27,6 +31,8 @@ The project includes a legal random baseline, so the loop works before you write
 ```
 make play                                          # one game, real time control
 make arena                                         # 20 fast games, prints a score
+make benchmark                                     # varied-position depth/node benchmark
+make gui                                           # local browser Engine Lab
 make play FEN="<fen>"                              # start from a given position
 uv run python -m harness.play --black baselines/minimax --pgn game.pgn
 uv run python -m harness.arena --opponent ../my-old-version --games 200

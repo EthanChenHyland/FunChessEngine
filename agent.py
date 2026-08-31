@@ -149,7 +149,7 @@ class SearchTimeout(Exception):
 TT: dict[object, TTEntry] = {}
 HISTORY: dict[tuple[bool, int, int], int] = {}
 KILLERS: list[list[chess.Move | None]] = [[None, None] for _ in range(MAX_PLY)]
-SEEN_ROOTS: dict[object, int] = {}
+SEEN_POSITIONS: dict[object, int] = {}
 
 DEADLINE_NS = 0
 NODES = 0
@@ -162,6 +162,32 @@ def _key(board: chess.Board) -> object:
     # transposition key.  Our terminal rules use that clock, so include it to
     # prevent a score cached at (say) halfmove 20 from being reused at 99.
     return board._transposition_key(), min(board.halfmove_clock, 100)
+
+
+def _repetition_key(board: chess.Board) -> object:
+    """Position identity used by the FIDE repetition rule.
+
+    Unlike the search key this intentionally excludes the halfmove clock.
+    python-chess's transposition key includes side to move, castling rights and
+    the relevant en-passant state, which are the position details repetition
+    needs.
+    """
+
+    return board._transposition_key()
+
+
+def reset_game_state() -> None:
+    """Clear persistent search state (useful for local tools/new GUI games)."""
+
+    global DEADLINE_NS, NODES
+    TT.clear()
+    HISTORY.clear()
+    SEEN_POSITIONS.clear()
+    for killers in KILLERS:
+        killers[0] = None
+        killers[1] = None
+    DEADLINE_NS = 0
+    NODES = 0
 
 
 def _pst_square(square: int, color: chess.Color) -> int:
@@ -507,12 +533,18 @@ def get_move(fen: str, time_left_ms: int) -> str:
         # The referee never asks for a move after game over, but returning an
         # empty string is safer than throwing if a malformed test does.
         return ""
+    repetition_key = _repetition_key(board)
+    SEEN_POSITIONS[repetition_key] = SEEN_POSITIONS.get(repetition_key, 0) + 1
     if len(legal) == 1:
-        return legal[0].uci()
+        forced = legal[0]
+        board.push(forced)
+        child_key = _repetition_key(board)
+        board.pop()
+        SEEN_POSITIONS[child_key] = SEEN_POSITIONS.get(child_key, 0) + 1
+        return forced.uci()
 
     _trim_state()
     root_key = _key(board)
-    SEEN_ROOTS[root_key] = SEEN_ROOTS.get(root_key, 0) + 1
 
     budget_ms = _time_budget_ms(board, max(1, time_left_ms))
     # Reserve a small fixed margin for Python unwinding + harness IPC.
@@ -541,8 +573,16 @@ def get_move(fen: str, time_left_ms: int) -> str:
             moves = _ordered_moves(board, best_move, 0)
             for move in moves:
                 board.push(move)
+                child_repetition_key = _repetition_key(board)
                 score = -negamax(board, depth - 1, -beta, -alpha, 1)
                 board.pop()
+
+                # The referee automatically claims threefold. If this exact
+                # post-move position has already occurred twice, the move is a
+                # draw regardless of its static/search score. That lets a
+                # losing engine seek the draw and a winning engine avoid it.
+                if SEEN_POSITIONS.get(child_repetition_key, 0) >= 2:
+                    score = 0
 
                 if score > iteration_score:
                     iteration_score = score
@@ -565,4 +605,8 @@ def get_move(fen: str, time_left_ms: int) -> str:
         if best_score >= MATE - 256:
             break
 
+    board.push(best_move)
+    played_key = _repetition_key(board)
+    board.pop()
+    SEEN_POSITIONS[played_key] = SEEN_POSITIONS.get(played_key, 0) + 1
     return best_move.uci()
