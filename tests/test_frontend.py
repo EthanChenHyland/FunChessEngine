@@ -171,7 +171,7 @@ class FrontendTransitionContractTests(unittest.TestCase):
         self.assert_function_contains("jumpAnalysisError", "analysisErrorPlies")
         self.assert_function_contains("scheduleAutoPositionAnalysis", "analysisAutoToggle")
         self.assert_function_contains("runMultiPv", "positionAnalysisQuality")
-        self.assertNotIn('.workspace[data-active-tab="engine"]', self.css)
+        self.assertIn('.workspace[data-active-tab="engine"]', self.css)
 
     def test_launcher_blocks_hidden_board_shortcuts_and_routes_desktop_commands(self) -> None:
         self.assertIn("if (launcherVisible()) return;", self.source)

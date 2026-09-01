@@ -98,32 +98,6 @@ async function run() {
       && !homeAutoPaused`,
   );
 
-  const stableLayout = await window.webContents.executeJavaScript(`(async () => {
-    const rect = (element) => {
-      const box = element.getBoundingClientRect();
-      return { left: box.left, width: box.width };
-    };
-    const baselineBoard = rect(document.querySelector(".board-frame"));
-    const baselinePanel = rect(document.querySelector(".side-panel"));
-    const tabs = ["positionTabButton", "engineTabButton", "trainTabButton", "displayTabButton", "gameTabButton"];
-    const readings = [];
-    for (const id of tabs) {
-      await activateTab(document.getElementById(id));
-      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      readings.push({ id, board: rect(document.querySelector(".board-frame")), panel: rect(document.querySelector(".side-panel")) });
-    }
-    return { baselineBoard, baselinePanel, readings };
-  })()`, true);
-  for (const reading of stableLayout.readings) {
-    const boardMoved = Math.abs(reading.board.left - stableLayout.baselineBoard.left) > 0.75
-      || Math.abs(reading.board.width - stableLayout.baselineBoard.width) > 0.75;
-    const panelMoved = Math.abs(reading.panel.left - stableLayout.baselinePanel.left) > 0.75
-      || Math.abs(reading.panel.width - stableLayout.baselinePanel.width) > 0.75;
-    if (boardMoved || panelMoved) {
-      throw new Error(`Sidebar tab changed workspace geometry at ${reading.id}: ${JSON.stringify(stableLayout)}`);
-    }
-  }
-
   const stickyHeader = await window.webContents.executeJavaScript(`(async () => {
     const shell = document.querySelector(".app-shell");
     const spacer = document.createElement("div");

@@ -352,10 +352,11 @@ h2 { margin: 0; font-size: 19px; letter-spacing: -.025em; }
 
 .workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(430px, 510px);
+  grid-template-columns: minmax(0, 1fr) minmax(330px, 390px);
   gap: clamp(18px, 2.4vw, 32px);
   align-items: start;
 }
+.workspace[data-active-tab="engine"] { grid-template-columns: minmax(0, 1fr) minmax(430px, 510px); }
 
 .board-column {
   min-width: 0;
@@ -1014,12 +1015,12 @@ kbd { padding: 2px 5px; border: 1px solid var(--line-strong); border-bottom-widt
 .drop-overlay span { margin-top: 6px; color: var(--muted); font-size: 11px; }
 
 @media (max-width: 980px) {
-  .workspace { grid-template-columns: minmax(0, 1fr) 330px; gap: 18px; }
+  .workspace, .workspace[data-active-tab="engine"] { grid-template-columns: minmax(0, 1fr) 330px; gap: 18px; }
 }
 
 @media (max-width: 860px) {
   .app-shell { width: min(100% - 28px, 760px); }
-  .workspace { grid-template-columns: 1fr; }
+  .workspace, .workspace[data-active-tab="engine"] { grid-template-columns: 1fr; }
   .board-stage { width: min(100%, var(--board-max)); }
   .side-panel { position: static; max-height: none; overflow: visible; }
   .tabs { position: static; }
