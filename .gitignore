@@ -5,3 +5,11 @@ __pycache__/
 engine-package.zip
 *.pgn
 data/
+desktop/node_modules/
+desktop/dist/
+desktop/.cache/
+desktop/backend-dist/
+desktop/assets/icon.icns
+desktop/assets/icon.png
+desktop/backend-dist/
+fce-electron-*.png

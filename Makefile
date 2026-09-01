@@ -2,7 +2,7 @@ SHELL := /bin/bash
 
 UV := $(shell command -v uv 2>/dev/null || printf '%s' '/Users/ethius/AI-Workspace/runtimes/uv/bin/uv')
 
-.PHONY: setup play arena benchmark gui test zip gate
+.PHONY: setup play arena benchmark gui desktop desktop-dev desktop-build test zip gate
 
 setup:
 	$(UV) sync
@@ -18,6 +18,15 @@ benchmark:
 
 gui:
 	$(UV) run python -m gui.server
+
+desktop:
+	cd desktop && npm run start
+
+desktop-dev:
+	cd desktop && npm run dev
+
+desktop-build:
+	cd desktop && npm run build
 
 test:
 	$(UV) run python -m unittest discover -v

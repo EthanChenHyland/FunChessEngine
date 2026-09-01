@@ -54,10 +54,13 @@ class AgentTests(unittest.TestCase):
         board = chess.Board()
         agent.SEEN_POSITIONS[agent._repetition_key(board)] = 2
         agent.HISTORY[(True, 1, 2)] = 42
+        agent.evaluate(board)
+        self.assertTrue(agent.EVAL_CACHE)
         agent.reset_game_state()
         self.assertFalse(agent.SEEN_POSITIONS)
         self.assertFalse(agent.HISTORY)
         self.assertFalse(agent.TT)
+        self.assertFalse(agent.EVAL_CACHE)
         self.assertEqual(agent.LAST_SEARCH_INFO, agent.SearchInfo())
 
 

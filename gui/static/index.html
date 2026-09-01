@@ -3,165 +3,232 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:">
   <title>FunChessEngine · Default Lab</title>
-  <link rel="stylesheet" href="/style.css">
+  <link rel="icon" href="/app-mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css?v=7">
 </head>
 <body>
   <main class="app-shell">
     <header class="topbar">
-      <div>
-        <p class="eyebrow">AI CHESSATHON · ENGINE LAB</p>
-        <h1>FunChessEngine Control Room</h1>
+      <div class="brand-lockup">
+        <img class="brand-mark" src="/app-mark.svg" alt="">
+        <div>
+          <p class="eyebrow">ENGINE LAB</p>
+          <h1>FunChessEngine</h1>
+          <p class="brand-subtitle">Local play, analysis, and engine development</p>
+        </div>
       </div>
-      <div class="engine-badge"><span class="pulse"></span> local engine</div>
+      <div class="engine-badge"><span class="pulse"></span><span id="engineStatusText">Engine ready</span></div>
     </header>
 
     <section class="workspace">
       <div class="board-column">
         <div class="board-stage" id="boardStage">
           <div class="player-row player-black">
-            <div><strong>Black</strong><span id="blackRole">Engine</span></div>
+            <div class="player-identity"><strong>Black</strong><span id="blackRole">Engine</span><span id="blackMaterial" class="material-chip"></span></div>
             <div id="blackClock" class="clock">02:00.0</div>
           </div>
-          <div class="board-frame">
-            <div id="board" class="board" aria-label="Chess board"></div>
-          </div>
+          <div id="blackCaptured" class="captured-row" aria-label="Pieces captured by Black"></div>
+          <div class="board-frame"><div id="board" class="board" aria-label="Chess board"></div></div>
           <div class="player-row player-white">
-            <div><strong>White</strong><span id="whiteRole">Human</span></div>
+            <div class="player-identity"><strong>White</strong><span id="whiteRole">Human</span><span id="whiteMaterial" class="material-chip"></span></div>
             <div id="whiteClock" class="clock">02:00.0</div>
           </div>
+          <div id="whiteCaptured" class="captured-row" aria-label="Pieces captured by White"></div>
           <div class="board-actions">
             <button id="flipBtn" class="secondary" title="Flip board (F)">Flip board</button>
             <button id="undoBtn" class="secondary" title="Undo move (U)">Undo</button>
-            <button id="engineBtn" class="primary" title="Play engine move (E)">Engine move</button>
           </div>
         </div>
       </div>
 
       <aside class="side-panel">
         <nav class="tabs">
-          <button class="tab active" data-tab="game">Game</button>
-          <button class="tab" data-tab="position">Position</button>
-          <button class="tab" data-tab="engine">Engine</button>
-          <button class="tab" data-tab="display">Display</button>
+          <button class="tab active" data-tab="game">Play</button>
+          <button class="tab" data-tab="position">Files</button>
+          <button class="tab" data-tab="engine">Analyze</button>
+          <button class="tab" data-tab="display">Appearance</button>
         </nav>
 
         <div id="gameTab" class="tab-panel active">
           <div class="status-card">
-            <div>
-              <span id="evalLabel" class="label">White perspective</span>
-              <strong id="evalText">+0.00</strong>
-            </div>
+            <div><span id="evalLabel" class="label">White perspective</span><strong id="evalText">+0.00</strong></div>
             <div id="turnPill" class="turn-pill">White to move</div>
           </div>
           <div class="eval-track"><div id="evalBar" class="eval-bar"></div></div>
           <div id="statusLine" class="status-line">Ready.</div>
-          <div class="play-controls">
-            <div>
-              <label for="humanSide">Human control</label>
-              <select id="humanSide">
-                <option value="both">Both sides</option>
-                <option value="white" selected>White</option>
-                <option value="black">Black</option>
-                <option value="none">Engine vs engine</option>
-              </select>
-            </div>
-            <button id="autoBtn" class="secondary align-end">Start autoplay</button>
+
+          <div class="section-card play-controls">
+            <label for="humanSide">Game mode</label>
+            <select id="humanSide">
+              <option value="white" selected>Human White vs Engine</option>
+              <option value="black">Human Black vs Engine</option>
+              <option value="both">Two players · local</option>
+              <option value="none">Engine vs Engine</option>
+            </select>
           </div>
+
+          <div class="game-actions">
+            <button id="newGameBtn" class="primary">New game</button>
+            <button id="pauseBtn" class="secondary">Pause clocks</button>
+            <button id="drawBtn" class="secondary" hidden>Agree draw</button>
+            <button id="resignBtn" class="danger">Resign</button>
+          </div>
+
+          <div class="time-card">
+            <div class="setting-heading"><span class="label">Time control</span><span id="timeSummary" class="setting-value">2:00 + 0.5</span></div>
+            <select id="timePreset">
+              <optgroup label="Bullet">
+                <option value="30,0">0.5 + 0 · Hyperbullet</option>
+                <option value="60,0">1 + 0</option>
+                <option value="60,1000">1 + 1</option>
+                <option value="120,1000">2 + 1</option>
+              </optgroup>
+              <optgroup label="Standard">
+                <option value="120,500" selected>2 + 0.5 · Default</option>
+              </optgroup>
+              <optgroup label="Blitz">
+                <option value="180,0">3 + 0</option>
+                <option value="180,2000">3 + 2</option>
+                <option value="300,0">5 + 0</option>
+                <option value="300,3000">5 + 3</option>
+              </optgroup>
+              <optgroup label="Rapid">
+                <option value="600,0">10 + 0</option>
+                <option value="600,5000">10 + 5</option>
+                <option value="900,10000">15 + 10</option>
+              </optgroup>
+              <optgroup label="Classical">
+                <option value="1800,0">30 + 0</option>
+                <option value="1800,20000">30 + 20</option>
+                <option value="2700,45000">45 + 45</option>
+                <option value="3600,0">60 + 0</option>
+              </optgroup>
+              <option value="custom">Custom</option>
+            </select>
+            <div id="customTimeRow" class="row two compact-row" hidden>
+              <div><label for="baseTimeInput">Base minutes</label><input id="baseTimeInput" type="number" min="0.1" step="0.25" value="2"></div>
+              <div><label for="incrementInput">Increment seconds</label><input id="incrementInput" type="number" min="0" step="0.1" value="0.5"></div>
+            </div>
+            <button id="applyTimeBtn" class="secondary full">Apply & restart</button>
+          </div>
+
+          <div class="list-heading"><span>Moves</span><span id="moveCount" class="setting-value">0 plies</span></div>
           <div id="moves" class="moves"></div>
         </div>
 
         <div id="positionTab" class="tab-panel">
+          <div class="file-card">
+            <div class="setting-heading"><span class="label">Saved game</span><span class="setting-value">Portable PNG</span></div>
+            <p class="hint">Save a board image that also contains the full game, clocks, and mode.</p>
+            <div class="row two save-actions">
+              <button id="savePngBtn" class="primary">Save game…</button>
+              <button id="loadPngBtn" class="secondary">Open game…</button>
+            </div>
+            <input id="loadPngInput" type="file" accept="image/png" hidden>
+          </div>
+
+          <div class="file-card setup-card">
+            <div class="setting-heading"><span class="label">Position setup</span><span id="setupStatus" class="setting-value">Board editor</span></div>
+            <p class="hint">Build a custom legal position directly on the board, then start a game or analyze it.</p>
+            <button id="setupModeBtn" class="secondary full">Set up a position</button>
+            <div id="setupControls" hidden>
+              <div class="setup-toolbar">
+                <button id="setupStartBtn" class="secondary compact">Starting position</button>
+                <button id="setupClearBtn" class="secondary compact">Clear board</button>
+                <button id="setupCancelBtn" class="secondary compact">Cancel setup</button>
+              </div>
+              <div class="setup-palette" id="setupPalette" aria-label="Position setup piece palette">
+                <button class="setup-piece selected" data-setup-piece="" title="Erase square"><span>×</span><small>Erase</small></button>
+                <button class="setup-piece" data-setup-piece="K"><span>♔</span><small>King</small></button>
+                <button class="setup-piece" data-setup-piece="Q"><span>♕</span><small>Queen</small></button>
+                <button class="setup-piece" data-setup-piece="R"><span>♖</span><small>Rook</small></button>
+                <button class="setup-piece" data-setup-piece="B"><span>♗</span><small>Bishop</small></button>
+                <button class="setup-piece" data-setup-piece="N"><span>♘</span><small>Knight</small></button>
+                <button class="setup-piece" data-setup-piece="P"><span>♙</span><small>Pawn</small></button>
+                <button class="setup-piece" data-setup-piece="k"><span>♚</span><small>King</small></button>
+                <button class="setup-piece" data-setup-piece="q"><span>♛</span><small>Queen</small></button>
+                <button class="setup-piece" data-setup-piece="r"><span>♜</span><small>Rook</small></button>
+                <button class="setup-piece" data-setup-piece="b"><span>♝</span><small>Bishop</small></button>
+                <button class="setup-piece" data-setup-piece="n"><span>♞</span><small>Knight</small></button>
+                <button class="setup-piece" data-setup-piece="p"><span>♟</span><small>Pawn</small></button>
+              </div>
+              <div class="row two setup-fields">
+                <div><label for="setupTurn">Side to move</label><select id="setupTurn"><option value="w">White</option><option value="b">Black</option></select></div>
+                <div><label for="setupEp">En passant</label><input id="setupEp" type="text" maxlength="2" placeholder="- or e3"></div>
+              </div>
+              <div class="setup-castling">
+                <span class="label">Castling rights</span>
+                <label><input id="setupCastleK" type="checkbox"> White O-O</label>
+                <label><input id="setupCastleQ" type="checkbox"> White O-O-O</label>
+                <label><input id="setupCastlek" type="checkbox"> Black O-O</label>
+                <label><input id="setupCastleq" type="checkbox"> Black O-O-O</label>
+              </div>
+              <div class="row two setup-fields">
+                <div><label for="setupHalfmove">Halfmove clock</label><input id="setupHalfmove" type="number" min="0" value="0"></div>
+                <div><label for="setupFullmove">Fullmove number</label><input id="setupFullmove" type="number" min="1" value="1"></div>
+              </div>
+              <button id="setupApplyBtn" class="primary full">Use setup position</button>
+            </div>
+          </div>
+
+          <div class="list-heading position-heading"><span>Position</span><span class="setting-value">FEN</span></div>
           <label for="fenInput">FEN</label>
           <textarea id="fenInput" rows="5" spellcheck="false"></textarea>
           <div class="inline-actions">
-            <button id="copyFenBtn" class="secondary compact">Copy FEN</button>
+            <button id="copyFenBtn" class="secondary compact">Copy</button>
+            <button id="downloadFenBtn" class="secondary compact">Export…</button>
+            <button id="loadFenFileBtn" class="secondary compact">Open…</button>
           </div>
-          <div class="row two">
-            <div>
-              <label for="clockInput">Clock (seconds)</label>
-              <input id="clockInput" type="number" min="1" value="120">
-            </div>
-            <button id="loadFenBtn" class="primary align-end">Load position</button>
-          </div>
-          <button id="newGameBtn" class="secondary full">New standard game</button>
+          <button id="loadFenBtn" class="secondary full">Use this position</button>
+          <input id="loadFenFileInput" type="file" accept=".fen,text/plain" hidden>
         </div>
 
         <div id="engineTab" class="tab-panel">
           <div class="metrics">
-            <div><span>Last search</span><strong id="searchTime">—</strong></div>
-            <div><span>Nodes</span><strong id="nodes">—</strong></div>
             <div><span>Depth</span><strong id="depth">—</strong></div>
-            <div><span>Search score</span><strong id="searchScore">—</strong></div>
+            <div><span>Nodes</span><strong id="nodes">—</strong></div>
+            <div><span>NPS</span><strong id="nps">—</strong></div>
+            <div><span>Time</span><strong id="searchTime">—</strong></div>
           </div>
           <div class="pv-card">
-            <div class="setting-heading">
-              <span class="label">Principal variation</span>
-              <span id="researches" class="setting-value">0 researches</span>
-            </div>
+            <div class="setting-heading"><span class="label">Principal variation</span><span id="searchScore" class="setting-value">—</span></div>
             <code id="pvLine">No completed search yet.</code>
           </div>
-          <label for="budgetInput">Development search cap (ms)</label>
-          <input id="budgetInput" type="number" min="10" step="50" placeholder="Use game clock">
-          <p class="hint">Leave blank to let the engine time manager choose from the current clock.</p>
-          <button id="analyzeBtn" class="primary full">Calculate engine move</button>
-          <div class="architecture">
-            <span>Search stack</span>
-            <p>Iterative deepening · aspiration windows · PVS · LMR · bounded check extension · transposition table · exchange-aware quiescence · killer/history ordering.</p>
+          <div class="setting-group">
+            <label for="evalPerspectiveSelect">Evaluation perspective</label>
+            <select id="evalPerspectiveSelect"><option value="white">White</option><option value="turn">Side to move</option></select>
           </div>
+          <button id="engineBtn" class="primary full" title="Play engine move (E)">Play engine move</button>
+          <details class="advanced-details">
+            <summary>Advanced diagnostics</summary>
+            <div class="advanced-body">
+              <label for="budgetInput">Search cap (ms)</label>
+              <input id="budgetInput" type="number" min="10" step="50" placeholder="Automatic">
+              <p class="hint">Leave blank to use the engine's normal clock-aware time manager.</p>
+              <div class="advanced-stat"><span>Aspiration re-searches</span><strong id="researches">0</strong></div>
+            </div>
+          </details>
         </div>
 
         <div id="displayTab" class="tab-panel">
-          <div class="setting-group">
-            <label for="themeSelect">Board theme</label>
-            <select id="themeSelect">
-              <option value="forest">Forest</option>
-              <option value="walnut">Walnut</option>
-              <option value="ocean">Ocean</option>
-              <option value="slate">Slate</option>
-            </select>
-          </div>
           <div class="row two display-selects">
-            <div>
-              <label for="accentSelect">Interface accent</label>
-              <select id="accentSelect">
-                <option value="lime">Lime</option>
-                <option value="cyan">Cyan</option>
-                <option value="violet">Violet</option>
-                <option value="amber">Amber</option>
-              </select>
-            </div>
-            <div>
-              <label for="evalPerspectiveSelect">Evaluation view</label>
-              <select id="evalPerspectiveSelect">
-                <option value="white">White</option>
-                <option value="turn">Side to move</option>
-              </select>
-            </div>
+            <div><label for="themeSelect">Board theme</label><select id="themeSelect"><option value="forest">Forest</option><option value="walnut">Walnut</option><option value="ocean">Ocean</option><option value="slate">Slate</option></select></div>
+            <div><label for="accentSelect">Accent</label><select id="accentSelect"><option value="lime">Lime</option><option value="cyan">Cyan</option><option value="violet">Violet</option><option value="amber">Amber</option></select></div>
           </div>
           <div class="setting-group">
-            <div class="setting-heading">
-              <label for="boardSizeInput">Maximum board size</label>
-              <span id="boardSizeValue" class="setting-value">720 px</span>
-            </div>
-            <input id="boardSizeInput" type="range" min="480" max="820" step="20" value="720">
-            <p class="hint">The board still caps itself to the visible viewport on desktop so the controls stay reachable.</p>
-          </div>
-          <div class="setting-group">
-            <div class="setting-heading">
-              <label for="pieceSizeInput">Piece scale</label>
-              <span id="pieceSizeValue" class="setting-value">78%</span>
-            </div>
+            <div class="setting-heading"><label for="pieceSizeInput">Piece size</label><span id="pieceSizeValue" class="setting-value">78%</span></div>
             <input id="pieceSizeInput" type="range" min="66" max="90" step="2" value="78">
           </div>
           <div class="toggle-list">
-            <label class="toggle"><span><strong>Coordinates</strong><small>Show files and ranks on board edges</small></span><input id="coordsToggle" type="checkbox" checked><i></i></label>
-            <label class="toggle"><span><strong>Legal moves</strong><small>Show destination dots and capture rings</small></span><input id="targetsToggle" type="checkbox" checked><i></i></label>
+            <label class="toggle"><span><strong>Coordinates</strong><small>Files and ranks on board edges</small></span><input id="coordsToggle" type="checkbox" checked><i></i></label>
+            <label class="toggle"><span><strong>Legal moves</strong><small>Destination dots and capture rings</small></span><input id="targetsToggle" type="checkbox" checked><i></i></label>
             <label class="toggle"><span><strong>Last move</strong><small>Highlight the previous move</small></span><input id="lastMoveToggle" type="checkbox" checked><i></i></label>
-            <label class="toggle"><span><strong>Auto orientation</strong><small>Face the board toward the selected human side</small></span><input id="autoOrientToggle" type="checkbox" checked><i></i></label>
+            <label class="toggle"><span><strong>Auto orientation</strong><small>Face the board toward the human side</small></span><input id="autoOrientToggle" type="checkbox" checked><i></i></label>
           </div>
-          <button id="resetDisplayBtn" class="secondary full">Reset display settings</button>
-          <p class="shortcut-hint">Keyboard: <kbd>F</kbd> flip · <kbd>U</kbd> undo · <kbd>E</kbd> engine · <kbd>Esc</kbd> clear selection</p>
+          <button id="resetDisplayBtn" class="secondary full">Reset appearance</button>
+          <p class="shortcut-hint">Keyboard: <kbd>F</kbd> flip · <kbd>U</kbd> undo · <kbd>E</kbd> engine · <kbd>Space</kbd> pause · <kbd>Esc</kbd> clear</p>
         </div>
       </aside>
     </section>
@@ -169,21 +236,36 @@
 
   <dialog id="promotionDialog" class="promotion-dialog" aria-labelledby="promotionTitle">
     <form method="dialog">
-      <div class="dialog-head">
-        <div>
-          <p class="eyebrow">PROMOTION</p>
-          <h2 id="promotionTitle">Choose a piece</h2>
-        </div>
-        <button class="dialog-close" value="cancel" aria-label="Cancel promotion">×</button>
-      </div>
+      <div class="dialog-head"><div><p class="eyebrow">PROMOTION</p><h2 id="promotionTitle">Choose a piece</h2><p id="promotionHint" class="dialog-subtitle">Choose Queen, Rook, Bishop, or Knight.</p></div><button class="dialog-close" value="cancel" aria-label="Cancel promotion">×</button></div>
       <div class="promotion-options">
-        <button value="q" data-promotion="q"><span>♕</span>Queen</button>
-        <button value="r" data-promotion="r"><span>♖</span>Rook</button>
-        <button value="b" data-promotion="b"><span>♗</span>Bishop</button>
-        <button value="n" data-promotion="n"><span>♘</span>Knight</button>
+        <button value="q" data-promotion="q"><span data-promotion-icon="q">♕</span><kbd>Q</kbd> Queen</button><button value="r" data-promotion="r"><span data-promotion-icon="r">♖</span><kbd>R</kbd> Rook</button><button value="b" data-promotion="b"><span data-promotion-icon="b">♗</span><kbd>B</kbd> Bishop</button><button value="n" data-promotion="n"><span data-promotion-icon="n">♘</span><kbd>N</kbd> Knight</button>
       </div>
     </form>
   </dialog>
-  <script src="/app.js"></script>
+
+  <dialog id="restartDialog" class="promotion-dialog restart-dialog" aria-labelledby="restartTitle">
+    <form method="dialog">
+      <div class="dialog-head"><div><p class="eyebrow">RESTART REQUIRED</p><h2 id="restartTitle">Restart the current game?</h2></div><button class="dialog-close" value="cancel" aria-label="Cancel">×</button></div>
+      <p id="restartMessage" class="dialog-copy">Changing this setting starts a new game. Unsaved progress will be lost.</p>
+      <div class="dialog-actions"><button class="secondary" value="cancel">Keep current game</button><button class="primary" value="restart">Restart without saving</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="resultDialog" class="promotion-dialog result-dialog" aria-labelledby="resultTitle">
+    <form method="dialog">
+      <div class="dialog-head"><div><p class="eyebrow">GAME COMPLETE</p><h2 id="resultTitle">Game over</h2></div><button class="dialog-close" value="close" aria-label="Close">×</button></div>
+      <p id="resultMessage" class="dialog-copy">Result</p>
+      <div class="dialog-actions"><button class="secondary" value="close">Review game</button><button id="rematchBtn" class="primary" value="rematch">Rematch</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="actionDialog" class="promotion-dialog action-dialog" aria-labelledby="actionTitle">
+    <form method="dialog">
+      <div class="dialog-head"><div><p class="eyebrow">CONFIRM ACTION</p><h2 id="actionTitle">Continue?</h2></div><button class="dialog-close" value="cancel" aria-label="Cancel">×</button></div>
+      <p id="actionMessage" class="dialog-copy"></p>
+      <div class="dialog-actions"><button class="secondary" value="cancel">Cancel</button><button id="actionConfirmBtn" class="primary" value="confirm">Continue</button></div>
+    </form>
+  </dialog>
+  <script src="/app.js?v=7"></script>
 </body>
 </html>

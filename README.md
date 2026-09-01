@@ -8,17 +8,22 @@ cd /Users/ethius/VSCode/FunChessEngine
 make setup
 make play
 make gui
+make desktop-dev
 ```
 
 That plays your agent against a baseline over a full 120 s + 0.5 s game and prints the result.
 Use `make zip` to build a portable `engine-package.zip` containing the standalone engine.
 
-`make gui` launches the local Engine Lab in your browser. The GUI is development-only and is
-kept under `gui/`, so it is not included in the engine package zip.
+`make gui` launches the local Engine Lab in your browser. `make desktop-dev` launches the same
+Engine Lab in an Electron desktop shell, and `make desktop-build` produces an Apple Silicon macOS
+app/DMG with a bundled standalone Python backend. Desktop and GUI code stay outside the engine
+package, so they are never included in `engine-package.zip`.
 
-The Engine Lab includes a responsive board, human/engine and engine/engine play, FEN loading,
-search telemetry/PV, themes, accent colors, board/piece sizing, orientation preferences, and
-display toggles. Preferences are stored locally in the browser.
+The Engine Lab includes a responsive board, click-to-move or drag-and-drop play, human/engine,
+two-player and engine/engine modes, 17 built-in clock presets plus custom controls, pause/resume,
+resign/draw/rematch, captured-piece/material tracking, portable PNG saves, FEN loading, a full
+piece-by-piece setup editor, keyboard-friendly pawn promotion, search telemetry/PV, themes, accent
+colors, piece sizing, orientation preferences, and display toggles. Preferences are stored locally.
 
 ## Writing an agent
 
@@ -37,6 +42,8 @@ make arena                                         # 20 fast games, prints a sco
 make benchmark                                     # varied-position depth/node benchmark
 make benchmark COMPARE=../old-engine               # side-by-side search comparison
 make gui                                           # local browser Engine Lab
+make desktop-dev                                   # Electron desktop Engine Lab
+make desktop-build                                 # build macOS app + DMG (Apple Silicon)
 make play FEN="<fen>"                              # start from a given position
 uv run python -m harness.play --black baselines/minimax --pgn game.pgn
 uv run python -m harness.arena --opponent ../my-old-version --games 200

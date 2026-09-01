@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import errno
 import json
+import sys
 import threading
 import time
 import webbrowser
@@ -26,7 +27,10 @@ import chess
 
 import agent
 
-ROOT = Path(__file__).resolve().parent
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    ROOT = Path(str(sys._MEIPASS)) / "gui"
+else:
+    ROOT = Path(__file__).resolve().parent
 DEFAULT_CLOCK_MS = 120_000
 DEFAULT_INCREMENT_MS = 500
 
@@ -40,6 +44,7 @@ class GameSession:
         self.initial_fen = chess.STARTING_FEN
         self.white_ms = DEFAULT_CLOCK_MS
         self.black_ms = DEFAULT_CLOCK_MS
+        self.base_clock_ms = DEFAULT_CLOCK_MS
         self.increment_ms = DEFAULT_INCREMENT_MS
         self.last_move: chess.Move | None = None
         self.last_engine_ms = 0
@@ -49,15 +54,31 @@ class GameSession:
         self.last_engine_pv: tuple[str, ...] = ()
         self.last_engine_researches = 0
         self.history: list[tuple[int, int]] = []
+        self.paused = False
+        self.manual_result: str | None = None
+        self.manual_termination: str | None = None
+        self.turn_started_ns = time.monotonic_ns()
 
-    def reset(self, fen: str = chess.STARTING_FEN, clock_ms: int = DEFAULT_CLOCK_MS) -> None:
+    def reset(
+        self,
+        fen: str = chess.STARTING_FEN,
+        clock_ms: int = DEFAULT_CLOCK_MS,
+        increment_ms: int = DEFAULT_INCREMENT_MS,
+    ) -> None:
         board = chess.Board(fen)
+        if not board.is_valid():
+            raise ValueError(
+                "Invalid chess position. Check that both kings exist, pawns are off the back "
+                "ranks, kings are not adjacent, and castling/en-passant rights match the board."
+            )
         with self.lock:
             agent.reset_game_state()
             self.board = board
             self.initial_fen = fen
             self.white_ms = max(1, int(clock_ms))
             self.black_ms = max(1, int(clock_ms))
+            self.base_clock_ms = max(1, int(clock_ms))
+            self.increment_ms = max(0, int(increment_ms))
             self.last_move = None
             self.last_engine_ms = 0
             self.last_engine_nodes = 0
@@ -66,11 +87,155 @@ class GameSession:
             self.last_engine_pv = ()
             self.last_engine_researches = 0
             self.history.clear()
+            self.paused = False
+            self.manual_result = None
+            self.manual_termination = None
+            self.turn_started_ns = time.monotonic_ns()
+
+    def _current_clocks(self, now_ns: int | None = None) -> tuple[int, int]:
+        """Return live clock values without mutating the stored turn baseline."""
+
+        white_ms = self.white_ms
+        black_ms = self.black_ms
+        if (
+            self.paused
+            or self.manual_result is not None
+            or self.board.is_game_over(claim_draw=True)
+        ):
+            return max(0, white_ms), max(0, black_ms)
+        now = time.monotonic_ns() if now_ns is None else now_ns
+        elapsed_ms = max(0, (now - self.turn_started_ns) // 1_000_000)
+        if self.board.turn == chess.WHITE:
+            white_ms -= elapsed_ms
+        else:
+            black_ms -= elapsed_ms
+        return max(0, int(white_ms)), max(0, int(black_ms))
+
+    def _commit_clock(self) -> None:
+        now = time.monotonic_ns()
+        self.white_ms, self.black_ms = self._current_clocks(now)
+        self.turn_started_ns = now
+
+    def _clock_flag(self, white_ms: int, black_ms: int) -> chess.Color | None:
+        if self.manual_result is not None or self.board.is_game_over(claim_draw=True):
+            return None
+        if self.board.turn == chess.WHITE and white_ms <= 0:
+            return chess.WHITE
+        if self.board.turn == chess.BLACK and black_ms <= 0:
+            return chess.BLACK
+        return None
+
+    def _moves_uci(self) -> list[str]:
+        return [move.uci() for move in self.board.move_stack]
+
+    @staticmethod
+    def _captures(board: chess.Board) -> tuple[list[str], list[str]]:
+        replay = chess.Board(board.root().fen())
+        by_white: list[str] = []
+        by_black: list[str] = []
+        for move in board.move_stack:
+            captured: chess.Piece | None = None
+            if replay.is_capture(move):
+                if replay.is_en_passant(move):
+                    offset = -8 if replay.turn == chess.WHITE else 8
+                    captured = replay.piece_at(move.to_square + offset)
+                else:
+                    captured = replay.piece_at(move.to_square)
+            if captured is not None:
+                (by_white if replay.turn == chess.WHITE else by_black).append(captured.symbol())
+            replay.push(move)
+        return by_white, by_black
+
+    @staticmethod
+    def _material_balance(board: chess.Board) -> int:
+        values = {
+            chess.PAWN: 1,
+            chess.KNIGHT: 3,
+            chess.BISHOP: 3,
+            chess.ROOK: 5,
+            chess.QUEEN: 9,
+        }
+        white = sum(
+            len(board.pieces(piece, chess.WHITE)) * value for piece, value in values.items()
+        )
+        black = sum(
+            len(board.pieces(piece, chess.BLACK)) * value for piece, value in values.items()
+        )
+        return white - black
+
+    def load_snapshot(self, payload: dict[str, Any]) -> None:
+        """Restore a game exported by the local Engine Lab."""
+
+        initial_fen = str(payload.get("initial_fen", chess.STARTING_FEN))
+        moves_raw = payload.get("moves", [])
+        history_raw = payload.get("clock_history", [])
+        if not isinstance(moves_raw, list) or len(moves_raw) > 1_000:
+            raise ValueError("Saved game contains an invalid move list.")
+        if not isinstance(history_raw, list) or len(history_raw) > 1_000:
+            raise ValueError("Saved game contains invalid clock history.")
+
+        board = chess.Board(initial_fen)
+        if not board.is_valid():
+            raise ValueError("Saved game starts from an invalid chess position.")
+        moves: list[chess.Move] = []
+        for raw in moves_raw:
+            try:
+                move = chess.Move.from_uci(str(raw))
+            except ValueError as exc:
+                raise ValueError("Saved game contains a malformed move.") from exc
+            if move not in board.legal_moves:
+                raise ValueError(f"Saved game contains illegal move {move.uci()}.")
+            board.push(move)
+            moves.append(move)
+
+        history: list[tuple[int, int]] = []
+        for item in history_raw:
+            if not isinstance(item, list) or len(item) != 2:
+                raise ValueError("Saved game contains invalid clock history.")
+            history.append((max(0, int(item[0])), max(0, int(item[1]))))
+        if history and len(history) != len(moves):
+            raise ValueError("Saved game clock history does not match its moves.")
+
+        with self.lock:
+            agent.reset_game_state()
+            self.board = board
+            self.initial_fen = initial_fen
+            self.white_ms = max(0, int(payload.get("white_ms", DEFAULT_CLOCK_MS)))
+            self.black_ms = max(0, int(payload.get("black_ms", DEFAULT_CLOCK_MS)))
+            self.base_clock_ms = max(
+                1, int(payload.get("base_clock_ms", max(self.white_ms, self.black_ms, 1)))
+            )
+            self.increment_ms = max(0, int(payload.get("increment_ms", DEFAULT_INCREMENT_MS)))
+            self.last_move = moves[-1] if moves else None
+            self.last_engine_ms = 0
+            self.last_engine_nodes = 0
+            self.last_engine_depth = None
+            self.last_engine_score = None
+            self.last_engine_pv = ()
+            self.last_engine_researches = 0
+            self.history = history if history else [
+                (self.white_ms, self.black_ms) for _ in moves
+            ]
+            self.paused = bool(payload.get("paused", False))
+            manual_result = payload.get("manual_result")
+            manual_termination = payload.get("manual_termination")
+            self.manual_result = (
+                str(manual_result)
+                if manual_result in {"1-0", "0-1", "1/2-1/2"}
+                else None
+            )
+            self.manual_termination = (
+                str(manual_termination) if self.manual_result is not None else None
+            )
+            self.turn_started_ns = time.monotonic_ns()
 
     def state(self) -> dict[str, Any]:
         with self.lock:
             board = self.board
             outcome = board.outcome(claim_draw=True)
+            white_ms, black_ms = self._current_clocks()
+            flagged = self._clock_flag(white_ms, black_ms)
+            captured_by_white, captured_by_black = self._captures(board)
             legal_moves = [move.uci() for move in board.legal_moves]
             eval_cp = agent.evaluate(board)
             if board.turn == chess.BLACK:
@@ -81,15 +246,47 @@ class GameSession:
                 "board": self._board_payload(board),
                 "legal_moves": legal_moves,
                 "last_move": self.last_move.uci() if self.last_move else None,
-                "white_ms": max(0, int(self.white_ms)),
-                "black_ms": max(0, int(self.black_ms)),
+                "white_ms": white_ms,
+                "black_ms": black_ms,
+                "base_clock_ms": self.base_clock_ms,
                 "increment_ms": self.increment_ms,
                 "eval_cp": eval_cp,
                 "check": board.is_check(),
-                "game_over": outcome is not None,
-                "result": outcome.result() if outcome else None,
-                "termination": outcome.termination.name.lower() if outcome else None,
+                "game_over": (
+                    self.manual_result is not None or outcome is not None or flagged is not None
+                ),
+                "result": (
+                    self.manual_result
+                    if self.manual_result is not None
+                    else outcome.result()
+                    if outcome is not None
+                    else (
+                        "0-1"
+                        if flagged == chess.WHITE
+                        else "1-0"
+                        if flagged == chess.BLACK
+                        else None
+                    )
+                ),
+                "termination": (
+                    self.manual_termination
+                    if self.manual_result is not None
+                    else outcome.termination.name.lower()
+                    if outcome is not None
+                    else "time_forfeit"
+                    if flagged is not None
+                    else None
+                ),
                 "pgn": self._pgn_moves(board),
+                "initial_fen": self.initial_fen,
+                "moves_uci": self._moves_uci(),
+                "clock_history": [[white, black] for white, black in self.history],
+                "paused": self.paused,
+                "manual_result": self.manual_result,
+                "manual_termination": self.manual_termination,
+                "captured_by_white": captured_by_white,
+                "captured_by_black": captured_by_black,
+                "material_balance": self._material_balance(board),
                 "last_engine_ms": self.last_engine_ms,
                 "last_engine_nodes": self.last_engine_nodes,
                 "last_engine_depth": self.last_engine_depth,
@@ -117,24 +314,43 @@ class GameSession:
 
     def play_move(self, uci: str) -> None:
         with self.lock:
-            if self.board.is_game_over(claim_draw=True):
+            if self.manual_result is not None or self.board.is_game_over(claim_draw=True):
                 raise ValueError("The game is already over.")
+            if self.paused:
+                raise ValueError("The game is paused.")
             try:
                 move = chess.Move.from_uci(uci)
             except ValueError as exc:
                 raise ValueError("Invalid UCI move.") from exc
             if move not in self.board.legal_moves:
                 raise ValueError("That move is not legal in the current position.")
+            self._commit_clock()
+            mover = self.board.turn
+            remaining = self.white_ms if mover == chess.WHITE else self.black_ms
+            if remaining <= 0:
+                side = "White" if mover == chess.WHITE else "Black"
+                raise ValueError(f"{side} has flagged on time.")
             self.history.append((self.white_ms, self.black_ms))
+            if mover == chess.WHITE:
+                self.white_ms += self.increment_ms
+            else:
+                self.black_ms += self.increment_ms
             self.board.push(move)
             self.last_move = move
+            self.turn_started_ns = time.monotonic_ns()
 
     def engine_move(self, budget_ms: int | None = None) -> str:
         with self.lock:
-            if self.board.is_game_over(claim_draw=True):
+            if self.manual_result is not None or self.board.is_game_over(claim_draw=True):
                 raise ValueError("The game is already over.")
+            if self.paused:
+                raise ValueError("The game is paused.")
             color = self.board.turn
+            self._commit_clock()
             available = self.white_ms if color == chess.WHITE else self.black_ms
+            if available <= 0:
+                side = "White" if color == chess.WHITE else "Black"
+                raise ValueError(f"{side} has flagged on time.")
             requested = available if budget_ms is None else min(available, max(1, budget_ms))
             fen = self.board.fen()
             before = time.monotonic_ns()
@@ -148,11 +364,15 @@ class GameSession:
             if move not in self.board.legal_moves:
                 raise RuntimeError(f"Engine returned illegal move {uci!r}.")
 
+            if color == chess.WHITE:
+                self.white_ms = max(0, self.white_ms - elapsed_ms)
+            else:
+                self.black_ms = max(0, self.black_ms - elapsed_ms)
             self.history.append((self.white_ms, self.black_ms))
             if color == chess.WHITE:
-                self.white_ms = max(0, self.white_ms - elapsed_ms) + self.increment_ms
+                self.white_ms += self.increment_ms
             else:
-                self.black_ms = max(0, self.black_ms - elapsed_ms) + self.increment_ms
+                self.black_ms += self.increment_ms
             self.board.push(move)
             self.last_move = move
             self.last_engine_ms = int(elapsed_ms)
@@ -162,16 +382,55 @@ class GameSession:
             self.last_engine_score = int(info.score)
             self.last_engine_pv = tuple(info.pv)
             self.last_engine_researches = int(info.aspiration_researches)
+            self.turn_started_ns = time.monotonic_ns()
             return uci
 
     def undo(self) -> None:
         with self.lock:
+            self.manual_result = None
+            self.manual_termination = None
+            self.paused = False
             if not self.board.move_stack:
+                self.turn_started_ns = time.monotonic_ns()
                 return
             self.board.pop()
             if self.history:
                 self.white_ms, self.black_ms = self.history.pop()
             self.last_move = self.board.peek() if self.board.move_stack else None
+            self.turn_started_ns = time.monotonic_ns()
+
+    def set_paused(self, paused: bool) -> None:
+        with self.lock:
+            if self.manual_result is not None or self.board.is_game_over(claim_draw=True):
+                raise ValueError("The game is already over.")
+            if paused == self.paused:
+                return
+            if paused:
+                self._commit_clock()
+                self.paused = True
+            else:
+                self.paused = False
+                self.turn_started_ns = time.monotonic_ns()
+
+    def resign(self, color_name: str) -> None:
+        with self.lock:
+            if self.manual_result is not None or self.board.is_game_over(claim_draw=True):
+                raise ValueError("The game is already over.")
+            if color_name not in {"white", "black"}:
+                raise ValueError("Resigning color must be white or black.")
+            self._commit_clock()
+            self.manual_result = "0-1" if color_name == "white" else "1-0"
+            self.manual_termination = "resignation"
+            self.paused = True
+
+    def agree_draw(self) -> None:
+        with self.lock:
+            if self.manual_result is not None or self.board.is_game_over(claim_draw=True):
+                raise ValueError("The game is already over.")
+            self._commit_clock()
+            self.manual_result = "1/2-1/2"
+            self.manual_termination = "draw_agreement"
+            self.paused = True
 
 
 SESSION = GameSession()
@@ -206,9 +465,18 @@ class Handler(SimpleHTTPRequestHandler):
                 SESSION.reset(
                     str(payload.get("fen", chess.STARTING_FEN)),
                     int(payload.get("clock_ms", DEFAULT_CLOCK_MS)),
+                    int(payload.get("increment_ms", DEFAULT_INCREMENT_MS)),
                 )
+            elif self.path == "/api/load-game":
+                SESSION.load_snapshot(payload)
             elif self.path == "/api/undo":
                 SESSION.undo()
+            elif self.path == "/api/pause":
+                SESSION.set_paused(bool(payload.get("paused", True)))
+            elif self.path == "/api/resign":
+                SESSION.resign(str(payload.get("color", "")))
+            elif self.path == "/api/draw":
+                SESSION.agree_draw()
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
@@ -253,7 +521,7 @@ def main() -> None:
                 raise
             port += 1
     url = f"http://{arguments.host}:{server.server_port}"
-    if server.server_port != arguments.port:
+    if arguments.port != 0 and server.server_port != arguments.port:
         print(f"Port {arguments.port} is busy; using {server.server_port} instead.")
     print(f"FunChessEngine GUI: {url}")
     if not arguments.no_open:

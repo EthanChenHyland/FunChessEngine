@@ -9,6 +9,7 @@ Strength comes from:
 
 * iterative-deepening negamax with alpha-beta pruning;
 * a persistent transposition table;
+* a bounded evaluation cache for repeated transpositions;
 * quiescence search to avoid stopping in the middle of exchanges;
 * aspiration windows plus hash/capture/killer/history move ordering;
 * bounded check extensions and conservative exchange-aware pruning;
@@ -163,6 +164,7 @@ class SearchTimeout(Exception):
 
 # State persists for the duration of one game.
 TT: dict[object, TTEntry] = {}
+EVAL_CACHE: dict[object, int] = {}
 HISTORY: dict[tuple[bool, int, int], int] = {}
 KILLERS: list[list[chess.Move | None]] = [[None, None] for _ in range(MAX_PLY)]
 SEEN_POSITIONS: dict[object, int] = {}
@@ -198,6 +200,7 @@ def reset_game_state() -> None:
 
     global DEADLINE_NS, LAST_SEARCH_INFO, NODES
     TT.clear()
+    EVAL_CACHE.clear()
     HISTORY.clear()
     SEEN_POSITIONS.clear()
     for killers in KILLERS:
@@ -324,7 +327,11 @@ def _evaluate_white(board: chess.Board) -> int:
 
 
 def evaluate(board: chess.Board) -> int:
-    score = _evaluate_white(board)
+    key = board._transposition_key()
+    score = EVAL_CACHE.get(key)
+    if score is None:
+        score = _evaluate_white(board)
+        EVAL_CACHE[key] = score
     return score if board.turn == chess.WHITE else -score
 
 
@@ -649,6 +656,8 @@ def _trim_state() -> None:
     # growth.  Clearing occasionally is cheap and deterministic.
     if len(TT) > 180_000:
         TT.clear()
+    if len(EVAL_CACHE) > 120_000:
+        EVAL_CACHE.clear()
     if len(HISTORY) > 20_000:
         HISTORY.clear()
 
