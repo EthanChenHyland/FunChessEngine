@@ -28,7 +28,8 @@ sizing, orientation preferences, and display toggles. Post-game analysis runs in
 engine process and adds best-move comparisons, CPL, move grades, searched graph points, and a
 non-destructive Retry Move trainer. Crash recovery autosaves interrupted sessions, and a collapsed
 Recent Games library keeps the latest completed/imported games available for one-click review.
-Preferences are stored locally.
+Analyze also supports isolated MultiPV ranking for the top 1, 3, or 5 candidate lines at the live
+or reviewed position. Preferences are stored locally.
 
 ## Writing an agent
 

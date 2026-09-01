@@ -473,6 +473,15 @@ input[type="range"] { height: 28px; padding: 0; border: 0; background: transpare
 .pv-card { margin-bottom: 18px; padding: 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-3); }
 .pv-card .label { margin: 0; }
 .pv-card code { display: block; margin-top: 9px; color: var(--text); font: 11px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: normal; overflow-wrap: anywhere; }
+.multipv-card { margin-bottom: 18px; padding: 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-3); }
+.multipv-card .label { margin: 0; }
+.multipv-lines { display: grid; gap: 6px; margin-top: 10px; }
+.multipv-line { width: 100%; display: grid; grid-template-columns: 22px minmax(48px, auto) 54px minmax(0, 1fr); gap: 7px; align-items: center; padding: 8px; border: 1px solid var(--line); border-radius: 8px; color: var(--text); background: var(--panel-2); text-align: left; }
+.multipv-line:hover, .multipv-line.selected { border-color: var(--line-strong); background: color-mix(in srgb, var(--accent-dark) 58%, var(--panel-2)); }
+.multipv-rank { color: var(--muted); font: 700 9px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.multipv-move { font-size: 11px; font-weight: 800; }
+.multipv-score { color: var(--accent); font: 700 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.multipv-pv { min-width: 0; overflow: hidden; color: var(--muted); font: 9px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
 
 .review-card {
   margin-bottom: 14px;

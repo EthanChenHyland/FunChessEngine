@@ -274,6 +274,14 @@
             <div class="setting-heading"><span class="label">Principal variation</span><span id="searchScore" class="setting-value">—</span></div>
             <code id="pvLine">No completed search yet.</code>
           </div>
+          <div class="multipv-card">
+            <div class="setting-heading"><span class="label">Candidate lines</span><span id="multipvMeta" class="setting-value">Current position</span></div>
+            <div class="row two compact-row">
+              <div><label for="multipvCount">Lines</label><select id="multipvCount"><option value="1">1</option><option value="3" selected>3</option><option value="5">5</option></select></div>
+              <button id="multipvBtn" class="secondary align-end">Analyze position</button>
+            </div>
+            <div id="multipvLines" class="multipv-lines"><p class="hint">Rank the strongest candidate moves for the live or reviewed position.</p></div>
+          </div>
           <div class="setting-group">
             <label for="evalPerspectiveSelect">Evaluation perspective</label>
             <select id="evalPerspectiveSelect"><option value="white">White</option><option value="turn">Side to move</option></select>

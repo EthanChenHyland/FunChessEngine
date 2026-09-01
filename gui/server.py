@@ -159,6 +159,88 @@ def _run_analysis_worker(payload: dict[str, Any]) -> None:
     print(json.dumps({"type": "done"}), flush=True)
 
 
+def _run_multipv_worker(payload: dict[str, Any]) -> None:
+    """Search all legal root moves to expose a few comparable candidate lines."""
+
+    board = chess.Board(str(payload.get("fen", chess.STARTING_FEN)))
+    if not board.is_valid() or board.is_game_over(claim_draw=True):
+        raise ValueError("MultiPV requires a valid non-terminal chess position.")
+    line_count = max(1, min(5, int(payload.get("lines", 3))))
+    budget_ms = max(100, min(2_000, int(payload.get("budget_ms", 350))))
+    legal = list(board.legal_moves)
+    if not legal:
+        raise ValueError("There are no legal candidate moves in this position.")
+
+    agent.reset_game_state()
+    agent.NODES = 0
+    started_ns = time.monotonic_ns()
+    agent.DEADLINE_NS = started_ns + max(20, budget_ms - 8) * 1_000_000
+    preferred = agent.TT.get(agent._key(board))
+    preferred_move = preferred.move if preferred is not None else None
+    completed: list[tuple[int, chess.Move]] = []
+    completed_depth = 0
+
+    for depth in range(1, 16):
+        if time.monotonic_ns() >= agent.DEADLINE_NS:
+            break
+        current: list[tuple[int, chess.Move]] = []
+        try:
+            for move in agent._ordered_moves(board, preferred_move, 0):
+                board.push(move)
+                try:
+                    score = -agent.negamax(board, depth - 1, -agent.INF, agent.INF, 1)
+                finally:
+                    board.pop()
+                current.append((score, move))
+        except agent.SearchTimeout:
+            while board.move_stack:
+                board.pop()
+            break
+        if len(current) == len(legal):
+            completed = current
+            completed_depth = depth
+            preferred_move = max(current, key=lambda item: item[0])[1]
+
+    if not completed:
+        for move in legal:
+            board.push(move)
+            score = -agent.evaluate(board)
+            board.pop()
+            completed.append((score, move))
+
+    completed.sort(key=lambda item: item[0], reverse=True)
+    result_lines: list[dict[str, Any]] = []
+    for rank, (score, move) in enumerate(completed[:line_count], start=1):
+        san = board.san(move)
+        board.push(move)
+        tail = agent._principal_variation(board, max_length=7)
+        board.pop()
+        pv = (move.uci(), *tail)
+        result_lines.append(
+            {
+                "rank": rank,
+                "move": move.uci(),
+                "san": san,
+                "score": int(score),
+                "pv": list(pv),
+                "pv_san": _pv_to_san(board, pv),
+            }
+        )
+    elapsed_ms = max(0, (time.monotonic_ns() - started_ns) // 1_000_000)
+    print(
+        json.dumps(
+            {
+                "depth": completed_depth,
+                "nodes": int(agent.NODES),
+                "elapsed_ms": int(elapsed_ms),
+                "lines": result_lines,
+            },
+            separators=(",", ":"),
+        ),
+        flush=True,
+    )
+
+
 class GameSession:
     """Owns one local board and the clocks used by the browser UI."""
 
@@ -557,6 +639,57 @@ class GameSession:
                 "summary": self._analysis_summary_locked(),
             }
 
+    def multipv(self, ply: int, lines: int = 3, budget_ms: int = 350) -> dict[str, Any]:
+        """Analyze one main-line position in a short-lived isolated worker process."""
+
+        with self.lock:
+            total = len(self.board.move_stack)
+            target = max(0, min(int(ply), total))
+            replay = chess.Board(self.initial_fen)
+            for move in list(self.board.move_stack)[:target]:
+                replay.push(move)
+            worker_budget = max(100, min(2_000, int(budget_ms)))
+            payload = {
+                "fen": replay.fen(),
+                "lines": max(1, min(5, int(lines))),
+                "budget_ms": worker_budget,
+            }
+        if getattr(sys, "frozen", False):
+            command = [sys.executable, "--multipv-worker"]
+        else:
+            command = [sys.executable, "-m", "gui.server", "--multipv-worker"]
+        completed = subprocess.run(
+            command,
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).resolve().parents[1]),
+            timeout=max(8.0, worker_budget / 1_000 * 5 + 3),
+            check=False,
+        )
+        if completed.returncode != 0:
+            detail = (
+                completed.stdout.strip()
+                or completed.stderr.strip()
+                or "MultiPV worker failed."
+            )
+            try:
+                message = json.loads(detail.splitlines()[-1])
+                detail = str(message.get("error", detail))
+            except json.JSONDecodeError:
+                pass
+            raise RuntimeError(detail)
+        lines_out = [line for line in completed.stdout.splitlines() if line.strip()]
+        if not lines_out:
+            raise RuntimeError("MultiPV worker returned no result.")
+        result = json.loads(lines_out[-1])
+        if not isinstance(result, dict):
+            raise RuntimeError("MultiPV worker returned an invalid result.")
+        result["ply"] = target
+        result["total_plies"] = total
+        result["turn"] = "white" if replay.turn == chess.WHITE else "black"
+        return result
+
     def start_analysis(self, budget_ms: int = 100) -> dict[str, Any]:
         """Start isolated main-line analysis without touching the live agent search state."""
 
@@ -923,6 +1056,15 @@ class Handler(SimpleHTTPRequestHandler):
             elif self.path == "/api/cancel-analysis":
                 self._json(SESSION.cancel_analysis())
                 return
+            elif self.path == "/api/multipv":
+                self._json(
+                    SESSION.multipv(
+                        int(payload.get("ply", len(SESSION.board.move_stack))),
+                        int(payload.get("lines", 3)),
+                        int(payload.get("budget_ms", 350)),
+                    )
+                )
+                return
             elif self.path == "/api/undo":
                 SESSION.undo()
             elif self.path == "/api/pause":
@@ -964,6 +1106,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--no-open", action="store_true", help="Do not open a browser tab.")
     parser.add_argument("--analysis-worker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--multipv-worker", action="store_true", help=argparse.SUPPRESS)
     arguments = parser.parse_args()
 
     if arguments.analysis_worker:
@@ -972,6 +1115,17 @@ def main() -> None:
             if not isinstance(payload, dict):
                 raise ValueError("Analysis worker input must be an object.")
             _run_analysis_worker(payload)
+        except Exception as exc:
+            print(json.dumps({"type": "error", "error": str(exc)}), flush=True)
+            raise SystemExit(1) from exc
+        return
+
+    if arguments.multipv_worker:
+        try:
+            payload = json.load(sys.stdin)
+            if not isinstance(payload, dict):
+                raise ValueError("MultiPV worker input must be an object.")
+            _run_multipv_worker(payload)
         except Exception as exc:
             print(json.dumps({"type": "error", "error": str(exc)}), flush=True)
             raise SystemExit(1) from exc

@@ -48,6 +48,9 @@ let startupRecovery = loadRecoverySnapshot();
 let recoveryResolved = !startupRecovery;
 let recentGames = loadRecentGames();
 let archivedResultKey = null;
+let multiPvData = null;
+let multiPvBusy = false;
+let multiPvArrowMove = null;
 
 try {
   localStorage.setItem(RECOVERY_CLEAN_EXIT_KEY, "0");
@@ -62,6 +65,10 @@ function setState(value) {
   state = value;
   if (reviewSeries && reviewSeries.total_plies !== (value.moves_uci?.length || 0)) reviewSeries = null;
   if (value.analysis_status === "idle") gameAnalysis = null;
+  if (multiPvData && multiPvData.total_plies !== (value.moves_uci?.length || 0)) {
+    multiPvData = null;
+    multiPvArrowMove = null;
+  }
   clockAnchorMs = performance.now();
   flagRefreshPending = false;
   scheduleRecoverySave();
@@ -276,7 +283,7 @@ function applyDisplaySettings(renderAfter = true) {
   $("lastMoveToggle").checked = Boolean(display.lastMove);
   $("autoOrientToggle").checked = Boolean(display.autoOrient);
 
-  if (renderAfter && state) renderBoard();
+  if (renderAfter && state) render();
 }
 
 async function api(path, payload = null) {
@@ -455,9 +462,14 @@ function renderBestMoveArrow() {
   const line = $("bestMoveArrow");
   if (!line) return;
   line.hidden = true;
-  if (!retryMode || !retryRevealBest || !retryTargetPly) return;
-  const result = analysisResultForPly(retryTargetPly);
-  const move = String(result?.best_uci || "");
+  let move = "";
+  if (retryMode && retryRevealBest && retryTargetPly) {
+    const result = analysisResultForPly(retryTargetPly);
+    move = String(result?.best_uci || "");
+  } else if (multiPvArrowMove && multiPvData) {
+    const currentPly = reviewMode ? Number(reviewSnapshot?.ply || 0) : (state?.moves_uci?.length || 0);
+    if (Number(multiPvData.ply) === currentPly) move = multiPvArrowMove;
+  }
   if (move.length < 4) return;
   const from = boardPoint(move.slice(0, 2));
   const to = boardPoint(move.slice(2, 4));
@@ -1178,6 +1190,7 @@ function render() {
   renderMoves();
   renderReviewPanel();
   renderAnalysisPanel();
+  renderMultiPvPanel();
   if (reviewMode) {
     $("statusLine").textContent = `Reviewing ply ${reviewSnapshot?.ply ?? 0} of ${reviewSnapshot?.total_plies ?? 0}.`;
   } else if (state.game_over) {
@@ -1272,6 +1285,10 @@ async function jumpReview(ply) {
   if (!state) return;
   reviewSnapshot = await api("/api/review", { ply });
   reviewMode = true;
+  if (multiPvData && Number(multiPvData.ply) !== Number(reviewSnapshot.ply)) {
+    multiPvData = null;
+    multiPvArrowMove = null;
+  }
   selected = null;
   render();
 }
@@ -1385,6 +1402,70 @@ function renderAnalysisPanel() {
   $("retryMoveBtn").hidden = retryMode || !insight;
   $("retryBackBtn").hidden = !retryMode;
   if (failed && gameAnalysis?.error) $("statusLine").textContent = gameAnalysis.error;
+}
+
+function renderMultiPvPanel() {
+  if (!$("multipvLines")) return;
+  const target = $("multipvLines");
+  const currentPly = reviewMode ? Number(reviewSnapshot?.ply || 0) : (state?.moves_uci?.length || 0);
+  const relevant = multiPvData && Number(multiPvData.ply) === currentPly;
+  $("multipvBtn").disabled = multiPvBusy || gameAnalysis?.status === "running" || !state || state.game_over && !reviewMode;
+  $("multipvBtn").textContent = multiPvBusy ? "Searching…" : "Analyze position";
+  $("multipvMeta").textContent = multiPvBusy
+    ? "Searching"
+    : relevant
+    ? `Depth ${multiPvData.depth} · ${Number(multiPvData.nodes || 0).toLocaleString()} nodes · ${multiPvData.elapsed_ms} ms`
+    : `Ply ${currentPly}`;
+  target.innerHTML = "";
+  if (!relevant || !Array.isArray(multiPvData.lines) || !multiPvData.lines.length) {
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = multiPvBusy
+      ? "Searching candidate moves in an isolated engine process…"
+      : "Rank the strongest candidate moves for the live or reviewed position.";
+    target.appendChild(hint);
+    return;
+  }
+  multiPvData.lines.forEach((line) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "multipv-line";
+    button.classList.toggle("selected", multiPvArrowMove === line.move);
+    const displayScore = display.evalPerspective === "white" && multiPvData.turn === "black"
+      ? -Number(line.score || 0)
+      : Number(line.score || 0);
+    const scoreText = `${displayScore >= 0 ? "+" : ""}${(displayScore / 100).toFixed(2)}`;
+    const pv = Array.isArray(line.pv_san) ? line.pv_san.join(" ") : "";
+    button.innerHTML = `<span class="multipv-rank">#${line.rank}</span><span class="multipv-move"></span><span class="multipv-score">${scoreText}</span><span class="multipv-pv"></span>`;
+    button.querySelector(".multipv-move").textContent = line.san || line.move;
+    button.querySelector(".multipv-pv").textContent = pv;
+    button.addEventListener("click", () => {
+      multiPvArrowMove = line.move;
+      renderMultiPvPanel();
+      renderBoard();
+    });
+    target.appendChild(button);
+  });
+}
+
+async function runMultiPv() {
+  if (!state || multiPvBusy || gameAnalysis?.status === "running") return;
+  const ply = reviewMode ? Number(reviewSnapshot?.ply || 0) : (state.moves_uci?.length || 0);
+  const lines = Math.max(1, Math.min(5, Number($("multipvCount").value) || 3));
+  multiPvBusy = true;
+  multiPvArrowMove = null;
+  renderMultiPvPanel();
+  try {
+    multiPvData = await api("/api/multipv", { ply, lines, budget_ms: 350 });
+    $("statusLine").textContent = `Candidate lines searched to depth ${multiPvData.depth}.`;
+  } catch (error) {
+    multiPvData = null;
+    $("statusLine").textContent = error.message;
+  } finally {
+    multiPvBusy = false;
+    renderMultiPvPanel();
+    renderBoard();
+  }
 }
 
 function scheduleAnalysisPoll() {
@@ -1740,6 +1821,7 @@ $("undoBtn").addEventListener("click", async () => {
   if (succeeded) scheduleComputerReply();
 });
 $("engineBtn").addEventListener("click", engineMove);
+$("multipvBtn").addEventListener("click", runMultiPv);
 $("analyzeGameBtn").addEventListener("click", startGameAnalysis);
 $("cancelAnalysisBtn").addEventListener("click", cancelGameAnalysis);
 $("resumeRecoveryBtn").addEventListener("click", resumeRecovery);

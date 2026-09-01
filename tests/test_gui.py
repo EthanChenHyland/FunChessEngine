@@ -135,6 +135,22 @@ class GameSessionTests(unittest.TestCase):
         self.assertEqual(self.game.board.fen(), final_fen)
         self.assertTrue(self.game.paused)
 
+    def test_multipv_returns_ranked_legal_lines_without_mutating_game(self) -> None:
+        self.game.play_move("e2e4")
+        self.game.play_move("e7e5")
+        final_fen = self.game.board.fen()
+        result = self.game.multipv(1, lines=3, budget_ms=120)
+        self.assertEqual(result["ply"], 1)
+        self.assertGreaterEqual(result["depth"], 1)
+        self.assertGreater(result["nodes"], 0)
+        self.assertEqual(len(result["lines"]), 3)
+        review = chess.Board(self.game.initial_fen)
+        review.push(chess.Move.from_uci("e2e4"))
+        moves = [chess.Move.from_uci(item["move"]) for item in result["lines"]]
+        self.assertEqual(len(set(moves)), 3)
+        self.assertTrue(all(move in review.legal_moves for move in moves))
+        self.assertEqual(self.game.board.fen(), final_fen)
+
     def test_human_clock_consumes_time_and_applies_increment(self) -> None:
         self.game.reset(clock_ms=10_000, increment_ms=2_000)
         self.game.turn_started_ns -= 1_000_000_000
