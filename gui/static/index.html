@@ -54,6 +54,7 @@
           <button class="tab active" data-tab="game">Play</button>
           <button class="tab" data-tab="position">Files</button>
           <button class="tab" data-tab="engine">Analyze</button>
+          <button class="tab" data-tab="train">Train</button>
           <button class="tab" data-tab="display">Appearance</button>
         </nav>
 
@@ -64,6 +65,7 @@
           </div>
           <div class="eval-track"><div id="evalBar" class="eval-bar"></div></div>
           <div id="statusLine" class="status-line">Ready.</div>
+          <div id="openingLine" class="opening-line"><span id="openingEco">—</span><strong id="openingName">Opening not identified</strong><span id="phaseLabel">Opening</span></div>
 
           <div class="section-card play-controls">
             <label for="humanSide">Game mode</label>
@@ -232,6 +234,33 @@
             <p class="shortcut-hint">Review: <kbd>←</kbd>/<kbd>→</kbd> move · <kbd>Home</kbd>/<kbd>End</kbd> ends · <kbd>Esc</kbd> return</p>
           </div>
 
+          <div class="variation-card">
+            <div class="setting-heading"><span class="label">Analysis workspace</span><span id="variationStatus" class="setting-value">Main line</span></div>
+            <p class="hint">Branch from the live or reviewed position without changing the saved game. Add comments, annotations, and alternate continuations.</p>
+            <div class="row two compact-row">
+              <button id="variationStartBtn" class="secondary">Branch from here</button>
+              <button id="variationExitBtn" class="secondary" hidden>Return to review</button>
+            </div>
+            <div id="variationControls" hidden>
+              <div class="variation-toolbar">
+                <button id="variationBackBtn" class="secondary compact">← Parent</button>
+                <button id="variationDeleteBtn" class="text-button">Delete branch</button>
+              </div>
+              <div id="variationBreadcrumb" class="variation-breadcrumb"></div>
+              <div id="variationChildren" class="variation-children"></div>
+              <label for="variationNag">Annotation</label>
+              <select id="variationNag"><option value="">None</option><option value="!">!</option><option value="?">?</option><option value="!!">!!</option><option value="??">??</option><option value="!?">!?</option><option value="?!">?!</option></select>
+              <label for="variationComment">Comment</label>
+              <textarea id="variationComment" rows="3" placeholder="Why does this line matter?"></textarea>
+              <div class="annotation-controls">
+                <label for="annotationColor">Board markup</label>
+                <select id="annotationColor"><option value="amber">Amber</option><option value="cyan">Cyan</option><option value="violet">Violet</option><option value="lime">Lime</option></select>
+                <button id="clearAnnotationsBtn" class="secondary compact">Clear marks</button>
+              </div>
+              <p class="shortcut-hint">Right-click a square to highlight · right-drag to draw an arrow.</p>
+            </div>
+          </div>
+
           <div class="analysis-card">
             <div class="setting-heading"><span class="label">Post-game analysis</span><span id="analysisStatus" class="setting-value">Not analyzed</span></div>
             <p class="hint">Search every played position in an isolated local engine process, then compare the played move with the engine's best continuation.</p>
@@ -251,14 +280,19 @@
               <div class="analysis-progress-meta"><span id="analysisProgressText">0 / 0</span><button id="cancelAnalysisBtn" class="text-button">Cancel</button></div>
             </div>
             <div id="analysisSummary" class="analysis-summary" hidden>
+              <div><span>FunChess accuracy</span><strong id="accuracyScore">—</strong></div>
               <div><span>White avg CPL</span><strong id="whiteCpl">—</strong></div>
               <div><span>Black avg CPL</span><strong id="blackCpl">—</strong></div>
+              <div><span>Opening CPL</span><strong id="openingCpl">—</strong></div>
+              <div><span>Middlegame CPL</span><strong id="middlegameCpl">—</strong></div>
+              <div><span>Endgame CPL</span><strong id="endgameCpl">—</strong></div>
               <div><span>Mistakes</span><strong id="mistakeCount">0</strong></div>
               <div><span>Blunders</span><strong id="blunderCount">0</strong></div>
             </div>
             <div id="moveInsight" class="move-insight" hidden>
               <div class="move-insight-head"><strong id="moveInsightClass">Good</strong><span id="moveInsightCpl">0 CPL</span></div>
               <p id="moveInsightText"></p>
+              <p id="moveInsightExplain" class="move-explanation"></p>
               <code id="moveInsightPv"></code>
               <div class="retry-actions"><button id="retryMoveBtn" class="secondary compact">Retry this move</button><button id="retryBackBtn" class="secondary compact" hidden>Back to review</button></div>
             </div>
@@ -274,6 +308,15 @@
             <div class="setting-heading"><span class="label">Principal variation</span><span id="searchScore" class="setting-value">—</span></div>
             <code id="pvLine">No completed search yet.</code>
           </div>
+          <div class="eval-breakdown-card">
+            <div class="setting-heading"><span class="label">Evaluation breakdown</span><span id="breakdownTotal" class="setting-value">—</span></div>
+            <div class="eval-breakdown-grid">
+              <div><span>Material</span><strong id="breakdownMaterial">—</strong></div>
+              <div><span>Mobility</span><strong id="breakdownMobility">—</strong></div>
+              <div><span>King safety</span><strong id="breakdownKing">—</strong></div>
+              <div><span>Position + pawns</span><strong id="breakdownPosition">—</strong></div>
+            </div>
+          </div>
           <div class="multipv-card">
             <div class="setting-heading"><span class="label">Candidate lines</span><span id="multipvMeta" class="setting-value">Current position</span></div>
             <div class="row two compact-row">
@@ -281,6 +324,11 @@
               <button id="multipvBtn" class="secondary align-end">Analyze position</button>
             </div>
             <div id="multipvLines" class="multipv-lines"><p class="hint">Rank the strongest candidate moves for the live or reviewed position.</p></div>
+          </div>
+          <div class="opening-explorer-card">
+            <div class="setting-heading"><span class="label">Personal opening explorer</span><span id="explorerMeta" class="setting-value">Local games</span></div>
+            <p class="hint">Uses your recent local games to show what was played next from the current position.</p>
+            <div id="openingExplorer" class="opening-explorer"><p class="hint">Play or save more games to build personal opening statistics.</p></div>
           </div>
           <div class="setting-group">
             <label for="evalPerspectiveSelect">Evaluation perspective</label>
@@ -298,6 +346,35 @@
           </details>
         </div>
 
+        <div id="trainTab" class="tab-panel">
+          <div class="trainer-card">
+            <div class="setting-heading"><span class="label">Personal mistake trainer</span><span id="trainerCount" class="setting-value">0 positions</span></div>
+            <p class="hint">Analyzed inaccuracies, mistakes, and blunders become local puzzles. They never alter the saved game.</p>
+            <div class="trainer-stats">
+              <div><span>Due</span><strong id="trainerDue">0</strong></div>
+              <div><span>Solved</span><strong id="trainerSolved">0</strong></div>
+              <div><span>Streak</span><strong id="trainerStreak">0</strong></div>
+            </div>
+            <button id="trainerStartBtn" class="primary full">Start training</button>
+            <div id="trainerSession" hidden>
+              <div class="setting-heading"><span id="trainerLabel" class="label">Find the best move</span><span id="trainerProgress" class="setting-value">1 / 1</span></div>
+              <p id="trainerPrompt" class="hint">Play the move FunChessEngine preferred.</p>
+              <div class="row two compact-row">
+                <button id="trainerHintBtn" class="secondary">Hint</button>
+                <button id="trainerExitBtn" class="secondary">End session</button>
+              </div>
+            </div>
+          </div>
+          <div class="trainer-card">
+            <div class="setting-heading"><span class="label">Weakness profile</span><span class="setting-value">From analysis</span></div>
+            <div id="weaknessProfile" class="weakness-profile"><p class="hint">Analyze games to build opening, middlegame, and endgame weakness statistics.</p></div>
+          </div>
+          <div class="trainer-card">
+            <div class="setting-heading"><span class="label">Training queue</span><button id="clearTrainerBtn" class="text-button">Clear</button></div>
+            <div id="trainerQueue" class="trainer-queue"></div>
+          </div>
+        </div>
+
         <div id="displayTab" class="tab-panel">
           <div class="row two display-selects">
             <div><label for="themeSelect">Board theme</label><select id="themeSelect"><option value="forest">Forest</option><option value="walnut">Walnut</option><option value="ocean">Ocean</option><option value="slate">Slate</option></select></div>
@@ -312,9 +389,10 @@
             <label class="toggle"><span><strong>Legal moves</strong><small>Destination dots and capture rings</small></span><input id="targetsToggle" type="checkbox" checked><i></i></label>
             <label class="toggle"><span><strong>Last move</strong><small>Highlight the previous move</small></span><input id="lastMoveToggle" type="checkbox" checked><i></i></label>
             <label class="toggle"><span><strong>Auto orientation</strong><small>Face the board toward the human side</small></span><input id="autoOrientToggle" type="checkbox" checked><i></i></label>
+            <label class="toggle"><span><strong>Move sounds</strong><small>Subtle local move/capture feedback</small></span><input id="soundToggle" type="checkbox" checked><i></i></label>
           </div>
           <button id="resetDisplayBtn" class="secondary full">Reset appearance</button>
-          <p class="shortcut-hint">Keyboard: <kbd>F</kbd> flip · <kbd>U</kbd> undo · <kbd>E</kbd> engine · <kbd>Space</kbd> pause · <kbd>Esc</kbd> clear</p>
+          <p class="shortcut-hint">Keyboard: <kbd>⌘K</kbd> commands · <kbd>F</kbd> flip · <kbd>U</kbd> undo · <kbd>E</kbd> engine · <kbd>Space</kbd> pause · <kbd>Esc</kbd> clear</p>
         </div>
       </aside>
     </section>
@@ -352,6 +430,14 @@
       <div class="dialog-actions"><button class="secondary" value="cancel">Cancel</button><button id="actionConfirmBtn" class="primary" value="confirm">Continue</button></div>
     </form>
   </dialog>
+  <dialog id="commandDialog" class="command-dialog" aria-labelledby="commandTitle">
+    <div class="command-shell">
+      <div class="dialog-head"><div><p class="eyebrow">COMMAND PALETTE</p><h2 id="commandTitle">Go anywhere</h2></div><button id="commandCloseBtn" class="dialog-close" aria-label="Close">×</button></div>
+      <input id="commandSearch" type="search" placeholder="Search commands…" autocomplete="off">
+      <div id="commandResults" class="command-results"></div>
+    </div>
+  </dialog>
+  <div id="dropOverlay" class="drop-overlay" hidden><div><strong>Open in FunChessEngine</strong><span>Drop PGN, FEN, or saved PNG</span></div></div>
   <script src="/app.js?v=8"></script>
 </body>
 </html>

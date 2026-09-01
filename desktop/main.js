@@ -178,6 +178,16 @@ function installMenu() {
       ],
     },
     {
+      label: "Analyze",
+      submenu: [
+        { label: "Analyze Game", accelerator: "CmdOrCtrl+Shift+A", click: () => sendCommand("analyze-game") },
+        { label: "Candidate Lines", accelerator: "CmdOrCtrl+Alt+A", click: () => sendCommand("multipv") },
+        { label: "Branch From Position", accelerator: "CmdOrCtrl+Alt+V", click: () => sendCommand("variation") },
+        { type: "separator" },
+        { label: "Mistake Trainer", accelerator: "CmdOrCtrl+Shift+T", click: () => sendCommand("trainer") },
+      ],
+    },
+    {
       label: "View",
       submenu: [
         ...(!app.isPackaged ? [
@@ -189,6 +199,8 @@ function installMenu() {
         { role: "resetZoom" },
         { role: "zoomIn" },
         { role: "zoomOut" },
+        { type: "separator" },
+        { label: "Command Palette…", accelerator: "CmdOrCtrl+K", click: () => sendCommand("command-palette") },
         { type: "separator" },
         { role: "togglefullscreen" },
       ],

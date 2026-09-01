@@ -15,6 +15,7 @@ import argparse
 import errno
 import io
 import json
+import math
 import subprocess
 import sys
 import threading
@@ -36,6 +37,72 @@ else:
     ROOT = Path(__file__).resolve().parent
 DEFAULT_CLOCK_MS = 120_000
 DEFAULT_INCREMENT_MS = 500
+
+# A compact original opening recognizer for the most common families.  This is
+# intentionally local metadata rather than a bundled third-party opening book.
+# Longest matching UCI prefix wins.
+OPENING_PREFIXES: dict[tuple[str, ...], tuple[str, str]] = {
+    ("e2e4",): ("B00", "King's Pawn Game"),
+    ("d2d4",): ("A40", "Queen's Pawn Game"),
+    ("c2c4",): ("A10", "English Opening"),
+    ("g1f3",): ("A04", "Réti Opening"),
+    ("e2e4", "c7c5"): ("B20", "Sicilian Defense"),
+    ("e2e4", "e7e6"): ("C00", "French Defense"),
+    ("e2e4", "c7c6"): ("B10", "Caro-Kann Defense"),
+    ("e2e4", "e7e5"): ("C20", "Open Game"),
+    ("e2e4", "e7e5", "g1f3", "b8c6", "f1b5"): ("C60", "Ruy Lopez"),
+    ("e2e4", "e7e5", "g1f3", "b8c6", "f1c4"): ("C50", "Italian Game"),
+    ("e2e4", "e7e5", "g1f3", "g8f6"): ("C42", "Petrov's Defense"),
+    ("e2e4", "e7e5", "f2f4"): ("C30", "King's Gambit"),
+    ("e2e4", "c7c5", "g1f3", "d7d6"): ("B50", "Sicilian · Modern"),
+    ("e2e4", "c7c5", "g1f3", "b8c6"): ("B30", "Sicilian · Old Sicilian"),
+    ("e2e4", "c7c5", "g1f3", "e7e6"): ("B40", "Sicilian · French Variation"),
+    ("d2d4", "d7d5", "c2c4"): ("D06", "Queen's Gambit"),
+    ("d2d4", "d7d5", "c2c4", "e7e6"): ("D30", "Queen's Gambit Declined"),
+    ("d2d4", "d7d5", "c2c4", "c7c6"): ("D10", "Slav Defense"),
+    ("d2d4", "g8f6", "c2c4", "e7e6"): ("E00", "Indian Game"),
+    ("d2d4", "g8f6", "c2c4", "g7g6"): ("E60", "King's Indian Defense"),
+    ("d2d4", "g8f6", "c2c4", "e7e6", "b1c3", "f8b4"): ("E20", "Nimzo-Indian Defense"),
+    ("c2c4", "e7e5"): ("A20", "English · King's English"),
+    ("c2c4", "c7c5"): ("A30", "English · Symmetrical"),
+    ("g1f3", "d7d5", "g2g3"): ("A05", "Réti · King's Indian Attack setup"),
+}
+
+
+def _phase_name(board: chess.Board) -> str:
+    """Return a coarse human-facing phase label for review summaries."""
+
+    if board.fullmove_number <= 10:
+        return "opening"
+    queens = len(board.pieces(chess.QUEEN, chess.WHITE)) + len(
+        board.pieces(chess.QUEEN, chess.BLACK)
+    )
+    non_pawn = sum(
+        len(board.pieces(piece, color)) * agent.MG_VALUE[piece]
+        for color in (chess.WHITE, chess.BLACK)
+        for piece in (chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN)
+    )
+    if queens == 0 or non_pawn <= 2_600:
+        return "endgame"
+    return "middlegame"
+
+
+def _opening_from_moves(initial_fen: str, moves: list[str]) -> dict[str, Any] | None:
+    if initial_fen != chess.STARTING_FEN:
+        return None
+    best: tuple[tuple[str, ...], tuple[str, str]] | None = None
+    move_tuple = tuple(moves)
+    for prefix, metadata in OPENING_PREFIXES.items():
+        if (
+            len(prefix) <= len(move_tuple)
+            and move_tuple[: len(prefix)] == prefix
+            and (best is None or len(prefix) > len(best[0]))
+        ):
+            best = (prefix, metadata)
+    if best is None:
+        return None
+    prefix, (eco, name) = best
+    return {"eco": eco, "name": name, "book_plies": len(prefix)}
 
 
 def _analysis_time_left_ms(board: chess.Board, target_budget_ms: int) -> int:
@@ -92,6 +159,54 @@ def _pv_to_san(board: chess.Board, pv: tuple[str, ...]) -> list[str]:
     return result
 
 
+def _move_explanation(
+    board: chess.Board,
+    move: chess.Move,
+    classification: str,
+    best_san: str,
+) -> str:
+    """Build a deterministic human-facing explanation from chess features."""
+
+    piece = board.piece_at(move.from_square)
+    reasons: list[str] = []
+    san = board.san(move)
+    if board.is_castling(move):
+        reasons.append("improves king safety by castling")
+    if board.is_capture(move):
+        victim = _captured_name(board, move)
+        reasons.append(f"captures {victim}" if victim else "makes a capture")
+    if move.promotion:
+        reasons.append(f"promotes to a {chess.piece_name(move.promotion)}")
+    child = board.copy(stack=False)
+    child.push(move)
+    if child.is_check():
+        reasons.append("gives check")
+    if piece is not None and piece.piece_type in {chess.KNIGHT, chess.BISHOP}:
+        home_rank = 0 if piece.color == chess.WHITE else 7
+        if chess.square_rank(move.from_square) == home_rank:
+            reasons.append("develops a minor piece")
+    if piece is not None and piece.piece_type == chess.PAWN:
+        file_index = chess.square_file(move.to_square)
+        if file_index in {3, 4}:
+            reasons.append("contests the center")
+    if not reasons:
+        reasons.append("changes piece activity and control of key squares")
+    lead = f"{san} {', '.join(reasons[:3])}."
+    if classification in {"Mistake", "Blunder", "Inaccuracy"} and san != best_san:
+        return f"{lead} The engine preferred {best_san}, which preserves a stronger evaluation."
+    if classification in {"Best", "Excellent"}:
+        return f"{lead} It keeps the position close to the engine's preferred continuation."
+    return lead
+
+
+def _captured_name(board: chess.Board, move: chess.Move) -> str | None:
+    square = move.to_square
+    if board.is_en_passant(move):
+        square += -8 if board.turn == chess.WHITE else 8
+    piece = board.piece_at(square)
+    return chess.piece_name(piece.piece_type) if piece is not None else None
+
+
 def _run_analysis_worker(payload: dict[str, Any]) -> None:
     """Analyze a main line in an isolated process and stream one JSON record per ply."""
 
@@ -109,6 +224,8 @@ def _run_analysis_worker(payload: dict[str, Any]) -> None:
         if move not in board.legal_moves:
             raise ValueError(f"Analysis move {move.uci()} is illegal at ply {index}.")
         mover = board.turn
+        fen_before = board.fen()
+        phase = _phase_name(board)
         legal_count = board.legal_moves.count()
         played_san = board.san(move)
 
@@ -137,12 +254,16 @@ def _run_analysis_worker(payload: dict[str, Any]) -> None:
         classification = _review_classification(cpl, move == best_move, legal_count)
         eval_after_white = played_score_mover if mover == chess.WHITE else -played_score_mover
         best_eval_white = best_score_mover if mover == chess.WHITE else -best_score_mover
+        explanation = _move_explanation(board, move, classification, best_san)
         record = {
             "type": "move",
             "ply": index,
             "mover": "white" if mover == chess.WHITE else "black",
             "played_uci": move.uci(),
             "played_san": played_san,
+            "fen_before": fen_before,
+            "phase": phase,
+            "explanation": explanation,
             "best_uci": best_uci,
             "best_san": best_san,
             "classification": classification,
@@ -476,6 +597,82 @@ class GameSession:
         score = agent.evaluate(board)
         return score if board.turn == chess.WHITE else -score
 
+    @classmethod
+    def _position_payload(
+        cls,
+        board: chess.Board,
+        last_move: chess.Move | None = None,
+    ) -> dict[str, Any]:
+        captured_by_white, captured_by_black = cls._captures(board)
+        legal = list(board.legal_moves)
+        return {
+            "fen": board.fen(),
+            "turn": "white" if board.turn == chess.WHITE else "black",
+            "board": cls._board_payload(board),
+            "legal_moves": [move.uci() for move in legal],
+            "legal_san": {move.uci(): board.san(move) for move in legal},
+            "last_move": last_move.uci() if last_move else None,
+            "eval_cp": cls._white_eval(board),
+            "check": board.is_check(),
+            "game_over": board.is_game_over(claim_draw=True),
+            "captured_by_white": captured_by_white,
+            "captured_by_black": captured_by_black,
+            "material_balance": cls._material_balance(board),
+            "phase": _phase_name(board),
+        }
+
+    def position_from_fen(self, fen: str) -> dict[str, Any]:
+        board = chess.Board(fen)
+        if not board.is_valid():
+            raise ValueError("Analysis workspace requires a valid chess position.")
+        return self._position_payload(board)
+
+    def variation_move(self, fen: str, uci: str) -> dict[str, Any]:
+        board = chess.Board(fen)
+        if not board.is_valid():
+            raise ValueError("Variation starts from an invalid chess position.")
+        try:
+            move = chess.Move.from_uci(uci)
+        except ValueError as exc:
+            raise ValueError("Variation move is malformed.") from exc
+        if move not in board.legal_moves:
+            raise ValueError("Variation move is not legal in this position.")
+        san = board.san(move)
+        board.push(move)
+        result = self._position_payload(board, move)
+        result["move_uci"] = move.uci()
+        result["move_san"] = san
+        return result
+
+    def evaluation_breakdown(self, fen: str) -> dict[str, Any]:
+        """Expose a compact white-perspective decomposition for the local GUI."""
+
+        board = chess.Board(fen)
+        if not board.is_valid():
+            raise ValueError("Evaluation breakdown requires a valid chess position.")
+        material = 0
+        for piece_type in range(chess.PAWN, chess.KING):
+            material += agent.MG_VALUE[piece_type] * (
+                len(board.pieces(piece_type, chess.WHITE))
+                - len(board.pieces(piece_type, chess.BLACK))
+            )
+        mobility = 3 * (
+            agent._mobility(board, chess.WHITE) - agent._mobility(board, chess.BLACK)
+        )
+        king_safety = agent._king_safety(board, chess.WHITE) - agent._king_safety(
+            board, chess.BLACK
+        )
+        total = self._white_eval(board)
+        positional = total - material - mobility - king_safety
+        return {
+            "fen": board.fen(),
+            "total": int(total),
+            "material": int(material),
+            "mobility": int(mobility),
+            "king_safety": int(king_safety),
+            "position_pawns": int(positional),
+        }
+
     def load_pgn(self, text: str) -> None:
         """Load the main line of one PGN as a paused/reviewable game."""
 
@@ -570,6 +767,7 @@ class GameSession:
                 replay.push(move)
             last_move = moves[target - 1].uci() if target else None
             captured_by_white, captured_by_black = self._captures(replay)
+            opening = _opening_from_moves(self.initial_fen, [move.uci() for move in moves[:target]])
             return {
                 "ply": target,
                 "total_plies": total,
@@ -577,12 +775,15 @@ class GameSession:
                 "turn": "white" if replay.turn == chess.WHITE else "black",
                 "board": self._board_payload(replay),
                 "legal_moves": [move.uci() for move in replay.legal_moves],
+                "legal_san": {move.uci(): replay.san(move) for move in replay.legal_moves},
                 "last_move": last_move,
                 "eval_cp": self._white_eval(replay),
                 "check": replay.is_check(),
                 "captured_by_white": captured_by_white,
                 "captured_by_black": captured_by_black,
                 "material_balance": self._material_balance(replay),
+                "phase": _phase_name(replay),
+                "opening": opening,
             }
 
     def review_series(self) -> dict[str, Any]:
@@ -602,6 +803,8 @@ class GameSession:
 
     def _analysis_summary_locked(self) -> dict[str, Any]:
         by_side: dict[str, list[int]] = {"white": [], "black": []}
+        phase_cpl: dict[str, list[int]] = {"opening": [], "middlegame": [], "endgame": []}
+        class_counts: dict[str, int] = {}
         counts = {"Inaccuracy": 0, "Mistake": 0, "Blunder": 0}
         biggest: dict[str, Any] | None = None
         for result in self.analysis_results:
@@ -610,10 +813,24 @@ class GameSession:
             if mover in by_side:
                 by_side[mover].append(cpl)
             classification = str(result.get("classification", ""))
+            class_counts[classification] = class_counts.get(classification, 0) + 1
             if classification in counts:
                 counts[classification] += 1
+            phase = str(result.get("phase", "middlegame"))
+            if phase in phase_cpl:
+                phase_cpl[phase].append(cpl)
             if biggest is None or cpl > int(biggest.get("cpl", -1)):
                 biggest = result
+        all_cpl = [max(0, int(result.get("cpl", 0))) for result in self.analysis_results]
+        # FunChess Accuracy is intentionally our own transparent local metric.
+        accuracy = (
+            round(
+                sum(100.0 * math.exp(-value / 300.0) for value in all_cpl) / len(all_cpl),
+                1,
+            )
+            if all_cpl
+            else 0.0
+        )
         return {
             "white_avg_cpl": round(sum(by_side["white"]) / len(by_side["white"]), 1)
             if by_side["white"]
@@ -624,6 +841,12 @@ class GameSession:
             "inaccuracies": counts["Inaccuracy"],
             "mistakes": counts["Mistake"],
             "blunders": counts["Blunder"],
+            "accuracy": accuracy,
+            "classifications": class_counts,
+            "phase_avg_cpl": {
+                phase: round(sum(values) / len(values), 1) if values else None
+                for phase, values in phase_cpl.items()
+            },
             "biggest_turning_point": biggest,
         }
 
@@ -654,6 +877,41 @@ class GameSession:
                 "lines": max(1, min(5, int(lines))),
                 "budget_ms": worker_budget,
             }
+        return self._multipv_payload(
+            payload,
+            target=target,
+            total=total,
+            turn="white" if replay.turn == chess.WHITE else "black",
+        )
+
+    def multipv_fen(self, fen: str, lines: int = 3, budget_ms: int = 350) -> dict[str, Any]:
+        """Analyze an arbitrary valid position without touching the live game."""
+
+        board = chess.Board(fen)
+        if not board.is_valid() or board.is_game_over(claim_draw=True):
+            raise ValueError("MultiPV requires a valid non-terminal chess position.")
+        worker_budget = max(100, min(2_000, int(budget_ms)))
+        payload = {
+            "fen": board.fen(),
+            "lines": max(1, min(5, int(lines))),
+            "budget_ms": worker_budget,
+        }
+        return self._multipv_payload(
+            payload,
+            target=-1,
+            total=len(self.board.move_stack),
+            turn="white" if board.turn == chess.WHITE else "black",
+        )
+
+    def _multipv_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        target: int,
+        total: int,
+        turn: str,
+    ) -> dict[str, Any]:
+        worker_budget = int(payload["budget_ms"])
         if getattr(sys, "frozen", False):
             command = [sys.executable, "--multipv-worker"]
         else:
@@ -687,7 +945,8 @@ class GameSession:
             raise RuntimeError("MultiPV worker returned an invalid result.")
         result["ply"] = target
         result["total_plies"] = total
-        result["turn"] = "white" if replay.turn == chess.WHITE else "black"
+        result["turn"] = turn
+        result["fen"] = str(payload["fen"])
         return result
 
     def start_analysis(self, budget_ms: int = 100) -> dict[str, Any]:
@@ -803,12 +1062,15 @@ class GameSession:
             flagged = self._clock_flag(white_ms, black_ms)
             captured_by_white, captured_by_black = self._captures(board)
             legal_moves = [move.uci() for move in board.legal_moves]
+            legal_san = {move.uci(): board.san(move) for move in board.legal_moves}
             eval_cp = self._white_eval(board)
+            opening = _opening_from_moves(self.initial_fen, self._moves_uci())
             return {
                 "fen": board.fen(),
                 "turn": "white" if board.turn == chess.WHITE else "black",
                 "board": self._board_payload(board),
                 "legal_moves": legal_moves,
+                "legal_san": legal_san,
                 "last_move": self.last_move.uci() if self.last_move else None,
                 "white_ms": white_ms,
                 "black_ms": black_ms,
@@ -860,6 +1122,8 @@ class GameSession:
                 "last_engine_researches": self.last_engine_researches,
                 "analysis_status": self.analysis_status,
                 "analysis_total": self.analysis_total,
+                "phase": _phase_name(board),
+                "opening": opening,
             }
 
     @staticmethod
@@ -1057,11 +1321,35 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json(SESSION.cancel_analysis())
                 return
             elif self.path == "/api/multipv":
-                self._json(
-                    SESSION.multipv(
+                if payload.get("fen"):
+                    result = SESSION.multipv_fen(
+                        str(payload["fen"]),
+                        int(payload.get("lines", 3)),
+                        int(payload.get("budget_ms", 350)),
+                    )
+                else:
+                    result = SESSION.multipv(
                         int(payload.get("ply", len(SESSION.board.move_stack))),
                         int(payload.get("lines", 3)),
                         int(payload.get("budget_ms", 350)),
+                    )
+                self._json(result)
+                return
+            elif self.path == "/api/position":
+                self._json(SESSION.position_from_fen(str(payload.get("fen", chess.STARTING_FEN))))
+                return
+            elif self.path == "/api/variation-move":
+                self._json(
+                    SESSION.variation_move(
+                        str(payload.get("fen", chess.STARTING_FEN)),
+                        str(payload.get("move", "")),
+                    )
+                )
+                return
+            elif self.path == "/api/eval-breakdown":
+                self._json(
+                    SESSION.evaluation_breakdown(
+                        str(payload.get("fen", chess.STARTING_FEN))
                     )
                 )
                 return

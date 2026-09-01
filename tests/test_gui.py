@@ -151,6 +151,41 @@ class GameSessionTests(unittest.TestCase):
         self.assertTrue(all(move in review.legal_moves for move in moves))
         self.assertEqual(self.game.board.fen(), final_fen)
 
+    def test_arbitrary_variation_position_is_non_destructive(self) -> None:
+        self.game.play_move("e2e4")
+        live_fen = self.game.board.fen()
+        root = self.game.position_from_fen(chess.STARTING_FEN)
+        self.assertIn("e2e4", root["legal_moves"])
+        self.assertEqual(root["legal_san"]["e2e4"], "e4")
+        child = self.game.variation_move(chess.STARTING_FEN, "d2d4")
+        self.assertEqual(child["move_san"], "d4")
+        self.assertEqual(child["turn"], "black")
+        self.assertEqual(self.game.board.fen(), live_fen)
+
+    def test_opening_recognition_and_review_phase_are_exposed(self) -> None:
+        for move in ("e2e4", "e7e5", "g1f3", "b8c6", "f1b5"):
+            self.game.play_move(move)
+        state = self.game.state()
+        self.assertEqual(state["opening"]["eco"], "C60")
+        self.assertEqual(state["opening"]["name"], "Ruy Lopez")
+        review = self.game.review_state(5)
+        self.assertEqual(review["opening"]["eco"], "C60")
+        self.assertEqual(review["phase"], "opening")
+
+    def test_evaluation_breakdown_is_non_destructive_and_sums_to_total(self) -> None:
+        self.game.play_move("e2e4")
+        live_fen = self.game.board.fen()
+        result = self.game.evaluation_breakdown(live_fen)
+        self.assertEqual(result["fen"], live_fen)
+        self.assertEqual(
+            result["total"],
+            result["material"]
+            + result["mobility"]
+            + result["king_safety"]
+            + result["position_pawns"],
+        )
+        self.assertEqual(self.game.board.fen(), live_fen)
+
     def test_human_clock_consumes_time_and_applies_increment(self) -> None:
         self.game.reset(clock_ms=10_000, increment_ms=2_000)
         self.game.turn_started_ns -= 1_000_000_000

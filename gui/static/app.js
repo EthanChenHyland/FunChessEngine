@@ -8,6 +8,8 @@ const DISPLAY_KEY = "funChessEngine.display.v1";
 const RECOVERY_KEY = "funChessEngine.recovery.v1";
 const RECOVERY_CLEAN_EXIT_KEY = "funChessEngine.recovery.cleanExit.v1";
 const RECENTS_KEY = "funChessEngine.recents.v1";
+const TRAINER_KEY = "funChessEngine.trainer.v1";
+const ANNOTATIONS_KEY = "funChessEngine.annotations.v1";
 const DISPLAY_DEFAULTS = {
   theme: "forest",
   accent: "lime",
@@ -17,6 +19,7 @@ const DISPLAY_DEFAULTS = {
   lastMove: true,
   autoOrient: true,
   evalPerspective: "white",
+  sound: true,
 };
 
 let state = null;
@@ -51,6 +54,23 @@ let archivedResultKey = null;
 let multiPvData = null;
 let multiPvBusy = false;
 let multiPvArrowMove = null;
+let variationMode = false;
+let variationWorkspace = null;
+let variationNodeId = null;
+let annotationDragFrom = null;
+let annotations = loadAnnotations();
+let trainerItems = loadTrainerItems();
+let trainerMode = false;
+let trainerSnapshot = null;
+let trainerItemIndex = -1;
+let trainerSelected = null;
+let trainerRevealBest = false;
+let trainerSessionSolved = 0;
+let trainerSessionStreak = 0;
+let trainerWasPaused = false;
+let commandSelection = 0;
+let evalBreakdownData = null;
+let evalBreakdownBusy = false;
 
 try {
   localStorage.setItem(RECOVERY_CLEAN_EXIT_KEY, "0");
@@ -64,7 +84,11 @@ const $ = (id) => document.getElementById(id);
 function setState(value) {
   state = value;
   if (reviewSeries && reviewSeries.total_plies !== (value.moves_uci?.length || 0)) reviewSeries = null;
-  if (value.analysis_status === "idle") gameAnalysis = null;
+  if (
+    value.analysis_status === "idle"
+    && gameAnalysis?.results?.length
+    && gameAnalysis.results.length !== (value.moves_uci?.length || 0)
+  ) gameAnalysis = null;
   if (multiPvData && multiPvData.total_plies !== (value.moves_uci?.length || 0)) {
     multiPvData = null;
     multiPvArrowMove = null;
@@ -95,6 +119,86 @@ function loadRecentGames() {
   }
 }
 
+function loadAnnotations() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(ANNOTATIONS_KEY) || "{}");
+    return saved && typeof saved === "object" ? saved : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function saveAnnotations() {
+  try {
+    const entries = Object.entries(annotations).slice(-160);
+    localStorage.setItem(ANNOTATIONS_KEY, JSON.stringify(Object.fromEntries(entries)));
+  } catch (_) {
+    // Board markup is optional local metadata.
+  }
+}
+
+function loadTrainerItems() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(TRAINER_KEY) || "[]");
+    return Array.isArray(saved) ? saved.filter((item) => item?.fen && item?.best_uci).slice(0, 250) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function saveTrainerItems() {
+  try {
+    localStorage.setItem(TRAINER_KEY, JSON.stringify(trainerItems.slice(0, 250)));
+  } catch (_) {
+    // Trainer history is optional local data.
+  }
+}
+
+function cacheCurrentAnalysis() {
+  if (!state || !gameAnalysis?.results?.length) return;
+  const snapshot = gameSnapshot();
+  const signature = gameSignature(snapshot);
+  const existing = recentGames.findIndex((item) => gameSignature(item) === signature);
+  if (existing >= 0) {
+    recentGames[existing] = { ...recentGames[existing], analysis: gameAnalysis };
+    saveRecentGames();
+  }
+  persistRecoverySnapshot();
+}
+
+function ingestTrainerFromAnalysis() {
+  if (!gameAnalysis?.results?.length) return;
+  const source = state ? gameSignature(gameSnapshot()) : "analysis";
+  let changed = false;
+  for (const result of gameAnalysis.results) {
+    const cpl = Number(result.cpl || 0);
+    if (!result.fen_before || !result.best_uci || cpl < 80) continue;
+    const key = `${result.fen_before}|${result.best_uci}`;
+    if (trainerItems.some((item) => item.key === key)) continue;
+    trainerItems.unshift({
+      key,
+      fen: result.fen_before,
+      best_uci: result.best_uci,
+      best_san: result.best_san,
+      played_san: result.played_san,
+      classification: result.classification,
+      cpl,
+      phase: result.phase || "middlegame",
+      explanation: result.explanation || "",
+      source,
+      created_at: new Date().toISOString(),
+      attempts: 0,
+      solved: 0,
+      due_at: Date.now(),
+    });
+    changed = true;
+  }
+  if (changed) {
+    trainerItems = trainerItems.slice(0, 250);
+    saveTrainerItems();
+  }
+}
+
 function saveRecentGames() {
   try {
     localStorage.setItem(RECENTS_KEY, JSON.stringify(recentGames.slice(0, 12)));
@@ -105,6 +209,11 @@ function saveRecentGames() {
 
 function gameSignature(snapshot) {
   return `${snapshot.initial_fen || STARTING_FEN}|${(snapshot.moves || []).join(",")}|${snapshot.result || snapshot.manual_result || "*"}`;
+}
+
+function backendSnapshot(snapshot) {
+  const { analysis: _analysis, ...rest } = snapshot || {};
+  return rest;
 }
 
 function archiveCompletedGame() {
@@ -171,7 +280,8 @@ async function openRecentGame(index) {
   previousHumanSide = mode;
   autoplay = false;
   selected = null;
-  const succeeded = await act(() => api("/api/load-game", snapshot), "Recent game opened for review.");
+  gameAnalysis = snapshot.analysis && typeof snapshot.analysis === "object" ? snapshot.analysis : null;
+  const succeeded = await act(() => api("/api/load-game", backendSnapshot(snapshot)), "Recent game opened for review.");
   if (succeeded) {
     syncTimeControlsFromState();
     orientForHuman();
@@ -230,7 +340,8 @@ async function resumeRecovery() {
   recoveryResolved = true;
   startupRecovery = null;
   selected = null;
-  const succeeded = await act(() => api("/api/load-game", snapshot), "Recovered autosaved game.");
+  gameAnalysis = snapshot.analysis && typeof snapshot.analysis === "object" ? snapshot.analysis : null;
+  const succeeded = await act(() => api("/api/load-game", backendSnapshot(snapshot)), "Recovered autosaved game.");
   if (succeeded) {
     syncTimeControlsFromState();
     orientForHuman();
@@ -282,6 +393,7 @@ function applyDisplaySettings(renderAfter = true) {
   $("targetsToggle").checked = Boolean(display.targets);
   $("lastMoveToggle").checked = Boolean(display.lastMove);
   $("autoOrientToggle").checked = Boolean(display.autoOrient);
+  $("soundToggle").checked = Boolean(display.sound);
 
   if (renderAfter && state) render();
 }
@@ -309,10 +421,29 @@ function squareOrder() {
   return [...ranks].flatMap((rank) => [...files].map((file) => file + rank));
 }
 
+function currentBoardView() {
+  if (trainerMode && trainerSnapshot) return trainerSnapshot;
+  if (variationMode && variationWorkspace) return variationWorkspace.nodes[variationNodeId]?.snapshot || null;
+  if (reviewMode && reviewSnapshot) return reviewSnapshot;
+  return state;
+}
+
+function currentAnnotationFen() {
+  return currentBoardView()?.fen || state?.fen || "";
+}
+
+function currentAnnotations() {
+  const fen = currentAnnotationFen();
+  if (!fen) return { squares: {}, arrows: [] };
+  if (!annotations[fen]) annotations[fen] = { squares: {}, arrows: [] };
+  return annotations[fen];
+}
+
 function legalTargets(square) {
   if (!state || !square || !display.targets) return new Set();
-  const moves = retryMode && reviewSnapshot
-    ? (reviewSnapshot.legal_moves || [])
+  const view = currentBoardView();
+  const moves = (retryMode || trainerMode || variationMode) && view
+    ? (view.legal_moves || [])
     : state.legal_moves;
   return new Set(moves.filter((move) => move.startsWith(square)).map((move) => move.slice(2, 4)));
 }
@@ -325,11 +456,14 @@ function pieceName(symbol) {
 function renderBoard() {
   const board = $("board");
   board.innerHTML = "";
-  const view = reviewMode && reviewSnapshot ? reviewSnapshot : state;
+  const view = currentBoardView();
   const boardMap = setupMode ? setupBoard : view?.board || {};
-  const targets = setupMode || (reviewMode && !retryMode) ? new Set() : legalTargets(selected);
+  const targets = setupMode || (reviewMode && !retryMode && !variationMode && !trainerMode)
+    ? new Set()
+    : legalTargets(selected);
   const lastFrom = !setupMode && display.lastMove ? view?.last_move?.slice(0, 2) : null;
   const lastTo = !setupMode && display.lastMove ? view?.last_move?.slice(2, 4) : null;
+  const marks = currentAnnotations();
 
   for (const square of squareOrder()) {
     const file = square.charCodeAt(0) - 97;
@@ -341,14 +475,36 @@ function renderBoard() {
     if (square === lastFrom || square === lastTo) button.classList.add("last");
     if (targets.has(square)) button.classList.add("target");
     if (symbol) button.classList.add("occupied");
+    if (marks.squares?.[square]) {
+      button.classList.add("annotation-highlight");
+      button.style.setProperty("--annotation-color", annotationColorValue(marks.squares[square], .42));
+    }
     button.dataset.square = square;
     button.setAttribute("aria-label", symbol ? `${pieceName(symbol)} on ${square}` : `empty square ${square}`);
     button.setAttribute("aria-pressed", selected === square ? "true" : "false");
     button.addEventListener("click", () => setupMode
       ? setupSquareClick(square)
+      : trainerMode
+      ? trainerSquareClick(square)
+      : variationMode
+      ? variationSquareClick(square)
       : retryMode
       ? retrySquareClick(square)
       : clickSquare(square));
+    button.addEventListener("contextmenu", (event) => {
+      if (setupMode) return;
+      event.preventDefault();
+      toggleSquareAnnotation(square);
+    });
+    button.addEventListener("pointerdown", (event) => {
+      if (event.button === 2 && !setupMode) annotationDragFrom = square;
+    });
+    button.addEventListener("pointerup", (event) => {
+      if (event.button !== 2 || !annotationDragFrom || setupMode) return;
+      const from = annotationDragFrom;
+      annotationDragFrom = null;
+      if (from !== square) toggleArrowAnnotation(from, square);
+    });
 
     if (symbol) {
       const piece = document.createElement("span");
@@ -375,7 +531,8 @@ function renderBoard() {
         return;
       }
       const from = event.dataTransfer?.getData("text/plain") || selected;
-      if (from && state?.legal_moves.some((move) => move.startsWith(from + square))) {
+      const moves = currentBoardView()?.legal_moves || state?.legal_moves || [];
+      if (from && moves.some((move) => move.startsWith(from + square))) {
         event.preventDefault();
         if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
       }
@@ -391,7 +548,13 @@ function renderBoard() {
       }
       if (!from) return;
       selected = from;
-      await clickSquare(square);
+      if (trainerMode) {
+        trainerSelected = from;
+        await trainerSquareClick(square);
+      }
+      else if (variationMode) await variationSquareClick(square);
+      else if (retryMode) await retrySquareClick(square);
+      else await clickSquare(square);
     });
 
     if (display.coords) {
@@ -403,9 +566,15 @@ function renderBoard() {
     board.appendChild(button);
   }
   renderBestMoveArrow();
+  renderAnnotationArrows();
 }
 
 function canHumanMovePiece(symbol) {
+  if (variationMode || trainerMode) {
+    const view = currentBoardView();
+    if (!view || busy) return false;
+    return (view.turn === "white") === (symbol === symbol.toUpperCase());
+  }
   if (reviewMode || busy || !state || state.game_over || state.paused) return false;
   const humanSide = $("humanSide").value;
   if (humanSide === "none" || (humanSide !== "both" && humanSide !== state.turn)) return false;
@@ -458,6 +627,72 @@ function boardPoint(square) {
     : { x: file + 0.5, y: 7 - rank + 0.5 };
 }
 
+function annotationColorValue(name, alpha = 1) {
+  const colors = {
+    amber: [255, 201, 103],
+    cyan: [99, 230, 255],
+    violet: [199, 163, 255],
+    lime: [183, 242, 104],
+  };
+  const [r, g, b] = colors[name] || colors.amber;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function annotationColor() {
+  return $("annotationColor")?.value || "amber";
+}
+
+function toggleSquareAnnotation(square) {
+  const marks = currentAnnotations();
+  marks.squares ||= {};
+  if (marks.squares[square]) delete marks.squares[square];
+  else marks.squares[square] = annotationColor();
+  saveAnnotations();
+  renderBoard();
+}
+
+function toggleArrowAnnotation(from, to) {
+  const marks = currentAnnotations();
+  marks.arrows ||= [];
+  const index = marks.arrows.findIndex((arrow) => arrow.from === from && arrow.to === to);
+  if (index >= 0) marks.arrows.splice(index, 1);
+  else marks.arrows.push({ from, to, color: annotationColor() });
+  saveAnnotations();
+  renderBoard();
+}
+
+function clearCurrentAnnotations() {
+  const fen = currentAnnotationFen();
+  if (fen) delete annotations[fen];
+  saveAnnotations();
+  renderBoard();
+}
+
+function renderAnnotationArrows() {
+  const overlay = $("boardOverlay");
+  if (!overlay) return;
+  overlay.querySelectorAll(".annotation-arrow").forEach((node) => node.remove());
+  const marks = currentAnnotations();
+  for (const arrow of marks.arrows || []) {
+    if (!arrow?.from || !arrow?.to) continue;
+    const from = boardPoint(arrow.from);
+    const to = boardPoint(arrow.to);
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const length = Math.hypot(dx, dy) || 1;
+    const shorten = 0.24;
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    line.classList.add("annotation-arrow");
+    line.setAttribute("x1", String(from.x + dx / length * shorten));
+    line.setAttribute("y1", String(from.y + dy / length * shorten));
+    line.setAttribute("x2", String(to.x - dx / length * shorten));
+    line.setAttribute("y2", String(to.y - dy / length * shorten));
+    line.setAttribute("stroke", annotationColorValue(arrow.color || "amber", .84));
+    line.setAttribute("marker-end", "url(#bestArrowHead)");
+    overlay.insertBefore(line, $("bestMoveArrow"));
+  }
+}
+
 function renderBestMoveArrow() {
   const line = $("bestMoveArrow");
   if (!line) return;
@@ -466,9 +701,10 @@ function renderBestMoveArrow() {
   if (retryMode && retryRevealBest && retryTargetPly) {
     const result = analysisResultForPly(retryTargetPly);
     move = String(result?.best_uci || "");
+  } else if (trainerMode && trainerRevealBest && trainerItemIndex >= 0) {
+    move = String(trainerItems[trainerItemIndex]?.best_uci || "");
   } else if (multiPvArrowMove && multiPvData) {
-    const currentPly = reviewMode ? Number(reviewSnapshot?.ply || 0) : (state?.moves_uci?.length || 0);
-    if (Number(multiPvData.ply) === currentPly) move = multiPvArrowMove;
+    if (String(multiPvData.fen || "") === String(currentBoardView()?.fen || "")) move = multiPvArrowMove;
   }
   if (move.length < 4) return;
   const from = boardPoint(move.slice(0, 2));
@@ -548,6 +784,386 @@ async function exitRetryMove() {
   selected = null;
   reviewSnapshot = await api("/api/review", { ply: target });
   render();
+}
+
+function variationNode() {
+  return variationMode && variationWorkspace ? variationWorkspace.nodes[variationNodeId] || null : null;
+}
+
+function newVariationNode(snapshot, parent = null, moveUci = null, moveSan = "Root") {
+  const id = globalThis.crypto?.randomUUID?.() || `v-${Date.now()}-${Math.random()}`;
+  return { id, parent, move_uci: moveUci, move_san: moveSan, snapshot, children: [], comment: "", nag: "" };
+}
+
+async function startVariationWorkspace() {
+  if (!state || setupMode || trainerMode || busy) return;
+  if (!reviewMode) await enterReviewMode(state.moves_uci?.length || 0);
+  if (!reviewSnapshot) return;
+  const root = newVariationNode({ ...reviewSnapshot });
+  variationWorkspace = {
+    root: root.id,
+    origin_ply: Number(reviewSnapshot.ply || 0),
+    nodes: { [root.id]: root },
+  };
+  variationNodeId = root.id;
+  variationMode = true;
+  selected = null;
+  render();
+  $("statusLine").textContent = "Variation workspace active — play either side to explore branches.";
+}
+
+async function variationSquareClick(square) {
+  const node = variationNode();
+  const snapshot = node?.snapshot;
+  if (!variationMode || !snapshot || busy || snapshot.game_over) return;
+  const piece = snapshot.board?.[square];
+  const isOwn = piece && ((snapshot.turn === "white") === (piece === piece.toUpperCase()));
+  if (!selected) {
+    if (isOwn) {
+      selected = square;
+      renderBoard();
+    }
+    return;
+  }
+  if (isOwn) {
+    selected = square;
+    renderBoard();
+    return;
+  }
+  const candidates = (snapshot.legal_moves || []).filter((move) => move.startsWith(selected + square));
+  if (!candidates.length) {
+    selected = null;
+    renderBoard();
+    return;
+  }
+  let move = candidates[0];
+  if (candidates.length > 1) {
+    move = await choosePromotion(candidates, snapshot.turn);
+    if (!move) {
+      selected = null;
+      renderBoard();
+      return;
+    }
+  }
+  selected = null;
+  const existing = node.children
+    .map((id) => variationWorkspace.nodes[id])
+    .find((child) => child?.move_uci === move);
+  if (existing) {
+    variationNodeId = existing.id;
+    render();
+    return;
+  }
+  try {
+    const childSnapshot = await api("/api/variation-move", { fen: snapshot.fen, move });
+    const child = newVariationNode(childSnapshot, node.id, move, childSnapshot.move_san || move);
+    variationWorkspace.nodes[child.id] = child;
+    node.children.push(child.id);
+    variationNodeId = child.id;
+    playUiSound("move");
+    render();
+  } catch (error) {
+    $("statusLine").textContent = error.message;
+  }
+}
+
+function navigateVariation(id) {
+  if (!variationWorkspace?.nodes[id]) return;
+  variationNodeId = id;
+  selected = null;
+  render();
+}
+
+function variationBack() {
+  const node = variationNode();
+  if (node?.parent) navigateVariation(node.parent);
+}
+
+function deleteVariationBranch() {
+  const node = variationNode();
+  if (!node?.parent || !variationWorkspace) return;
+  const parent = variationWorkspace.nodes[node.parent];
+  if (parent) parent.children = parent.children.filter((id) => id !== node.id);
+  const remove = (id) => {
+    const item = variationWorkspace.nodes[id];
+    for (const child of item?.children || []) remove(child);
+    delete variationWorkspace.nodes[id];
+  };
+  const parentId = node.parent;
+  remove(node.id);
+  variationNodeId = parentId;
+  render();
+}
+
+function variationPath() {
+  const path = [];
+  let node = variationNode();
+  while (node) {
+    path.unshift(node);
+    node = node.parent ? variationWorkspace.nodes[node.parent] : null;
+  }
+  return path;
+}
+
+function saveVariationMetadata() {
+  const node = variationNode();
+  if (!node) return;
+  node.nag = $("variationNag").value;
+  node.comment = $("variationComment").value;
+}
+
+async function exitVariationWorkspace() {
+  if (!variationMode) return;
+  variationMode = false;
+  variationWorkspace = null;
+  variationNodeId = null;
+  selected = null;
+  render();
+  $("statusLine").textContent = "Returned to the saved main line.";
+}
+
+function renderVariationWorkspace() {
+  if (!$("variationStatus")) return;
+  $("variationStartBtn").hidden = variationMode;
+  $("variationExitBtn").hidden = !variationMode;
+  $("variationControls").hidden = !variationMode;
+  if (!variationMode) {
+    $("variationStatus").textContent = "Main line";
+    return;
+  }
+  const node = variationNode();
+  const path = variationPath();
+  $("variationStatus").textContent = `${Math.max(0, path.length - 1)} ply branch`;
+  $("variationBackBtn").disabled = !node?.parent;
+  $("variationDeleteBtn").disabled = !node?.parent;
+  $("variationNag").value = node?.nag || "";
+  $("variationComment").value = node?.comment || "";
+  const breadcrumb = $("variationBreadcrumb");
+  breadcrumb.innerHTML = "";
+  path.forEach((item, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.classList.toggle("current", item.id === variationNodeId);
+    button.textContent = index === 0 ? "Root" : `${item.move_san}${item.nag || ""}`;
+    button.addEventListener("click", () => navigateVariation(item.id));
+    breadcrumb.appendChild(button);
+  });
+  const children = $("variationChildren");
+  children.innerHTML = "";
+  for (const childId of node?.children || []) {
+    const child = variationWorkspace.nodes[childId];
+    if (!child) continue;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = `${child.move_san}${child.nag || ""}`;
+    button.addEventListener("click", () => navigateVariation(child.id));
+    children.appendChild(button);
+  }
+  if (!node?.children?.length) {
+    const hint = document.createElement("span");
+    hint.className = "hint";
+    hint.textContent = "Play a move on the board to create a branch.";
+    children.appendChild(hint);
+  }
+}
+
+function trainerDueItems() {
+  const now = Date.now();
+  return trainerItems
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => Number(item.due_at || 0) <= now)
+    .sort((a, b) => Number(b.item.cpl || 0) - Number(a.item.cpl || 0));
+}
+
+async function loadTrainerItem(index) {
+  const item = trainerItems[index];
+  if (!item) return false;
+  trainerItemIndex = index;
+  trainerSelected = null;
+  trainerRevealBest = false;
+  trainerSnapshot = await api("/api/position", { fen: item.fen });
+  trainerMode = true;
+  render();
+  return true;
+}
+
+async function startTrainer() {
+  if (!trainerItems.length || busy || setupMode || variationMode) return;
+  trainerWasPaused = Boolean(state?.paused || state?.game_over);
+  if (state && !state.game_over && !state.paused) {
+    const paused = await act(() => api("/api/pause", { paused: true }), "Game paused for training.");
+    if (!paused) return;
+  }
+  const due = trainerDueItems();
+  const target = due[0]?.index ?? 0;
+  trainerSessionSolved = 0;
+  trainerSessionStreak = 0;
+  await loadTrainerItem(target);
+  document.querySelector('[data-tab="train"]')?.click();
+  $("statusLine").textContent = "Personal trainer active — find the engine's best move.";
+}
+
+async function trainerSquareClick(square) {
+  const item = trainerItems[trainerItemIndex];
+  const snapshot = trainerSnapshot;
+  if (!trainerMode || !item || !snapshot || busy) return;
+  const piece = snapshot.board?.[square];
+  const isOwn = piece && ((snapshot.turn === "white") === (piece === piece.toUpperCase()));
+  if (!trainerSelected) {
+    if (isOwn) {
+      trainerSelected = square;
+      selected = square;
+      renderBoard();
+    }
+    return;
+  }
+  if (isOwn) {
+    trainerSelected = square;
+    selected = square;
+    renderBoard();
+    return;
+  }
+  const candidates = (snapshot.legal_moves || []).filter((move) => move.startsWith(trainerSelected + square));
+  if (!candidates.length) {
+    trainerSelected = null;
+    selected = null;
+    renderBoard();
+    return;
+  }
+  let move = candidates[0];
+  if (candidates.length > 1) {
+    move = await choosePromotion(candidates, snapshot.turn);
+    if (!move) return;
+  }
+  trainerSelected = null;
+  selected = null;
+  item.attempts = Number(item.attempts || 0) + 1;
+  trainerRevealBest = true;
+  if (move === item.best_uci) {
+    item.solved = Number(item.solved || 0) + 1;
+    trainerSessionSolved += 1;
+    trainerSessionStreak += 1;
+    const intervalDays = Math.min(30, Math.max(1, 2 ** Math.min(5, item.solved - 1)));
+    item.due_at = Date.now() + intervalDays * 86_400_000;
+    $("trainerPrompt").textContent = `Correct — ${item.best_san || item.best_uci}. Next review in ${intervalDays} day${intervalDays === 1 ? "" : "s"}.`;
+    playUiSound("success");
+  } else {
+    trainerSessionStreak = 0;
+    item.due_at = Date.now() + 15 * 60_000;
+    $("trainerPrompt").textContent = `Not quite. The engine preferred ${item.best_san || item.best_uci}.`;
+    playUiSound("error");
+  }
+  saveTrainerItems();
+  renderBoard();
+  renderTrainerPanel();
+  setTimeout(nextTrainerItem, 900);
+}
+
+async function nextTrainerItem() {
+  if (!trainerMode) return;
+  const due = trainerDueItems().filter(({ index }) => index !== trainerItemIndex);
+  if (!due.length) {
+    $("trainerPrompt").textContent = "Training queue complete for now.";
+    renderTrainerPanel();
+    return;
+  }
+  await loadTrainerItem(due[0].index);
+}
+
+function trainerHint() {
+  const item = trainerItems[trainerItemIndex];
+  if (!trainerMode || !item) return;
+  trainerRevealBest = true;
+  $("trainerPrompt").textContent = `Hint: look for ${item.best_san || item.best_uci}.`;
+  renderBoard();
+}
+
+async function exitTrainer() {
+  trainerMode = false;
+  trainerSnapshot = null;
+  trainerItemIndex = -1;
+  trainerSelected = null;
+  trainerRevealBest = false;
+  selected = null;
+  render();
+  if (!trainerWasPaused && state && !state.game_over && state.paused) {
+    const resumed = await act(() => api("/api/pause", { paused: false }), "Returned to live game.");
+    if (resumed) scheduleComputerReply();
+  }
+}
+
+function clearTrainer() {
+  trainerItems = [];
+  saveTrainerItems();
+  if (trainerMode) exitTrainer();
+  renderTrainerPanel();
+}
+
+function renderTrainerPanel() {
+  if (!$("trainerCount")) return;
+  const due = trainerDueItems();
+  const solved = trainerItems.reduce((sum, item) => sum + (Number(item.solved || 0) > 0 ? 1 : 0), 0);
+  $("trainerCount").textContent = `${trainerItems.length} position${trainerItems.length === 1 ? "" : "s"}`;
+  $("trainerDue").textContent = String(due.length);
+  $("trainerSolved").textContent = String(solved);
+  $("trainerStreak").textContent = String(trainerSessionStreak);
+  $("trainerStartBtn").disabled = trainerItems.length === 0 || trainerMode;
+  $("trainerSession").hidden = !trainerMode;
+  if (trainerMode) {
+    const item = trainerItems[trainerItemIndex];
+    $("trainerLabel").textContent = `${capitalize(item?.classification || "Training")} · ${capitalize(item?.phase || "position")}`;
+    $("trainerProgress").textContent = `${trainerSessionSolved} solved`;
+    if (!trainerRevealBest) $("trainerPrompt").textContent = `You played ${item?.played_san || "a weaker move"}. Find a better move.`;
+  }
+  const queue = $("trainerQueue");
+  queue.innerHTML = "";
+  trainerItems.slice(0, 12).forEach((item, index) => {
+    const row = document.createElement("div");
+    row.className = "trainer-item";
+    const info = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = `${item.classification || "Position"} · ${item.cpl || 0} CPL`;
+    const meta = document.createElement("span");
+    meta.textContent = `${capitalize(item.phase || "middlegame")} · best ${item.best_san || item.best_uci}`;
+    info.append(title, meta);
+    const open = document.createElement("button");
+    open.className = "secondary compact";
+    open.textContent = "Train";
+    open.addEventListener("click", async () => {
+      if (!trainerMode) await startTrainer();
+      await loadTrainerItem(index);
+    });
+    row.append(info, open);
+    queue.appendChild(row);
+  });
+  if (!trainerItems.length) {
+    const empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent = "Analyze a game; significant misses will be added automatically.";
+    queue.appendChild(empty);
+  }
+  renderWeaknessProfile();
+}
+
+function renderWeaknessProfile() {
+  const target = $("weaknessProfile");
+  if (!target) return;
+  const phases = { opening: [], middlegame: [], endgame: [] };
+  trainerItems.forEach((item) => {
+    if (phases[item.phase]) phases[item.phase].push(Number(item.cpl || 0));
+  });
+  target.innerHTML = "";
+  const averages = Object.fromEntries(Object.entries(phases).map(([phase, values]) => [
+    phase,
+    values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0,
+  ]));
+  const max = Math.max(1, ...Object.values(averages));
+  for (const phase of ["opening", "middlegame", "endgame"]) {
+    const row = document.createElement("div");
+    row.className = "weakness-row";
+    row.innerHTML = `<strong>${capitalize(phase)}</strong><span class="weakness-bar"><i style="width:${averages[phase] * 100 / max}%"></i></span><span>${averages[phase] ? averages[phase].toFixed(0) : "—"}</span>`;
+    target.appendChild(row);
+  }
 }
 
 function confirmRestart(message) {
@@ -849,6 +1465,7 @@ function gameSnapshot() {
     result: state.result || null,
     termination: state.termination || null,
     pgn_headers: state.pgn_headers || {},
+    analysis: gameAnalysis?.results?.length ? gameAnalysis : null,
   };
 }
 
@@ -1007,7 +1624,8 @@ async function loadGamePng(file) {
     previousHumanSide = mode;
     autoplay = mode === "none" && Boolean(snapshot.autoplay);
     selected = null;
-    const succeeded = await act(() => api("/api/load-game", snapshot), "Saved game restored from PNG.");
+    gameAnalysis = snapshot.analysis && typeof snapshot.analysis === "object" ? snapshot.analysis : null;
+    const succeeded = await act(() => api("/api/load-game", backendSnapshot(snapshot)), "Saved game restored from PNG.");
     if (succeeded) {
       syncTimeControlsFromState();
       orientForHuman();
@@ -1053,8 +1671,11 @@ async function clickSquare(square) {
     }
   }
   selected = null;
-  await act(() => api("/api/move", { move }), "Move played.");
-  scheduleComputerReply();
+  const succeeded = await act(() => api("/api/move", { move }), "Move played.");
+  if (succeeded) {
+    playUiSound(state?.check ? "check" : "move");
+    scheduleComputerReply();
+  }
 }
 
 function updatePlayerRoles() {
@@ -1070,7 +1691,7 @@ function updatePlayerRoles() {
 
 function renderCapturedMaterial() {
   if (!state) return;
-  const source = reviewMode && reviewSnapshot ? reviewSnapshot : state;
+  const source = currentBoardView() || state;
   const renderCaptured = (id, pieces) => {
     $(id).textContent = (Array.isArray(pieces) ? pieces : [])
       .map((symbol) => PIECES[symbol] || "")
@@ -1129,7 +1750,7 @@ function renderClocks() {
 
 function render() {
   if (!state) return;
-  const view = reviewMode && reviewSnapshot ? reviewSnapshot : state;
+  const view = currentBoardView() || state;
   renderBoard();
   renderClocks();
   $("whiteClock").classList.toggle("active", !state.game_over && !state.paused && state.turn === "white");
@@ -1146,9 +1767,17 @@ function render() {
   $("evalText").textContent = `${cp >= 0 ? "+" : ""}${cp.toFixed(2)}`;
   const pct = Math.max(5, Math.min(95, 50 + 45 * Math.tanh(cp / 4)));
   $("evalBar").style.width = `${pct}%`;
-  $("turnPill").textContent = reviewMode
+  $("turnPill").textContent = trainerMode
+    ? "Training"
+    : variationMode
+    ? "Variation"
+    : reviewMode
     ? `Review · ${reviewSnapshot?.ply ?? 0}/${reviewSnapshot?.total_plies ?? 0}`
     : state.game_over ? (state.result || "Game over") : `${capitalize(state.turn)} to move`;
+  const opening = view.opening || state.opening;
+  $("openingEco").textContent = opening?.eco || "—";
+  $("openingName").textContent = opening?.name || (state.initial_fen === STARTING_FEN ? "Opening not identified" : "Custom position");
+  $("phaseLabel").textContent = capitalize(view.phase || state.phase || "opening");
   $("searchTime").textContent = state.last_engine_ms ? `${state.last_engine_ms} ms` : "—";
   $("nodes").textContent = state.last_engine_nodes ? state.last_engine_nodes.toLocaleString() : "—";
   $("depth").textContent = state.last_engine_depth ?? "—";
@@ -1189,9 +1818,20 @@ function render() {
   renderRecentGames();
   renderMoves();
   renderReviewPanel();
+  renderVariationWorkspace();
   renderAnalysisPanel();
   renderMultiPvPanel();
-  if (reviewMode) {
+  renderOpeningExplorer();
+  renderEvaluationBreakdown();
+  renderTrainerPanel();
+  if ($("engineTab").classList.contains("active") && evalBreakdownData?.fen !== view.fen && !evalBreakdownBusy) {
+    setTimeout(refreshEvaluationBreakdown, 0);
+  }
+  if (trainerMode) {
+    $("statusLine").textContent = $("trainerPrompt").textContent || "Personal trainer active.";
+  } else if (variationMode) {
+    $("statusLine").textContent = "Variation workspace · play either side without changing the saved game.";
+  } else if (reviewMode) {
     $("statusLine").textContent = `Reviewing ply ${reviewSnapshot?.ply ?? 0} of ${reviewSnapshot?.total_plies ?? 0}.`;
   } else if (state.game_over) {
     $("statusLine").textContent = `Game over · ${state.result} · ${state.termination}`;
@@ -1379,10 +2019,18 @@ function renderAnalysisPanel() {
   const hasResults = Array.isArray(gameAnalysis?.results) && gameAnalysis.results.length > 0;
   $("analysisSummary").hidden = !hasResults;
   if (hasResults) {
+    $("accuracyScore").textContent = summary.accuracy == null ? "—" : `${summary.accuracy}%`;
     $("whiteCpl").textContent = String(summary.white_avg_cpl ?? 0);
     $("blackCpl").textContent = String(summary.black_avg_cpl ?? 0);
+    $("openingCpl").textContent = summary.phase_avg_cpl?.opening == null ? "—" : String(summary.phase_avg_cpl.opening);
+    $("middlegameCpl").textContent = summary.phase_avg_cpl?.middlegame == null ? "—" : String(summary.phase_avg_cpl.middlegame);
+    $("endgameCpl").textContent = summary.phase_avg_cpl?.endgame == null ? "—" : String(summary.phase_avg_cpl.endgame);
     $("mistakeCount").textContent = String(summary.mistakes ?? 0);
     $("blunderCount").textContent = String(summary.blunders ?? 0);
+    if (complete) {
+      cacheCurrentAnalysis();
+      ingestTrainerFromAnalysis();
+    }
   }
 
   const currentPly = retryMode && retryTargetPly
@@ -1396,6 +2044,7 @@ function renderAnalysisPanel() {
     $("moveInsightText").textContent = insight.played_uci === insight.best_uci
       ? `${insight.played_san} matched the engine's top choice.`
       : `${insight.played_san} was played; the engine preferred ${insight.best_san}.`;
+    $("moveInsightExplain").textContent = insight.explanation || "";
     const pv = Array.isArray(insight.pv_san) ? insight.pv_san : [];
     $("moveInsightPv").textContent = pv.length ? `Best line: ${pv.join(" ")}` : "";
   }
@@ -1408,7 +2057,8 @@ function renderMultiPvPanel() {
   if (!$("multipvLines")) return;
   const target = $("multipvLines");
   const currentPly = reviewMode ? Number(reviewSnapshot?.ply || 0) : (state?.moves_uci?.length || 0);
-  const relevant = multiPvData && Number(multiPvData.ply) === currentPly;
+  const currentFen = currentBoardView()?.fen || state?.fen || "";
+  const relevant = multiPvData && String(multiPvData.fen || "") === String(currentFen);
   $("multipvBtn").disabled = multiPvBusy || gameAnalysis?.status === "running" || !state || state.game_over && !reviewMode;
   $("multipvBtn").textContent = multiPvBusy ? "Searching…" : "Analyze position";
   $("multipvMeta").textContent = multiPvBusy
@@ -1448,15 +2098,103 @@ function renderMultiPvPanel() {
   });
 }
 
+function currentMovePrefix() {
+  if (!state) return [];
+  if (variationMode && variationWorkspace) {
+    const base = (state.moves_uci || []).slice(0, variationWorkspace.origin_ply || 0);
+    const branch = variationPath().slice(1).map((node) => node.move_uci).filter(Boolean);
+    return [...base, ...branch];
+  }
+  const ply = reviewMode ? Number(reviewSnapshot?.ply || 0) : (state.moves_uci?.length || 0);
+  return (state.moves_uci || []).slice(0, ply);
+}
+
+function renderOpeningExplorer() {
+  const target = $("openingExplorer");
+  if (!target || !state) return;
+  target.innerHTML = "";
+  const prefix = currentMovePrefix();
+  const view = currentBoardView() || state;
+  const stats = new Map();
+  for (const game of recentGames) {
+    if ((game.initial_fen || STARTING_FEN) !== state.initial_fen) continue;
+    const moves = Array.isArray(game.moves) ? game.moves : [];
+    if (moves.length <= prefix.length) continue;
+    if (!prefix.every((move, index) => moves[index] === move)) continue;
+    const next = moves[prefix.length];
+    const row = stats.get(next) || { move: next, games: 0, white: 0, black: 0, draws: 0 };
+    row.games += 1;
+    const result = game.result || game.manual_result;
+    if (result === "1-0") row.white += 1;
+    else if (result === "0-1") row.black += 1;
+    else if (result === "1/2-1/2") row.draws += 1;
+    stats.set(next, row);
+  }
+  const rows = [...stats.values()].sort((a, b) => b.games - a.games).slice(0, 8);
+  $("explorerMeta").textContent = `${rows.reduce((sum, row) => sum + row.games, 0)} matching games`;
+  if (!rows.length) {
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = "No matching recent games yet. Your personal explorer grows as you play and save games.";
+    target.appendChild(hint);
+    return;
+  }
+  rows.forEach((row) => {
+    const item = document.createElement("div");
+    item.className = "explorer-row";
+    const move = document.createElement("strong");
+    move.textContent = view.legal_san?.[row.move] || row.move;
+    const outcomes = document.createElement("span");
+    outcomes.textContent = `${row.white}W · ${row.draws}D · ${row.black}B`;
+    const count = document.createElement("span");
+    count.className = "explorer-score";
+    count.textContent = `${row.games}×`;
+    item.append(move, outcomes, count);
+    target.appendChild(item);
+  });
+}
+
+function scoreText(value) {
+  const number = Number(value || 0) / 100;
+  return `${number >= 0 ? "+" : ""}${number.toFixed(2)}`;
+}
+
+function renderEvaluationBreakdown() {
+  if (!$("breakdownTotal")) return;
+  const fen = currentBoardView()?.fen || state?.fen || "";
+  const relevant = evalBreakdownData && evalBreakdownData.fen === fen;
+  const set = (id, value) => { $(id).textContent = relevant ? scoreText(value) : "—"; };
+  set("breakdownTotal", evalBreakdownData?.total);
+  set("breakdownMaterial", evalBreakdownData?.material);
+  set("breakdownMobility", evalBreakdownData?.mobility);
+  set("breakdownKing", evalBreakdownData?.king_safety);
+  set("breakdownPosition", evalBreakdownData?.position_pawns);
+}
+
+async function refreshEvaluationBreakdown() {
+  const fen = currentBoardView()?.fen || state?.fen;
+  if (!fen || evalBreakdownBusy || evalBreakdownData?.fen === fen) return;
+  evalBreakdownBusy = true;
+  try {
+    evalBreakdownData = await api("/api/eval-breakdown", { fen });
+  } catch (_) {
+    evalBreakdownData = null;
+  } finally {
+    evalBreakdownBusy = false;
+    renderEvaluationBreakdown();
+  }
+}
+
 async function runMultiPv() {
   if (!state || multiPvBusy || gameAnalysis?.status === "running") return;
   const ply = reviewMode ? Number(reviewSnapshot?.ply || 0) : (state.moves_uci?.length || 0);
+  const fen = currentBoardView()?.fen || state.fen;
   const lines = Math.max(1, Math.min(5, Number($("multipvCount").value) || 3));
   multiPvBusy = true;
   multiPvArrowMove = null;
   renderMultiPvPanel();
   try {
-    multiPvData = await api("/api/multipv", { ply, lines, budget_ms: 350 });
+    multiPvData = await api("/api/multipv", { ply, fen, lines, budget_ms: 350 });
     $("statusLine").textContent = `Candidate lines searched to depth ${multiPvData.depth}.`;
   } catch (error) {
     multiPvData = null;
@@ -1576,6 +2314,30 @@ function capitalize(text) {
   return text ? text[0].toUpperCase() + text.slice(1) : "";
 }
 
+function playUiSound(kind = "move") {
+  if (!display.sound) return;
+  try {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) return;
+    const context = playUiSound.context || new AudioContext();
+    playUiSound.context = context;
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    const frequencies = { move: 420, success: 660, error: 210, check: 520 };
+    oscillator.frequency.value = frequencies[kind] || frequencies.move;
+    oscillator.type = kind === "error" ? "square" : "sine";
+    gain.gain.setValueAtTime(0.0001, context.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.035, context.currentTime + 0.008);
+    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.11);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start();
+    oscillator.stop(context.currentTime + 0.12);
+  } catch (_) {
+    // Audio feedback is optional and must never interfere with chess actions.
+  }
+}
+
 async function act(fn, successText = "Ready.") {
   if (busy) return false;
   busy = true;
@@ -1599,7 +2361,9 @@ async function act(fn, successText = "Ready.") {
 
 async function engineMove() {
   const raw = $("budgetInput").value.trim();
-  return act(() => api("/api/engine", raw ? { budget_ms: Number(raw) } : {}), "Engine move complete.");
+  const succeeded = await act(() => api("/api/engine", raw ? { budget_ms: Number(raw) } : {}), "Engine move complete.");
+  if (succeeded) playUiSound(state?.check ? "check" : "move");
+  return succeeded;
 }
 
 function scheduleComputerReply() {
@@ -1797,6 +2561,94 @@ function orientForHuman() {
   else if (humanSide === "black") flipped = true;
 }
 
+function commandDefinitions() {
+  return [
+    { label: "New game", hint: "⌘N", action: () => $("newGameBtn").click() },
+    { label: "Open PGN", hint: "Files", action: openPgnFile },
+    { label: "Open FEN", hint: "Files", action: openFenFile },
+    { label: "Open saved PNG", hint: "Files", action: openPngFile },
+    { label: "Export PGN", hint: "Files", action: exportPgn },
+    { label: "Save game PNG", hint: "Files", action: saveGamePng },
+    { label: "Set up position", hint: "Board editor", action: () => { document.querySelector('[data-tab="position"]')?.click(); enterSetupMode(); } },
+    { label: "Analyze game", hint: "Post-game review", action: () => { document.querySelector('[data-tab="engine"]')?.click(); startGameAnalysis(); } },
+    { label: "Analyze candidate lines", hint: "MultiPV", action: () => { document.querySelector('[data-tab="engine"]')?.click(); runMultiPv(); } },
+    { label: "Branch from current position", hint: "Variation workspace", action: () => { document.querySelector('[data-tab="engine"]')?.click(); startVariationWorkspace(); } },
+    { label: "Start mistake trainer", hint: "Personal puzzles", action: startTrainer },
+    { label: "Flip board", hint: "F", action: () => $("flipBtn").click() },
+    { label: "Undo move", hint: "U", action: () => $("undoBtn").click() },
+    { label: "Pause / resume", hint: "Space", action: togglePause },
+    { label: "Play engine move", hint: "E", action: engineMove },
+    { label: "Appearance", hint: "Themes and pieces", action: () => document.querySelector('[data-tab="display"]')?.click() },
+    { label: "Recent games", hint: "Local library", action: () => document.querySelector('[data-tab="position"]')?.click() },
+  ];
+}
+
+function renderCommandPalette() {
+  const target = $("commandResults");
+  if (!target) return;
+  const query = $("commandSearch").value.trim().toLowerCase();
+  const matches = commandDefinitions().filter((command) => `${command.label} ${command.hint}`.toLowerCase().includes(query));
+  commandSelection = Math.max(0, Math.min(commandSelection, Math.max(0, matches.length - 1)));
+  target.innerHTML = "";
+  matches.forEach((command, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "command-result";
+    button.classList.toggle("selected", index === commandSelection);
+    const label = document.createElement("span");
+    label.textContent = command.label;
+    const hint = document.createElement("small");
+    hint.textContent = command.hint;
+    button.append(label, hint);
+    button.addEventListener("click", () => runPaletteCommand(command));
+    target.appendChild(button);
+  });
+  if (!matches.length) {
+    const empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent = "No matching command.";
+    target.appendChild(empty);
+  }
+}
+
+function openCommandPalette() {
+  commandSelection = 0;
+  $("commandSearch").value = "";
+  renderCommandPalette();
+  if (!$("commandDialog").open) $("commandDialog").showModal();
+  setTimeout(() => $("commandSearch").focus(), 0);
+}
+
+function closeCommandPalette() {
+  if ($("commandDialog").open) $("commandDialog").close();
+}
+
+function runPaletteCommand(command) {
+  closeCommandPalette();
+  Promise.resolve(command?.action?.()).catch((error) => {
+    $("statusLine").textContent = error.message;
+  });
+}
+
+function commandMatches() {
+  const query = $("commandSearch").value.trim().toLowerCase();
+  return commandDefinitions().filter((command) => `${command.label} ${command.hint}`.toLowerCase().includes(query));
+}
+
+async function handleDroppedFiles(files) {
+  const file = files?.[0];
+  if (!file) return;
+  const name = file.name.toLowerCase();
+  try {
+    if (name.endsWith(".pgn")) await loadPgnText(await file.text());
+    else if (name.endsWith(".fen") || name.endsWith(".txt")) await loadFenValue((await file.text()).trim());
+    else if (name.endsWith(".png")) await loadGamePng(file);
+    else throw new Error("Drop a .pgn, .fen, or FunChessEngine .png file.");
+  } catch (error) {
+    $("statusLine").textContent = error.message;
+  }
+}
+
 document.querySelectorAll(".tab").forEach((button) => {
   button.addEventListener("click", () => {
     document.querySelectorAll(".tab").forEach((tab) => tab.classList.remove("active"));
@@ -1824,6 +2676,17 @@ $("engineBtn").addEventListener("click", engineMove);
 $("multipvBtn").addEventListener("click", runMultiPv);
 $("analyzeGameBtn").addEventListener("click", startGameAnalysis);
 $("cancelAnalysisBtn").addEventListener("click", cancelGameAnalysis);
+$("variationStartBtn").addEventListener("click", startVariationWorkspace);
+$("variationExitBtn").addEventListener("click", exitVariationWorkspace);
+$("variationBackBtn").addEventListener("click", variationBack);
+$("variationDeleteBtn").addEventListener("click", deleteVariationBranch);
+$("variationNag").addEventListener("change", () => { saveVariationMetadata(); renderVariationWorkspace(); });
+$("variationComment").addEventListener("input", saveVariationMetadata);
+$("clearAnnotationsBtn").addEventListener("click", clearCurrentAnnotations);
+$("trainerStartBtn").addEventListener("click", startTrainer);
+$("trainerHintBtn").addEventListener("click", trainerHint);
+$("trainerExitBtn").addEventListener("click", exitTrainer);
+$("clearTrainerBtn").addEventListener("click", clearTrainer);
 $("resumeRecoveryBtn").addEventListener("click", resumeRecovery);
 $("discardRecoveryBtn").addEventListener("click", discardRecovery);
 $("clearRecentGamesBtn").addEventListener("click", clearRecentGames);
@@ -1978,14 +2841,67 @@ $("autoOrientToggle").addEventListener("change", (event) => {
   orientForHuman();
   if (state) renderBoard();
 });
+$("soundToggle").addEventListener("change", (event) => updateDisplay({ sound: event.target.checked }));
 $("resetDisplayBtn").addEventListener("click", () => {
   display = { ...DISPLAY_DEFAULTS };
   saveDisplaySettings();
   applyDisplaySettings();
 });
 
+$("commandCloseBtn").addEventListener("click", closeCommandPalette);
+$("commandSearch").addEventListener("input", () => {
+  commandSelection = 0;
+  renderCommandPalette();
+});
+$("commandSearch").addEventListener("keydown", (event) => {
+  const matches = commandMatches();
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    commandSelection = Math.min(matches.length - 1, commandSelection + 1);
+    renderCommandPalette();
+  } else if (event.key === "ArrowUp") {
+    event.preventDefault();
+    commandSelection = Math.max(0, commandSelection - 1);
+    renderCommandPalette();
+  } else if (event.key === "Enter" && matches[commandSelection]) {
+    event.preventDefault();
+    runPaletteCommand(matches[commandSelection]);
+  } else if (event.key === "Escape") {
+    event.preventDefault();
+    closeCommandPalette();
+  }
+});
+
+let fileDragDepth = 0;
+window.addEventListener("dragenter", (event) => {
+  if (!event.dataTransfer?.types?.includes("Files")) return;
+  event.preventDefault();
+  fileDragDepth += 1;
+  $("dropOverlay").hidden = false;
+});
+window.addEventListener("dragover", (event) => {
+  if (event.dataTransfer?.types?.includes("Files")) event.preventDefault();
+});
+window.addEventListener("dragleave", (event) => {
+  if (!event.dataTransfer?.types?.includes("Files")) return;
+  fileDragDepth = Math.max(0, fileDragDepth - 1);
+  if (!fileDragDepth) $("dropOverlay").hidden = true;
+});
+window.addEventListener("drop", (event) => {
+  if (!event.dataTransfer?.files?.length) return;
+  event.preventDefault();
+  fileDragDepth = 0;
+  $("dropOverlay").hidden = true;
+  handleDroppedFiles(event.dataTransfer.files);
+});
+
 document.addEventListener("keydown", (event) => {
   if (event.defaultPrevented) return;
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+    event.preventDefault();
+    openCommandPalette();
+    return;
+  }
   const tag = document.activeElement?.tagName;
   if (["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(tag) || document.activeElement?.isContentEditable) return;
   const key = event.key.toLowerCase();
@@ -1993,6 +2909,29 @@ document.addEventListener("keydown", (event) => {
     if (key === "escape") {
       event.preventDefault();
       leaveSetupMode(true);
+    } else if (key === "f") {
+      flipped = !flipped;
+      renderBoard();
+    }
+    return;
+  }
+  if (trainerMode) {
+    if (key === "escape") {
+      event.preventDefault();
+      exitTrainer();
+    } else if (key === "f") {
+      flipped = !flipped;
+      renderBoard();
+    }
+    return;
+  }
+  if (variationMode) {
+    if (key === "escape") {
+      event.preventDefault();
+      exitVariationWorkspace();
+    } else if (key === "arrowleft") {
+      event.preventDefault();
+      variationBack();
     } else if (key === "f") {
       flipped = !flipped;
       renderBoard();
@@ -2060,6 +2999,20 @@ if (desktop) {
     else if (command === "flip") $("flipBtn").click();
     else if (command === "engine-move") $("engineBtn").click();
     else if (command === "pause") $("pauseBtn").click();
+    else if (command === "analyze-game") {
+      document.querySelector('[data-tab="engine"]')?.click();
+      startGameAnalysis();
+    }
+    else if (command === "multipv") {
+      document.querySelector('[data-tab="engine"]')?.click();
+      runMultiPv();
+    }
+    else if (command === "variation") {
+      document.querySelector('[data-tab="engine"]')?.click();
+      startVariationWorkspace();
+    }
+    else if (command === "trainer") startTrainer();
+    else if (command === "command-palette") openCommandPalette();
   });
 }
 

@@ -29,7 +29,11 @@ engine process and adds best-move comparisons, CPL, move grades, searched graph 
 non-destructive Retry Move trainer. Crash recovery autosaves interrupted sessions, and a collapsed
 Recent Games library keeps the latest completed/imported games available for one-click review.
 Analyze also supports isolated MultiPV ranking for the top 1, 3, or 5 candidate lines at the live
-or reviewed position. Preferences are stored locally.
+or reviewed position. Version 0.5 adds a non-destructive variation-tree workspace with comments and
+NAGs, persistent square highlights/arrows, local opening/ECO recognition, personal opening statistics,
+FunChess Accuracy and phase-by-phase CPL, deterministic move explanations, an inspectable evaluation
+breakdown, a spaced-repetition mistake trainer built from analyzed games, local move sounds, drag/drop
+for PGN/FEN/saved PNG files, and a Cmd/Ctrl+K command palette. Preferences and training data stay local.
 
 ## Writing an agent
 
