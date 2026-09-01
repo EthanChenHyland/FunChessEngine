@@ -515,6 +515,11 @@ class GameSession:
         self.manual_result: str | None = None
         self.manual_termination: str | None = None
         self.pgn_headers: dict[str, str] = {}
+        # Keep the parsed import tree solely as a fidelity-preserving export
+        # template. The live board remains the authoritative main line. Any
+        # move-stack mutation invalidates this tree before export so comments,
+        # NAGs, or RAVs from an older line can never be attached to new play.
+        self._imported_pgn_game: chess.pgn.Game | None = None
         self.analysis_status = "idle"
         self.analysis_completed = 0
         self.analysis_total = 0
@@ -574,6 +579,7 @@ class GameSession:
             self.manual_result = None
             self.manual_termination = None
             self.pgn_headers = {}
+            self._imported_pgn_game = None
             self.turn_started_ns = time.monotonic_ns()
 
     def _current_clocks(self, now_ns: int | None = None) -> tuple[int, int]:
@@ -762,6 +768,9 @@ class GameSession:
                 if isinstance(headers_raw, dict)
                 else {}
             )
+            # Saved-game snapshots contain only the live main line, not a PGN
+            # annotation tree. Never retain an unrelated tree across a load.
+            self._imported_pgn_game = None
             self.turn_started_ns = time.monotonic_ns()
 
     @staticmethod
@@ -952,36 +961,63 @@ class GameSession:
                 headers.get("Termination", "pgn_import") if self.manual_result is not None else None
             )
             self.pgn_headers = headers
+            self._imported_pgn_game = game
             self.turn_started_ns = time.monotonic_ns()
 
     def export_pgn(self) -> str:
-        """Return the current main line as a standards-compatible PGN string."""
+        """Return a standards-compatible PGN without stale imported annotations."""
 
         with self.lock:
-            game = chess.pgn.Game()
-            for key, value in self.pgn_headers.items():
-                game.headers[key] = value
-            if self.initial_fen != chess.STARTING_FEN:
-                game.setup(chess.Board(self.initial_fen))
+            game = self._imported_pgn_game
+            using_imported_tree = game is not None
+            if game is not None:
+                imported_moves = [move.uci() for move in game.mainline_moves()]
+                if game.board().fen() != self.initial_fen or imported_moves != self._moves_uci():
+                    # Defensive guard in addition to explicit invalidation at
+                    # mutation sites. The live board always wins if state ever
+                    # diverges from the retained import tree.
+                    self._imported_pgn_game = None
+                    game = None
+                    using_imported_tree = False
 
-            node: chess.pgn.GameNode = game
-            replay = chess.Board(self.initial_fen)
-            for index, move in enumerate(self.board.move_stack):
-                if move not in replay.legal_moves:
-                    raise RuntimeError("Current game history cannot be exported as legal PGN.")
-                node = node.add_variation(move)
-                if index < len(self.recorded_clocks):
-                    pair = self.recorded_clocks[index]
-                    mover_clock = pair[0] if replay.turn == chess.WHITE else pair[1]
-                    if mover_clock is not None:
-                        node.set_clock(mover_clock / 1_000)
-                replay.push(move)
+            if game is None:
+                game = chess.pgn.Game()
+                for key, value in self.pgn_headers.items():
+                    game.headers[key] = value
+                if self.initial_fen != chess.STARTING_FEN:
+                    game.setup(chess.Board(self.initial_fen))
+
+                node: chess.pgn.GameNode = game
+                replay = chess.Board(self.initial_fen)
+                for index, move in enumerate(self.board.move_stack):
+                    if move not in replay.legal_moves:
+                        raise RuntimeError("Current game history cannot be exported as legal PGN.")
+                    node = node.add_variation(move)
+                    if index < len(self.recorded_clocks):
+                        pair = self.recorded_clocks[index]
+                        mover_clock = pair[0] if replay.turn == chess.WHITE else pair[1]
+                        if mover_clock is not None:
+                            node.set_clock(mover_clock / 1_000)
+                    replay.push(move)
 
             state = self.state()
             result = state["result"] or "*"
             game.headers["Result"] = str(result)
             if state["termination"]:
-                game.headers["Termination"] = str(state["termination"]).replace("_", " ")
+                # ``pgn_import`` is an internal UI reason used when a finished
+                # import omitted Termination. Do not invent that header on an
+                # otherwise untouched round trip.
+                if not (
+                    using_imported_tree
+                    and state["termination"] == "pgn_import"
+                    and "Termination" not in self.pgn_headers
+                ):
+                    game.headers["Termination"] = str(state["termination"]).replace("_", " ")
+            elif "Termination" in game.headers:
+                # Undoing an imported finished game clears its result. Do not
+                # leave a now-stale termination header behind on regenerated
+                # main-line PGN.
+                del game.headers["Termination"]
             return str(game)
 
     def review_state(self, ply: int) -> dict[str, Any]:
@@ -1466,6 +1502,7 @@ class GameSession:
             if remaining <= 0:
                 side = "White" if mover == chess.WHITE else "Black"
                 raise ValueError(f"{side} has flagged on time.")
+            self._imported_pgn_game = None
             self.history.append((self.white_ms, self.black_ms))
             if mover == chess.WHITE:
                 self.white_ms += self.increment_ms
@@ -1521,6 +1558,7 @@ class GameSession:
                 # report the flag while the board remains at the pre-search
                 # position, matching the referee's wall-clock semantics.
                 return ""
+            self._imported_pgn_game = None
             self.history.append((self.white_ms, self.black_ms))
             if color == chess.WHITE:
                 self.white_ms += self.increment_ms
@@ -1545,6 +1583,7 @@ class GameSession:
             if not self.board.move_stack:
                 self.turn_started_ns = time.monotonic_ns()
                 return
+            self._imported_pgn_game = None
             for _ in range(min(plies, len(self.board.move_stack))):
                 self.board.pop()
                 if self.history:

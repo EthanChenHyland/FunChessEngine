@@ -17,6 +17,9 @@ Install/sync the Python environment:
 make setup
 ```
 
+The repository pins Python **3.12.14** in `.python-version`; CI and release validation use the same
+patch release so engine timing/correctness checks are reproducible.
+
 If Electron dependencies are missing or stale:
 
 ```bash
@@ -31,6 +34,10 @@ Run the full validation gate before testing a release build:
 make release-gate
 ```
 
+The release gate includes a hidden Electron/Chromium UI smoke covering launcher routing, FEN setup,
+promotion, non-destructive review, undo, and Home clock pausing. You can run that smoke directly with
+`cd desktop && npm run smoke:ui`.
+
 Build the native Apple Silicon desktop app, DMG, and ZIP:
 
 ```bash
@@ -42,6 +49,9 @@ Or validate and build in one command:
 ```bash
 make release-build
 ```
+
+`desktop-build`/`release-build` also verify the produced Apple Silicon application and bundled backend
+are both arm64 and smoke the frozen backend API from inside the packaged `.app`.
 
 Open the built app:
 
@@ -98,6 +108,13 @@ and a compact position-based engine opening repertoire. FunChess Accuracy and ph
 breakdown, a spaced-repetition mistake trainer built from analyzed games, local move sounds, drag/drop
 for PGN/FEN/saved PNG files, and a Cmd/Ctrl+K command palette. Advanced diagnostics also expose an
 isolated benchmark/A-B development lab with local result history. Preferences and training data stay local.
+Large library, study, annotation, trainer, and benchmark metadata is persisted in IndexedDB with
+localStorage migration/fallback, while a bounded session snapshot keeps the last in-progress game
+recoverable after both normal quits and interrupted sessions. Imported PGNs retain their comments,
+NAGs, side variations, headers, and clock annotations on an untouched round trip; editing the live
+main line deliberately regenerates a clean PGN so stale annotations cannot be attached to new moves.
+The Electron backend uses a stable preferred loopback origin for durable renderer storage, and a native
+backend restart now restores a bounded current-game snapshot before the renderer switches to the new process.
 
 ## Writing an agent
 
@@ -131,6 +148,14 @@ your own future evaluation/policy model; see `docs/TRAINING.md`. The teacher its
 packaged or called by the runtime engine.
 
 Local harness runs can capture stdout/stderr for diagnostics.
+
+## macOS signing and notarization
+
+Local builds remain usable without Apple credentials. For a distributable signed build, configure a
+Developer ID signing identity using electron-builder's standard `CSC_*` environment variables and set
+`APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, and `APPLE_TEAM_ID`. The build hook then notarizes the signed
+`.app` with Apple's notary service before the DMG/ZIP are finalized. Without those credentials the hook
+prints a skip message rather than making local development builds fail.
 
 ## The ladder
 

@@ -7,6 +7,8 @@ from pathlib import Path
 import chess
 
 from harness.arena import elo_from_score, load_openings, score_interval
+from harness.rules import STDERR_TAIL_CAP
+from harness.sandbox import Agent
 
 
 class ArenaTests(unittest.TestCase):
@@ -40,6 +42,12 @@ class ArenaTests(unittest.TestCase):
         low, high = score_interval(2, 2, 2)
         self.assertLess(low, 0.5)
         self.assertGreater(high, 0.5)
+
+    def test_agent_stderr_tail_is_memory_bounded(self) -> None:
+        agent = Agent(["unused"])
+        chunk = b"x" * (STDERR_TAIL_CAP + 123)
+        agent._keep(type("Key", (), {"fileobj": None})(), chunk)  # type: ignore[arg-type]
+        self.assertEqual(len(agent._tail), STDERR_TAIL_CAP)
 
 
 if __name__ == "__main__":

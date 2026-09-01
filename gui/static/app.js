@@ -6,12 +6,19 @@ const STARTING_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
 const DISPLAY_KEY = "funChessEngine.display.v1";
 const RECOVERY_KEY = "funChessEngine.recovery.v1";
-const RECOVERY_CLEAN_EXIT_KEY = "funChessEngine.recovery.cleanExit.v1";
 const RECENTS_KEY = "funChessEngine.recents.v1";
 const TRAINER_KEY = "funChessEngine.trainer.v1";
 const ANNOTATIONS_KEY = "funChessEngine.annotations.v1";
 const BENCHMARK_HISTORY_KEY = "funChessEngine.benchmarks.v1";
 const VARIATIONS_KEY = "funChessEngine.variations.v1";
+const DURABLE_DB_NAME = "FunChessEngine.LocalData";
+const DURABLE_DB_VERSION = 1;
+const DURABLE_STORE = "metadata";
+const MAX_FEN_BYTES = 64 * 1024;
+const MAX_PGN_BYTES = 2 * 1024 * 1024;
+const MAX_SAVE_BYTES = 50 * 1024 * 1024;
+const MAX_RECOVERY_BYTES = 512 * 1024;
+const MAX_RESTART_SNAPSHOT_BYTES = 512 * 1024;
 const DISPLAY_DEFAULTS = {
   theme: "forest",
   accent: "green",
@@ -61,6 +68,7 @@ let multiPvBusy = false;
 let multiPvArrowMove = null;
 let autoPositionAnalysisTimer = null;
 let autoPositionAnalysisFen = null;
+let autoPositionAnalysisQueued = false;
 let variationMode = false;
 let variationWorkspace = null;
 let variationNodeId = null;
@@ -80,16 +88,15 @@ let trainerWasPaused = false;
 let commandSelection = 0;
 let evalBreakdownData = null;
 let evalBreakdownBusy = false;
+let evalBreakdownQueued = false;
 let devLabBusy = false;
 let benchmarkHistory = loadBenchmarkHistory();
 let boardFocusSquare = null;
-
-try {
-  localStorage.setItem(RECOVERY_CLEAN_EXIT_KEY, "0");
-} catch (_) {
-  recoveryResolved = true;
-  startupRecovery = null;
-}
+let durableDbPromise = null;
+let durableMetadataHydrated = false;
+const durableMetadataDirty = new Set();
+const durableWriteChains = new Map();
+let persistenceErrorShown = false;
 
 const $ = (id) => document.getElementById(id);
 
@@ -104,6 +111,162 @@ function setStatus(message, tone = "info") {
   if (launcherTarget && !$("startScreen")?.hidden) {
     launcherTarget.textContent = text;
     launcherTarget.dataset.tone = tone;
+  }
+}
+
+function reportPersistenceError(error) {
+  console.warn("Local metadata persistence failed:", error);
+  if (persistenceErrorShown) return;
+  persistenceErrorShown = true;
+  setStatus("Some local library/training metadata could not be saved. Free browser storage and try again.", "error");
+}
+
+function openDurableDb() {
+  if (durableDbPromise) return durableDbPromise;
+  durableDbPromise = new Promise((resolve, reject) => {
+    const idb = globalThis.indexedDB;
+    if (!idb) {
+      reject(new Error("IndexedDB is unavailable."));
+      return;
+    }
+    const request = idb.open(DURABLE_DB_NAME, DURABLE_DB_VERSION);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(DURABLE_STORE)) {
+        request.result.createObjectStore(DURABLE_STORE);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("Could not open IndexedDB."));
+    request.onblocked = () => reject(new Error("IndexedDB upgrade is blocked by another window."));
+  });
+  return durableDbPromise;
+}
+
+async function readDurableValue(key) {
+  const db = await openDurableDb();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(DURABLE_STORE, "readonly");
+    const request = transaction.objectStore(DURABLE_STORE).get(key);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error(`Could not read ${key}.`));
+  });
+}
+
+async function writeDurableValue(key, value) {
+  const db = await openDurableDb();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(DURABLE_STORE, "readwrite");
+    transaction.objectStore(DURABLE_STORE).put(value, key);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error || new Error(`Could not save ${key}.`));
+    transaction.onabort = () => reject(transaction.error || new Error(`Saving ${key} was aborted.`));
+  });
+}
+
+function persistDurableValue(key, value) {
+  durableMetadataDirty.add(key);
+  let serialized;
+  let snapshot;
+  let localError = null;
+  try {
+    serialized = JSON.stringify(value);
+    snapshot = JSON.parse(serialized);
+    // Keep a synchronous fallback until the IndexedDB transaction commits.
+    localStorage.setItem(key, serialized);
+  } catch (error) {
+    localError = error;
+    try {
+      snapshot = snapshot ?? JSON.parse(JSON.stringify(value));
+    } catch (cloneError) {
+      reportPersistenceError(cloneError);
+      return;
+    }
+  }
+
+  const previous = durableWriteChains.get(key) || Promise.resolve();
+  const pending = previous.catch(() => {}).then(async () => {
+    await writeDurableValue(key, snapshot);
+    try {
+      localStorage.removeItem(key);
+    } catch (_) {
+      // IndexedDB is authoritative once its transaction commits.
+    }
+  }).catch((error) => {
+    if (localError) reportPersistenceError(error);
+    else console.warn(`IndexedDB save failed for ${key}; localStorage fallback retained.`, error);
+  });
+  durableWriteChains.set(key, pending);
+}
+
+function durableMetadataSpecs() {
+  return [
+    {
+      key: RECENTS_KEY,
+      get: () => recentGames,
+      set: (value) => { recentGames = Array.isArray(value) ? value.filter((item) => item && Array.isArray(item.moves)).slice(0, 24) : []; },
+    },
+    {
+      key: TRAINER_KEY,
+      get: () => trainerItems,
+      set: (value) => { trainerItems = Array.isArray(value) ? value.filter((item) => item?.fen && item?.best_uci).slice(0, 250) : []; },
+    },
+    {
+      key: VARIATIONS_KEY,
+      get: () => savedVariationWorkspaces,
+      set: (value) => { savedVariationWorkspaces = value && typeof value === "object" && !Array.isArray(value) ? value : {}; },
+    },
+    {
+      key: ANNOTATIONS_KEY,
+      get: () => annotations,
+      set: (value) => { annotations = value && typeof value === "object" && !Array.isArray(value) ? value : {}; },
+    },
+    {
+      key: BENCHMARK_HISTORY_KEY,
+      get: () => benchmarkHistory,
+      set: (value) => { benchmarkHistory = Array.isArray(value) ? value.slice(0, 20) : []; },
+    },
+  ];
+}
+
+async function hydrateDurableMetadata() {
+  try {
+    await openDurableDb();
+    for (const spec of durableMetadataSpecs()) {
+      if (durableMetadataDirty.has(spec.key)) {
+        persistDurableValue(spec.key, spec.get());
+        continue;
+      }
+      let localRaw = null;
+      try {
+        localRaw = localStorage.getItem(spec.key);
+      } catch (_) {
+        localRaw = null;
+      }
+      if (localRaw !== null) {
+        try {
+          spec.set(JSON.parse(localRaw));
+          await writeDurableValue(spec.key, spec.get());
+          try { localStorage.removeItem(spec.key); } catch (_) {}
+          continue;
+        } catch (error) {
+          console.warn(`Could not migrate ${spec.key}; checking IndexedDB copy instead.`, error);
+        }
+      }
+      const stored = await readDurableValue(spec.key);
+      if (stored !== undefined) spec.set(stored);
+    }
+    durableMetadataHydrated = true;
+    if (state) {
+      renderRecentGames();
+      renderOpeningExplorer();
+      renderTrainerPanel();
+      renderDeveloperHistory();
+      renderVariationWorkspace();
+      renderBoard();
+    }
+  } catch (error) {
+    durableMetadataHydrated = true;
+    console.warn("IndexedDB metadata store unavailable; using localStorage fallback.", error);
   }
 }
 
@@ -148,9 +311,8 @@ function setState(value) {
 
 function loadRecoverySnapshot() {
   try {
-    const cleanExit = localStorage.getItem(RECOVERY_CLEAN_EXIT_KEY) === "1";
     const saved = JSON.parse(localStorage.getItem(RECOVERY_KEY) || "null");
-    if (cleanExit || !saved || saved.version !== 1 || !Array.isArray(saved.moves)) return null;
+    if (!saved || saved.version !== 1 || !Array.isArray(saved.moves)) return null;
     if (!saved.moves.length && saved.initial_fen === STARTING_FEN) return null;
     return saved;
   } catch (_) {
@@ -179,12 +341,9 @@ function loadAnnotations() {
 }
 
 function saveAnnotations() {
-  try {
-    const entries = Object.entries(annotations).slice(-160);
-    localStorage.setItem(ANNOTATIONS_KEY, JSON.stringify(Object.fromEntries(entries)));
-  } catch (_) {
-    // Board markup is optional local metadata.
-  }
+  const entries = Object.entries(annotations).slice(-160);
+  annotations = Object.fromEntries(entries);
+  persistDurableValue(ANNOTATIONS_KEY, annotations);
 }
 
 function loadTrainerItems() {
@@ -197,11 +356,8 @@ function loadTrainerItems() {
 }
 
 function saveTrainerItems() {
-  try {
-    localStorage.setItem(TRAINER_KEY, JSON.stringify(trainerItems.slice(0, 250)));
-  } catch (_) {
-    // Trainer history is optional local data.
-  }
+  trainerItems = trainerItems.slice(0, 250);
+  persistDurableValue(TRAINER_KEY, trainerItems);
 }
 
 function loadBenchmarkHistory() {
@@ -214,11 +370,8 @@ function loadBenchmarkHistory() {
 }
 
 function saveBenchmarkHistory() {
-  try {
-    localStorage.setItem(BENCHMARK_HISTORY_KEY, JSON.stringify(benchmarkHistory.slice(0, 20)));
-  } catch (_) {
-    // Development benchmark history is optional local metadata.
-  }
+  benchmarkHistory = benchmarkHistory.slice(0, 20);
+  persistDurableValue(BENCHMARK_HISTORY_KEY, benchmarkHistory);
 }
 
 function loadVariationWorkspaces() {
@@ -231,15 +384,11 @@ function loadVariationWorkspaces() {
 }
 
 function persistVariationWorkspaces() {
-  try {
-    const entries = Object.entries(savedVariationWorkspaces)
-      .sort(([, left], [, right]) => String(right?.updated_at || "").localeCompare(String(left?.updated_at || "")))
-      .slice(0, 20);
-    savedVariationWorkspaces = Object.fromEntries(entries);
-    localStorage.setItem(VARIATIONS_KEY, JSON.stringify(savedVariationWorkspaces));
-  } catch (_) {
-    // Study workspaces are optional local metadata.
-  }
+  const entries = Object.entries(savedVariationWorkspaces)
+    .sort(([, left], [, right]) => String(right?.updated_at || "").localeCompare(String(left?.updated_at || "")))
+    .slice(0, 20);
+  savedVariationWorkspaces = Object.fromEntries(entries);
+  persistDurableValue(VARIATIONS_KEY, savedVariationWorkspaces);
 }
 
 function variationStorageKey(originPly) {
@@ -302,11 +451,8 @@ function ingestTrainerFromAnalysis() {
 }
 
 function saveRecentGames() {
-  try {
-    localStorage.setItem(RECENTS_KEY, JSON.stringify(recentGames.slice(0, 24)));
-  } catch (_) {
-    // Recent games are optional local convenience data.
-  }
+  recentGames = recentGames.slice(0, 24);
+  persistDurableValue(RECENTS_KEY, recentGames);
 }
 
 function trimRecentGames() {
@@ -332,8 +478,32 @@ function backendSnapshot(snapshot) {
   return rest;
 }
 
-function archiveCompletedGame() {
-  if (!state?.game_over || !state.moves_uci?.length) return;
+function recoveryGameSnapshot() {
+  const snapshot = gameSnapshot();
+  for (const key of ["moves", "clock_history", "recorded_clock_history"]) {
+    if (Array.isArray(snapshot[key]) && snapshot[key].length > 1_000) {
+      throw new Error("Game is too long for a bounded recovery snapshot.");
+    }
+  }
+  // Whole-game analysis can be much larger than the game itself. Preserve it
+  // when it fits, but prefer a recoverable game over losing recovery entirely.
+  if (snapshot.analysis && utf8ByteLength(JSON.stringify(snapshot)) > MAX_RECOVERY_BYTES) {
+    snapshot.analysis = null;
+  }
+  return snapshot;
+}
+
+function boundedDesktopRestartSnapshot() {
+  const snapshot = backendSnapshot(recoveryGameSnapshot());
+  const encoded = new TextEncoder().encode(JSON.stringify(snapshot));
+  if (encoded.byteLength > MAX_RESTART_SNAPSHOT_BYTES) {
+    throw new Error("Current game is too large to restart the backend safely.");
+  }
+  return snapshot;
+}
+
+function archiveCurrentGame(allowIncomplete = false) {
+  if (!state?.moves_uci?.length || (!allowIncomplete && !state.game_over)) return;
   const snapshot = gameSnapshot();
   const signature = gameSignature(snapshot);
   if (signature === archivedResultKey) return;
@@ -349,6 +519,10 @@ function archiveCompletedGame() {
   recentGames.unshift(snapshot);
   trimRecentGames();
   saveRecentGames();
+}
+
+function archiveCompletedGame() {
+  archiveCurrentGame(false);
 }
 
 function renderRecentGames() {
@@ -504,9 +678,13 @@ function persistRecoverySnapshot() {
       localStorage.removeItem(RECOVERY_KEY);
       return;
     }
-    localStorage.setItem(RECOVERY_KEY, JSON.stringify(gameSnapshot()));
-  } catch (_) {
-    // Recovery is best-effort and must never interfere with play.
+    const serialized = JSON.stringify(recoveryGameSnapshot());
+    if (new TextEncoder().encode(serialized).byteLength > MAX_RECOVERY_BYTES) {
+      throw new Error("Session recovery snapshot is too large to save safely.");
+    }
+    localStorage.setItem(RECOVERY_KEY, serialized);
+  } catch (error) {
+    console.warn("Session recovery save failed:", error);
   }
 }
 
@@ -521,13 +699,14 @@ function renderRecoveryCard() {
   $("recoveryText").textContent = `Recovered ${moves} ${moves === 1 ? "ply" : "plies"} from ${when}.`;
 }
 
-async function resumeRecovery() {
-  if (!startupRecovery) return;
+async function resumeRecovery(scheduleReply = true) {
+  if (!startupRecovery) return false;
   const snapshot = startupRecovery;
   const confirmed = await confirmRestartIfNeeded(
     "Restoring the recovered game replaces the game currently on the board.",
+    false,
   );
-  if (!confirmed) return;
+  if (!confirmed) return false;
   const mode = ["white", "black", "both", "none"].includes(snapshot.human_side)
     ? snapshot.human_side
     : "white";
@@ -546,9 +725,10 @@ async function resumeRecovery() {
     syncTimeControlsFromState();
     orientForHuman();
     render();
-    scheduleComputerReply();
+    if (scheduleReply) scheduleComputerReply();
     persistRecoverySnapshot();
   }
+  return succeeded;
 }
 
 function discardRecovery() {
@@ -648,6 +828,18 @@ async function api(path, payload = null) {
   }
   if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
   return data;
+}
+
+function utf8ByteLength(value) {
+  return new TextEncoder().encode(String(value ?? "")).byteLength;
+}
+
+function assertBrowserFileSize(file, maxBytes, label) {
+  if (!file || !Number.isFinite(file.size)) return;
+  if (file.size > maxBytes) {
+    const maxMb = Math.max(1, Math.floor(maxBytes / 1024 / 1024));
+    throw new Error(`${label} is too large. Maximum size is ${maxMb} MB.`);
+  }
 }
 
 function squareOrder() {
@@ -1550,6 +1742,14 @@ function renderLauncher() {
     playLabel.textContent = "Start playing";
     return;
   }
+  if (!recoveryResolved && startupRecovery) {
+    const plies = startupRecovery.moves?.length || 0;
+    const saved = startupRecovery.saved_at ? new Date(startupRecovery.saved_at) : null;
+    const when = saved && !Number.isNaN(saved.getTime()) ? saved.toLocaleString() : "an earlier session";
+    summary.textContent = `Last session · ${plies} ${plies === 1 ? "ply" : "plies"} · ${when}`;
+    playLabel.textContent = "Resume last session";
+    return;
+  }
   const plies = state.moves_uci?.length || 0;
   const progressed = hasGameProgress();
   const opening = state.opening?.name || (state.initial_fen === STARTING_FEN ? "Starting position" : "Custom position");
@@ -1563,10 +1763,29 @@ function renderLauncher() {
   playLabel.textContent = state.game_over ? "View finished game" : progressed ? "Continue game" : "Start playing";
 }
 
-function confirmRestartIfNeeded(message) {
+async function continueFromLauncher() {
+  if (!recoveryResolved && startupRecovery) {
+    const resumed = await resumeRecovery();
+    if (!resumed) return;
+  }
+  await enterWorkbench("game", true);
+}
+
+async function analyzeFromLauncher() {
+  if (!recoveryResolved && startupRecovery) {
+    const resumed = await resumeRecovery(false);
+    if (!resumed) return;
+  }
+  await enterWorkbench("engine", false);
+}
+
+function confirmRestartIfNeeded(message, includeStartupRecovery = true) {
   const setupWarning = setupMode ? " Unapplied position-setup changes will also be discarded." : "";
-  return hasGameProgress() || setupMode
-    ? confirmRestart(`${message}${setupWarning}`)
+  const recoveryWarning = includeStartupRecovery && !recoveryResolved && startupRecovery
+    ? " The resumable last session will also be replaced."
+    : "";
+  return hasGameProgress() || setupMode || Boolean(recoveryWarning)
+    ? confirmRestart(`${message}${setupWarning}${recoveryWarning}`)
     : Promise.resolve(true);
 }
 
@@ -1579,6 +1798,7 @@ function clearTransientUiForReplacement() {
   clearTimeout(autoPositionAnalysisTimer);
   autoPositionAnalysisTimer = null;
   autoPositionAnalysisFen = null;
+  autoPositionAnalysisQueued = false;
   homeAutoPaused = false;
   if (variationMode) saveCurrentVariationWorkspace();
 
@@ -1612,7 +1832,15 @@ function clearTransientUiForReplacement() {
   multiPvData = null;
   multiPvArrowMove = null;
   evalBreakdownData = null;
+  evalBreakdownQueued = false;
   gameAnalysis = null;
+  recoveryResolved = true;
+  startupRecovery = null;
+  try {
+    localStorage.removeItem(RECOVERY_KEY);
+  } catch (_) {
+    // A successful replacement remains valid even if browser storage is unavailable.
+  }
 }
 
 function boardMapFromFen(fen) {
@@ -1843,11 +2071,36 @@ function desktopApi() {
   return window.engineLabDesktop || null;
 }
 
+async function restartDesktopBackend() {
+  const desktop = desktopApi();
+  if (!desktop?.restartBackend) {
+    setStatus("Backend restart is available in the desktop application.", "error");
+    return false;
+  }
+  try {
+    const snapshot = state ? boundedDesktopRestartSnapshot() : null;
+    if (recoveryResolved && state) persistRecoverySnapshot();
+    setStatus("Restarting the local engine backend…", "loading");
+    setEngineStatus("Restarting backend", "busy");
+    const nextUrl = await desktop.restartBackend(snapshot);
+    const target = new URL(String(nextUrl || ""));
+    if (target.protocol !== "http:" || target.hostname !== "127.0.0.1") {
+      throw new Error("Desktop backend returned an invalid local address.");
+    }
+    window.location.replace(target.href);
+    return true;
+  } catch (error) {
+    setStatus(error.message, "error");
+    setEngineStatus("Engine unavailable", "error");
+    return false;
+  }
+}
+
 async function downloadBlob(blob, filename) {
   const desktop = desktopApi();
   if (desktop?.saveBinary) {
     const saved = await desktop.saveBinary(filename, await blob.arrayBuffer());
-    if (saved) return true;
+    return Boolean(saved);
   }
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
@@ -1903,10 +2156,16 @@ function u32Bytes(value) {
   return new Uint8Array([(value >>> 24) & 255, (value >>> 16) & 255, (value >>> 8) & 255, value & 255]);
 }
 
-function makePngTextChunk(keyword, text) {
+function makePngITxtChunk(keyword, text) {
   const encoder = new TextEncoder();
-  const type = encoder.encode("tEXt");
-  const data = new Uint8Array([...encoder.encode(keyword), 0, ...encoder.encode(text)]);
+  const type = encoder.encode("iTXt");
+  // PNG iTXt: keyword\0, compression flag, compression method,
+  // language tag\0, translated keyword\0, then uncompressed UTF-8 text.
+  const data = new Uint8Array([
+    ...encoder.encode(keyword),
+    0, 0, 0, 0, 0,
+    ...encoder.encode(text),
+  ]);
   const crcInput = new Uint8Array(type.length + data.length);
   crcInput.set(type, 0);
   crcInput.set(data, type.length);
@@ -1930,7 +2189,7 @@ function embedPngSnapshot(bytes, snapshot) {
     const length = readU32(bytes, offset);
     const typeOffset = offset + 4;
     if (bytes.slice(typeOffset, typeOffset + 4).every((value, index) => value === iend[index])) {
-      const chunk = makePngTextChunk("FunChessEngine", JSON.stringify(snapshot));
+      const chunk = makePngITxtChunk("FunChessEngine", JSON.stringify(snapshot));
       const output = new Uint8Array(bytes.length + chunk.length);
       output.set(bytes.slice(0, offset), 0);
       output.set(chunk, offset);
@@ -1944,6 +2203,13 @@ function embedPngSnapshot(bytes, snapshot) {
 
 function extractPngSnapshot(bytes) {
   const decoder = new TextDecoder();
+  const validate = (text) => {
+    const snapshot = JSON.parse(text);
+    if (snapshot?.format !== "FunChessEngine.GamePNG" || snapshot?.version !== 1) {
+      throw new Error("This PNG uses an unsupported Engine Lab save format.");
+    }
+    return snapshot;
+  };
   let offset = 8;
   while (offset + 12 <= bytes.length) {
     const length = readU32(bytes, offset);
@@ -1953,11 +2219,22 @@ function extractPngSnapshot(bytes) {
       const data = bytes.slice(offset + 8, offset + 8 + length);
       const zero = data.indexOf(0);
       if (zero > 0 && decoder.decode(data.slice(0, zero)) === "FunChessEngine") {
-        const snapshot = JSON.parse(decoder.decode(data.slice(zero + 1)));
-        if (snapshot?.format !== "FunChessEngine.GamePNG" || snapshot?.version !== 1) {
-          throw new Error("This PNG uses an unsupported Engine Lab save format.");
+        return validate(decoder.decode(data.slice(zero + 1)));
+      }
+    } else if (type === "iTXt") {
+      const data = bytes.slice(offset + 8, offset + 8 + length);
+      const keywordEnd = data.indexOf(0);
+      if (keywordEnd > 0 && decoder.decode(data.slice(0, keywordEnd)) === "FunChessEngine") {
+        const compressionFlag = data[keywordEnd + 1];
+        const compressionMethod = data[keywordEnd + 2];
+        const languageStart = keywordEnd + 3;
+        const languageEnd = data.indexOf(0, languageStart);
+        const translatedStart = languageEnd + 1;
+        const translatedEnd = languageEnd >= 0 ? data.indexOf(0, translatedStart) : -1;
+        if (compressionFlag !== 0 || compressionMethod !== 0 || languageEnd < 0 || translatedEnd < 0) {
+          throw new Error("This saved PNG uses unsupported compressed metadata.");
         }
-        return snapshot;
+        return validate(decoder.decode(data.slice(translatedEnd + 1)));
       }
     }
     offset += 12 + length;
@@ -2027,16 +2304,23 @@ async function saveGamePng() {
   try {
     const snapshot = gameSnapshot();
     const blob = await renderGamePng(snapshot);
-    await downloadBlob(blob, `funchess-${new Date().toISOString().replace(/[:.]/g, "-")}.png`);
+    const saved = await downloadBlob(blob, `funchess-${new Date().toISOString().replace(/[:.]/g, "-")}.png`);
+    if (!saved) {
+      setStatus("Save canceled.");
+      return false;
+    }
     setStatus("Game saved as a portable PNG.", "success");
+    return true;
   } catch (error) {
     setStatus(error.message, "error");
+    return false;
   }
 }
 
 async function loadGamePng(file) {
   const fromLauncher = launcherVisible();
   try {
+    assertBrowserFileSize(file, MAX_SAVE_BYTES, "Saved PNG");
     const snapshot = extractPngSnapshot(new Uint8Array(await file.arrayBuffer()));
     const confirmed = await confirmRestartIfNeeded(
       "Opening a saved PNG replaces the current game. Save anything you want to keep first.",
@@ -2756,9 +3040,16 @@ function scheduleAutoPositionAnalysis(force = false) {
     || !$("engineTab")?.classList.contains("active")
     || !state
     || busy
-    || multiPvBusy
     || gameAnalysis?.status === "running"
-  ) return;
+  ) {
+    autoPositionAnalysisQueued = false;
+    return;
+  }
+  if (multiPvBusy) {
+    autoPositionAnalysisQueued = true;
+    return;
+  }
+  autoPositionAnalysisQueued = false;
   const fen = currentBoardView()?.fen || state.fen;
   if (!fen || (!force && autoPositionAnalysisFen === fen)) return;
   autoPositionAnalysisTimer = setTimeout(() => {
@@ -2852,8 +3143,13 @@ function renderEvaluationBreakdown() {
 
 async function refreshEvaluationBreakdown() {
   const fen = currentBoardView()?.fen || state?.fen;
-  if (!fen || evalBreakdownBusy || evalBreakdownData?.fen === fen) return;
+  if (!fen || evalBreakdownData?.fen === fen) return;
+  if (evalBreakdownBusy) {
+    evalBreakdownQueued = true;
+    return;
+  }
   evalBreakdownBusy = true;
+  evalBreakdownQueued = false;
   try {
     evalBreakdownData = await api("/api/eval-breakdown", { fen });
   } catch (_) {
@@ -2861,6 +3157,10 @@ async function refreshEvaluationBreakdown() {
   } finally {
     evalBreakdownBusy = false;
     renderEvaluationBreakdown();
+    const latestFen = currentBoardView()?.fen || state?.fen;
+    const shouldRerun = evalBreakdownQueued || Boolean(latestFen && latestFen !== fen);
+    evalBreakdownQueued = false;
+    if (shouldRerun) setTimeout(refreshEvaluationBreakdown, 0);
   }
 }
 
@@ -3015,6 +3315,10 @@ async function runMultiPv(options = {}) {
     multiPvBusy = false;
     renderMultiPvPanel();
     renderBoard();
+    if (autoPositionAnalysisQueued) {
+      autoPositionAnalysisQueued = false;
+      scheduleAutoPositionAnalysis(true);
+    }
   }
 }
 
@@ -3298,7 +3602,11 @@ async function exportPgn() {
 }
 
 async function loadPgnText(pgn) {
-  if (!String(pgn || "").trim()) return false;
+  const text = String(pgn || "");
+  if (!text.trim()) return false;
+  if (utf8ByteLength(text) > MAX_PGN_BYTES) {
+    throw new Error("PGN is too large. Maximum size is 2 MB.");
+  }
   const confirmed = await confirmRestartIfNeeded(
     "Opening a PGN replaces the current game. Save or export a copy first if you want to keep it.",
   );
@@ -3306,12 +3614,13 @@ async function loadPgnText(pgn) {
   autoplay = false;
   clearTimeout(autoplayTimer);
   const succeeded = await act(
-    () => api("/api/load-pgn", { pgn }),
+    () => api("/api/load-pgn", { pgn: text }),
     "PGN opened for review.",
     clearTransientUiForReplacement,
   );
   if (!succeeded) return false;
   syncTimeControlsFromState();
+  archiveCurrentGame(true);
   await enterWorkbench("engine", false);
   return true;
 }
@@ -3403,6 +3712,15 @@ async function resignGame() {
 }
 
 async function loadFenValue(fen) {
+  const value = String(fen || "").trim();
+  if (!value) {
+    setStatus("Enter a FEN position first.", "error");
+    return false;
+  }
+  if (utf8ByteLength(value) > MAX_FEN_BYTES) {
+    setStatus("FEN is too large. Maximum size is 64 KB.", "error");
+    return false;
+  }
   const fromLauncher = !$("startScreen").hidden;
   const confirmed = await confirmRestartIfNeeded(
     "Loading a FEN replaces the current game. Save or export a copy first if you want to keep it.",
@@ -3411,7 +3729,7 @@ async function loadFenValue(fen) {
   const { baseMs, incrementMs } = selectedTimeControl();
   autoplay = $("humanSide").value === "none";
   const succeeded = await act(
-    () => api("/api/reset", { fen: fen.trim(), clock_ms: baseMs, increment_ms: incrementMs }),
+    () => api("/api/reset", { fen: value, clock_ms: baseMs, increment_ms: incrementMs }),
     "FEN loaded as a new game.",
     clearTransientUiForReplacement,
   );
@@ -3515,8 +3833,13 @@ async function handleDroppedFiles(files) {
   if (!file) return;
   const name = file.name.toLowerCase();
   try {
-    if (name.endsWith(".pgn")) await loadPgnText(await file.text());
-    else if (name.endsWith(".fen") || name.endsWith(".txt")) await loadFenValue((await file.text()).trim());
+    if (name.endsWith(".pgn")) {
+      assertBrowserFileSize(file, MAX_PGN_BYTES, "PGN");
+      await loadPgnText(await file.text());
+    } else if (name.endsWith(".fen") || name.endsWith(".txt")) {
+      assertBrowserFileSize(file, MAX_FEN_BYTES, "FEN");
+      await loadFenValue((await file.text()).trim());
+    }
     else if (name.endsWith(".png")) await loadGamePng(file);
     else throw new Error("Drop a .pgn, .fen, or FunChessEngine .png file.");
   } catch (error) {
@@ -3642,8 +3965,8 @@ tabButtons.forEach((button, index) => {
 });
 
 $("homeBtn").addEventListener("click", showLauncher);
-$("startPlayBtn").addEventListener("click", () => enterWorkbench("game", true));
-$("startAnalysisBtn").addEventListener("click", () => enterWorkbench("engine", false));
+$("startPlayBtn").addEventListener("click", continueFromLauncher);
+$("startAnalysisBtn").addEventListener("click", analyzeFromLauncher);
 $("startNewGameBtn").addEventListener("click", startNewGameFromLauncher);
 $("startPgnBtn").addEventListener("click", openPgnFile);
 $("startFenBtn").addEventListener("click", openFenFile);
@@ -3711,9 +4034,10 @@ $("loadPgnInput").addEventListener("change", async (event) => {
   event.target.value = "";
   if (!file) return;
   try {
+    assertBrowserFileSize(file, MAX_PGN_BYTES, "PGN");
     await loadPgnText(await file.text());
   } catch (error) {
-    $("statusLine").textContent = error.message;
+    setStatus(error.message, "error");
   }
 });
 $("savePngBtn").addEventListener("click", saveGamePng);
@@ -3721,7 +4045,13 @@ $("loadPngBtn").addEventListener("click", openPngFile);
 $("loadPngInput").addEventListener("change", async (event) => {
   const file = event.target.files?.[0];
   event.target.value = "";
-  if (file) await loadGamePng(file);
+  if (!file) return;
+  try {
+    assertBrowserFileSize(file, MAX_SAVE_BYTES, "Saved PNG");
+    await loadGamePng(file);
+  } catch (error) {
+    setStatus(error.message, "error");
+  }
 });
 $("loadFenFileBtn").addEventListener("click", openFenFile);
 $("loadFenFileInput").addEventListener("change", async (event) => {
@@ -3729,11 +4059,12 @@ $("loadFenFileInput").addEventListener("change", async (event) => {
   event.target.value = "";
   if (!file) return;
   try {
+    assertBrowserFileSize(file, MAX_FEN_BYTES, "FEN");
     const fen = (await file.text()).trim();
     $("fenInput").value = fen;
     await loadFenValue(fen);
   } catch (error) {
-    $("statusLine").textContent = error.message;
+    setStatus(error.message, "error");
   }
 });
 
@@ -4019,7 +4350,9 @@ if (desktop) {
 }
 
 async function handleDesktopCommand(command) {
-  if (command === "new-game") {
+  if (command === "restart-backend") {
+    await restartDesktopBackend();
+  } else if (command === "new-game") {
     if (launcherVisible()) await startNewGameFromLauncher();
     else $("newGameBtn").click();
   } else if (command === "setup-position") {
@@ -4091,6 +4424,7 @@ $("retryConnectionBtn").addEventListener("click", reconnectBackend);
 
 applyDisplaySettings(false);
 orientForHuman();
+void hydrateDurableMetadata();
 api("/api/state").then(async (value) => {
   setState(value);
   if (!state.game_over && !state.paused) {
@@ -4113,9 +4447,4 @@ setInterval(() => {
 }, 2_000);
 window.addEventListener("beforeunload", () => {
   if (recoveryResolved) persistRecoverySnapshot();
-  try {
-    localStorage.setItem(RECOVERY_CLEAN_EXIT_KEY, "1");
-  } catch (_) {
-    // Browser storage is optional.
-  }
 });

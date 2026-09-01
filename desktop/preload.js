@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld("engineLabDesktop", {
   saveText: (filename, text) => ipcRenderer.invoke("file:save-text", { filename, text }),
   savePgn: (filename, text) => ipcRenderer.invoke("file:save-pgn", { filename, text }),
   saveBinary: (filename, bytes) => ipcRenderer.invoke("file:save-binary", { filename, bytes }),
+  restartBackend: (snapshot) => ipcRenderer.invoke("backend:restart", snapshot),
   onCommand: (listener) => {
     const handler = (_event, command) => listener(command);
     ipcRenderer.on("menu:command", handler);

@@ -1,0 +1,175 @@
+"use strict";
+
+const { app, BrowserWindow } = require("electron");
+const { spawn } = require("child_process");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+
+const root = path.resolve(__dirname, "..", "..");
+const smokeUserData = fs.mkdtempSync(path.join(os.tmpdir(), "funchess-ui-smoke-"));
+app.setPath("userData", smokeUserData);
+let backend = null;
+
+function pythonCommand() {
+  const venv = path.join(root, ".venv", "bin", "python");
+  if (fs.existsSync(venv)) return { command: venv, args: [] };
+  return { command: "uv", args: ["run", "python"] };
+}
+
+function startBackend() {
+  return new Promise((resolve, reject) => {
+    const python = pythonCommand();
+    const child = spawn(
+      python.command,
+      [...python.args, "-m", "gui.server", "--no-open", "--port", "0"],
+      { cwd: root, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    backend = child;
+    let output = "";
+    const timeout = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error(`UI smoke backend timed out.\n${output}`));
+    }, 15000);
+    const inspect = (chunk) => {
+      output += chunk.toString();
+      const match = output.match(/FunChessEngine GUI:\s+(http:\/\/127\.0\.0\.1:\d+)/);
+      if (!match) return;
+      clearTimeout(timeout);
+      resolve(match[1]);
+    };
+    child.stdout.on("data", inspect);
+    child.stderr.on("data", inspect);
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once("exit", (code, signal) => {
+      if (!output.includes("FunChessEngine GUI:")) {
+        clearTimeout(timeout);
+        reject(new Error(`UI smoke backend exited early (${code ?? signal ?? "unknown"}).\n${output}`));
+      }
+    });
+  });
+}
+
+async function waitFor(window, expression, timeoutMs = 8000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const ready = await window.webContents.executeJavaScript(`Boolean(${expression})`, true);
+    if (ready) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`Timed out waiting for: ${expression}`);
+}
+
+async function run() {
+  const url = await startBackend();
+  const window = new BrowserWindow({
+    show: false,
+    width: 1200,
+    height: 800,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  await window.loadURL(url);
+  await waitFor(window, `document.getElementById("startSessionSummary")?.textContent !== "Loading local board…"`);
+
+  const initial = await window.webContents.executeJavaScript(`({
+    launcherVisible: !document.getElementById("startScreen").hidden,
+    workspaceHidden: document.getElementById("mainWorkspace").hidden,
+    playLabel: document.getElementById("startPlayLabel").textContent,
+  })`, true);
+  if (!initial.launcherVisible || !initial.workspaceHidden || !initial.playLabel) {
+    throw new Error(`Launcher contract failed: ${JSON.stringify(initial)}`);
+  }
+
+  await window.webContents.executeJavaScript(`document.getElementById("startPlayBtn").click()`, true);
+  await waitFor(
+    window,
+    `document.getElementById("startScreen").hidden
+      && !document.getElementById("mainWorkspace").hidden
+      && !busy
+      && state
+      && !state.paused
+      && !homeAutoPaused`,
+  );
+
+  await window.webContents.executeJavaScript(`document.getElementById("humanSide").value = "both"`, true);
+  const fenLoaded = await window.webContents.executeJavaScript(
+    `(async () => loadFenValue("8/P7/8/8/8/8/7k/4K3 w - - 0 1"))()`,
+    true,
+  );
+  if (!fenLoaded) throw new Error("FEN setup action did not complete successfully.");
+  await waitFor(
+    window,
+    `!busy && state?.board?.a7 === "P" && document.querySelector('[data-square="a7"] .piece')?.textContent === "♙"`,
+  );
+  await window.webContents.executeJavaScript(`
+    document.querySelector('[data-square="a7"]').click();
+    document.querySelector('[data-square="a8"]').click();
+  `, true);
+  await waitFor(window, `document.getElementById("promotionDialog")?.open`);
+  await window.webContents.executeJavaScript(`document.querySelector('[data-promotion="n"]').click()`, true);
+  await waitFor(window, `!busy && state?.board?.a8 === "N"`);
+
+  const liveFen = await window.webContents.executeJavaScript(
+    `fetch("/api/state").then(r => r.json()).then(s => s.fen)`,
+    true,
+  );
+  await window.webContents.executeJavaScript(`activateTab(document.getElementById("engineTabButton"))`, true);
+  await waitFor(window, `document.getElementById("engineTab")?.classList.contains("active")`);
+  await window.webContents.executeJavaScript(`jumpReview(0)`, true);
+  const afterReviewFen = await window.webContents.executeJavaScript(
+    `fetch("/api/state").then(r => r.json()).then(s => s.fen)`,
+    true,
+  );
+  if (afterReviewFen !== liveFen) {
+    throw new Error(`Review navigation mutated the live game: ${liveFen} -> ${afterReviewFen}`);
+  }
+  await window.webContents.executeJavaScript(`exitReviewMode(false)`, true);
+  await window.webContents.executeJavaScript(`document.getElementById("gameTabButton").click()`, true);
+  await window.webContents.executeJavaScript(`document.getElementById("undoBtn").click()`, true);
+  await waitFor(window, `fetch("/api/state").then(r => r.json()).then(s => s.board.a7 === "P" && !s.board.a8)`);
+
+  await window.webContents.executeJavaScript(`document.getElementById("homeBtn").click()`, true);
+  await waitFor(window, `!document.getElementById("startScreen").hidden`);
+  await waitFor(window, `fetch("/api/state").then(r => r.json()).then(s => s.paused)`);
+
+  await window.webContents.executeJavaScript(`document.getElementById("startAnalysisBtn").click()`, true);
+  await waitFor(window, `document.getElementById("engineTab")?.classList.contains("active")`);
+  const analysis = await window.webContents.executeJavaScript(`({
+    launcherHidden: document.getElementById("startScreen").hidden,
+    workspaceVisible: !document.getElementById("mainWorkspace").hidden,
+    analysisActive: document.getElementById("engineTab").classList.contains("active"),
+    sliderDisabled: document.getElementById("reviewPlySlider").disabled,
+  })`, true);
+  if (!analysis.launcherHidden || !analysis.workspaceVisible || !analysis.analysisActive) {
+    throw new Error(`Analysis launcher route failed: ${JSON.stringify(analysis)}`);
+  }
+
+  window.destroy();
+  console.log("Electron UI smoke OK");
+}
+
+app.whenReady().then(async () => {
+  try {
+    await run();
+    app.exit(0);
+  } catch (error) {
+    console.error(error?.stack || error);
+    app.exit(1);
+  } finally {
+    if (backend && !backend.killed) backend.kill("SIGTERM");
+    try {
+      fs.rmSync(smokeUserData, { recursive: true, force: true });
+    } catch (_) {
+      // Temporary browser-profile cleanup is best effort.
+    }
+  }
+});
+
+app.on("window-all-closed", () => {});

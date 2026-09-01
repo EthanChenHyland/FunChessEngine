@@ -190,6 +190,115 @@ class GameSessionTests(unittest.TestCase):
         self.assertEqual(self.game.review_state(2)["recorded_black_ms"], 597_000)
         self.assertEqual(self.game.review_state(3)["recorded_white_ms"], 595_000)
 
+    def test_imported_pgn_round_trip_preserves_comments_nags_and_variations(self) -> None:
+        pgn = """[Event \"Annotated Review\"]
+[TimeControl \"600+5\"]
+[Result \"*\"]
+
+1. e4 $1 {King pawn [%clk 0:09:58]} (1. d4 $2 {Queen pawn} d5) e5 $5
+{Central reply [%clk 0:09:57]} 2. Nf3 {Develops a knight [%clk 0:09:55]} *
+"""
+        self.game.load_pgn(pgn)
+
+        exported = self.game.export_pgn()
+        parsed = chess.pgn.read_game(io.StringIO(exported))
+
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed.headers["TimeControl"], "600+5")
+        self.assertEqual([move.uci() for move in parsed.mainline_moves()], ["e2e4", "e7e5", "g1f3"])
+        self.assertEqual(len(parsed.variations), 2)
+        e4 = parsed.variations[0]
+        d4 = parsed.variations[1]
+        self.assertIn(1, e4.nags)
+        self.assertIn("King pawn", e4.comment)
+        self.assertAlmostEqual(e4.clock() or 0, 598.0)
+        self.assertEqual(d4.move.uci(), "d2d4")
+        self.assertIn(2, d4.nags)
+        self.assertIn("Queen pawn", d4.comment)
+        e5 = e4.variations[0]
+        self.assertIn(5, e5.nags)
+        self.assertIn("Central reply", e5.comment)
+        self.assertAlmostEqual(e5.clock() or 0, 597.0)
+
+    def test_imported_pgn_tree_is_discarded_after_live_mainline_mutation(self) -> None:
+        pgn = """[Event \"Annotated Review\"]
+[TimeControl \"600+5\"]
+[Result \"*\"]
+
+1. e4 $1 {King pawn [%clk 0:09:58]} (1. d4 $2 {Queen pawn} d5) e5
+{[%clk 0:09:57]} 2. Nf3 {[%clk 0:09:55]} *
+"""
+        self.game.load_pgn(pgn)
+        self.game.set_paused(False)
+        self.game.play_move("b8c6")
+
+        exported = self.game.export_pgn()
+        parsed = chess.pgn.read_game(io.StringIO(exported))
+
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed.headers["TimeControl"], "600+5")
+        self.assertEqual(
+            [move.uci() for move in parsed.mainline_moves()],
+            ["e2e4", "e7e5", "g1f3", "b8c6"],
+        )
+        self.assertEqual(len(parsed.variations), 1)
+        self.assertNotIn(1, parsed.variations[0].nags)
+        self.assertNotIn("King pawn", exported)
+        self.assertNotIn("Queen pawn", exported)
+        self.assertIn("[%clk", exported)
+
+    def test_imported_pgn_tree_is_discarded_by_undo_and_reset(self) -> None:
+        pgn = """[Event \"Annotated Finished\"]
+[TimeControl \"600+5\"]
+[Termination \"normal\"]
+[Result \"1-0\"]
+
+1. e4 $1 {King pawn [%clk 0:09:58]} (1. d4 $2 {Queen pawn} d5) e5
+{[%clk 0:09:57]} 2. Nf3 {[%clk 0:09:55]} 1-0
+"""
+        self.game.load_pgn(pgn)
+        self.game.undo()
+
+        exported_after_undo = self.game.export_pgn()
+        parsed_after_undo = chess.pgn.read_game(io.StringIO(exported_after_undo))
+        self.assertIsNotNone(parsed_after_undo)
+        assert parsed_after_undo is not None
+        self.assertEqual(
+            [move.uci() for move in parsed_after_undo.mainline_moves()], ["e2e4", "e7e5"]
+        )
+        self.assertEqual(parsed_after_undo.headers["Result"], "*")
+        self.assertNotIn("Termination", parsed_after_undo.headers)
+        self.assertEqual(len(parsed_after_undo.variations), 1)
+        self.assertNotIn("King pawn", exported_after_undo)
+        self.assertNotIn("Queen pawn", exported_after_undo)
+        self.assertIn("[%clk", exported_after_undo)
+
+        self.game.reset()
+        exported_after_reset = self.game.export_pgn()
+        self.assertNotIn("Annotated Finished", exported_after_reset)
+        self.assertNotIn("King pawn", exported_after_reset)
+        self.assertNotIn("Queen pawn", exported_after_reset)
+        self.assertNotIn("600+5", exported_after_reset)
+
+    def test_pgn_tree_fidelity_keeps_existing_size_and_mainline_move_limits(self) -> None:
+        oversized = '[Result "*"]\n\n' + (" " * (2 * 1024 * 1024)) + "*\n"
+        with self.assertRaisesRegex(ValueError, "too large"):
+            self.game.load_pgn(oversized)
+
+        game = chess.pgn.Game()
+        node: chess.pgn.GameNode = game
+        board = game.board()
+        cycle = ("g1f3", "g8f6", "f3g1", "f6g8")
+        for ply in range(1_001):
+            move = chess.Move.from_uci(cycle[ply % len(cycle)])
+            self.assertIn(move, board.legal_moves)
+            node = node.add_variation(move)
+            board.push(move)
+        with self.assertRaisesRegex(ValueError, "too many moves"):
+            self.game.load_pgn(str(game))
+
     def test_pgn_without_time_control_does_not_inherit_previous_game_clock(self) -> None:
         self.game.reset(clock_ms=600_000, increment_ms=10_000)
         self.game.load_pgn('[Result "*"]\n\n1. e4 e5 *\n')

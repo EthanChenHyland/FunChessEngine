@@ -21,8 +21,9 @@ make desktop-dev
 make desktop-build
 ```
 
-The Electron shell starts and owns the local Python backend automatically, chooses a free loopback
-port, shuts the backend down with the app, remembers window geometry, and enforces a single app
+The Electron shell starts and owns the local Python backend automatically, prefers a stable loopback
+port (falling forward only when it is occupied), shuts the backend down with the app, remembers/clamps
+window geometry to the current displays, and enforces a single app
 instance. Native Game/Play/View menus and macOS file dialogs are exposed through a narrow sandboxed
 preload bridge. Production builds bundle a standalone Python backend, so the packaged app does not
 depend on the terminal environment.
@@ -55,6 +56,9 @@ The server binds to `127.0.0.1:8765` by default and opens the browser automatica
   aspiration re-search count, and principal variation. Low-level controls live under Advanced diagnostics.
 - Optional development search cap while retaining the production time manager by default.
 - Standard PGN import/export in both browser and Electron builds.
+- Untouched PGN imports retain comments, NAGs, side variations/RAVs, headers, and clock annotations on
+  export. Once the live main line is edited, the retained annotation tree is discarded and export is
+  regenerated from the authoritative board so stale annotations can never migrate onto new moves.
 - Non-destructive game review: first/previous/next/last navigation and clickable move history.
 - Clickable static evaluation-history graph; selecting a point jumps to that ply without
   replacing the live game.
@@ -71,10 +75,10 @@ The server binds to `127.0.0.1:8765` by default and opens the browser automatica
   board arrow; Escape returns to the reviewed main line.
 - Evaluation-graph points upgrade from fast static values to searched post-game values as analysis
   results arrive.
-- Crash recovery continuously stores the current game in local app/browser storage and records a
-  clean-exit marker. A normal quit does not prompt on relaunch; an interrupted session offers a
-  contextual **Resume game** card under Files.
-- The latest 12 completed or imported games are retained locally in a collapsed **Recent games**
+- Session recovery continuously stores a bounded current-game snapshot in local app/browser storage.
+  The last in-progress game remains resumable after either a normal quit or an interrupted session;
+  explicitly discarding/replacing it clears the recovery state.
+- The latest 24 completed or imported games are retained locally in a collapsed **Recent games**
   section. Reopening one restores the game and jumps directly into the existing review workflow.
 - MultiPV position analysis ranks the top 1, 3, or 5 legal root moves in another isolated worker,
   reporting comparable scores, SAN principal variations, depth, nodes, and elapsed time. Clicking a
@@ -100,6 +104,14 @@ The server binds to `127.0.0.1:8765` by default and opens the browser automatica
 - Keyboard shortcuts for board flip, undo, engine move, pause/resume, and clearing the current selection.
 - A shared original FunChessEngine mark is used for the in-app brand, Dock icon, and packaged macOS icon;
   icon binaries are generated from the SVG source during desktop builds rather than stored as build artifacts.
+- Recent games, studies, annotations, trainer items, and benchmark history use IndexedDB as the durable
+  browser/Electron store with migration/fallback for older localStorage profiles. Persistence failures
+  are surfaced instead of silently dropping growing study data.
+- Browser/drop imports enforce the same bounded FEN/PGN/PNG sizes as the desktop dialogs before reading
+  file contents. New portable PNG saves use UTF-8 PNG `iTXt` metadata while existing `tEXt` saves remain loadable.
+- Restarting the Electron backend routes through the sandboxed renderer bridge, carries a bounded live-game
+  snapshot into the replacement backend before navigation, and therefore preserves the current position,
+  clocks, mode metadata, and main-line history instead of silently starting a fresh game.
 - The 1.0 desktop application combines setup/promotion, PGN review, isolated post-game analysis,
   Retry Move training, crash recovery, Recent Games, MultiPV, persisted studies/annotations, personal
   training, opening/evaluation insights, a command palette, document drop, and native Analyze actions.

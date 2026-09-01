@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import IO
 
-from harness.rules import STDOUT_CAP, WATCHDOG_GRACE_MS
+from harness.rules import STDERR_TAIL_CAP, STDOUT_CAP, WATCHDOG_GRACE_MS
 
 RUNNER = Path(__file__).resolve().parent / "runner.py"
 
@@ -112,7 +112,7 @@ class Agent:
         if not chunk:
             self._selector.unregister(key.fileobj)
             return
-        self._tail += chunk
+        self._tail = (self._tail + chunk)[-STDERR_TAIL_CAP:]
 
 
 def _pipe(stream: IO[bytes] | None) -> IO[bytes]:

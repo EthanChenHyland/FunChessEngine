@@ -58,6 +58,28 @@ class AgentTests(unittest.TestCase):
         agent.negamax(board, 1, -agent.INF, agent.INF, 0)
         self.assertEqual(agent.TT[agent._key(board)].depth, 2)
 
+    def test_tt_mate_scores_round_trip_across_different_search_plies(self) -> None:
+        win_at_ply_five = agent.MATE - 9
+        stored_win = agent._score_to_tt(win_at_ply_five, 5)
+        self.assertEqual(agent._score_from_tt(stored_win, 2), agent.MATE - 6)
+
+        loss_at_ply_seven = -agent.MATE + 12
+        stored_loss = agent._score_to_tt(loss_at_ply_seven, 7)
+        self.assertEqual(agent._score_from_tt(stored_loss, 3), -agent.MATE + 8)
+
+        ordinary = 137
+        self.assertEqual(agent._score_from_tt(agent._score_to_tt(ordinary, 40), 2), ordinary)
+
+    def test_tt_exact_mate_probe_adjusts_distance_for_current_ply(self) -> None:
+        board = chess.Board()
+        key = agent._key(board)
+        move = chess.Move.from_uci("e2e4")
+        stored = agent._score_to_tt(agent.MATE - 8, 5)
+        agent.TT[key] = agent.TTEntry(depth=4, score=stored, flag=agent.EXACT, move=move)
+        agent.DEADLINE_NS = time.monotonic_ns() + 1_000_000_000
+
+        self.assertEqual(agent.negamax(board, 2, -agent.INF, agent.INF, 2), agent.MATE - 5)
+
     def test_prefers_seeded_threefold_when_losing(self) -> None:
         fen = "7k/8/8/5K2/8/8/2Q5/8 b - - 0 1"
         board = chess.Board(fen)

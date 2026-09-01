@@ -1,11 +1,15 @@
 SHELL := /bin/bash
 
 UV := $(shell command -v uv 2>/dev/null || printf '%s' '/Users/ethius/AI-Workspace/runtimes/uv/bin/uv')
+PYTHON_VERSION := 3.12.14
 
-.PHONY: setup play arena ab benchmark gui desktop desktop-dev desktop-build test zip verify-zip gate release-gate release-build
+.PHONY: setup check-python play arena ab benchmark gui desktop desktop-dev desktop-build test zip verify-zip gate release-gate release-build
 
 setup:
 	$(UV) sync
+
+check-python:
+	$(UV) run python -c 'import sys; expected=(3, 12, 14); actual=sys.version_info[:3]; assert actual == expected, f"expected Python $(PYTHON_VERSION), got {actual[0]}.{actual[1]}.{actual[2]}"; print("Python $(PYTHON_VERSION) runtime OK")'
 
 play:
 	$(UV) run python -m harness.play --white . --black baselines/greedy $(if $(FEN),--fen "$(FEN)")
@@ -41,7 +45,7 @@ zip:
 verify-zip: zip
 	$(UV) run python -c 'import zipfile; z=zipfile.ZipFile("engine-package.zip"); names=z.namelist(); assert names == ["agent.py"] or all(n == "agent.py" or n.startswith("weights/") for n in names), names; print("engine package isolation OK:", ", ".join(names))'
 
-gate:
+gate: check-python
 	$(UV) run ruff check .
 	$(UV) run mypy
 	$(UV) run python -m unittest discover -v
@@ -51,5 +55,6 @@ release-gate: gate verify-zip
 	node --check gui/static/app.js
 	cd desktop && npm run check
 	cd desktop && npm audit
+	cd desktop && npm run smoke:ui
 
 release-build: release-gate desktop-build

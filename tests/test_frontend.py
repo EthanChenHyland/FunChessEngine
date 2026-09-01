@@ -10,6 +10,13 @@ STYLE_CSS = Path(__file__).resolve().parents[1] / "gui" / "static" / "style.css"
 LOGO_SVG = Path(__file__).resolve().parents[1] / "gui" / "static" / "app-mark.svg"
 ICON_BUILD = Path(__file__).resolve().parents[1] / "desktop" / "scripts" / "build-icon.sh"
 DESKTOP_MAIN = Path(__file__).resolve().parents[1] / "desktop" / "main.js"
+DESKTOP_PRELOAD = Path(__file__).resolve().parents[1] / "desktop" / "preload.js"
+DESKTOP_PACKAGE = Path(__file__).resolve().parents[1] / "desktop" / "package.json"
+DESKTOP_UI_SMOKE = Path(__file__).resolve().parents[1] / "desktop" / "scripts" / "ui-smoke.js"
+DESKTOP_VERIFY_BUILD = (
+    Path(__file__).resolve().parents[1] / "desktop" / "scripts" / "verify-build.js"
+)
+DESKTOP_NOTARIZE = Path(__file__).resolve().parents[1] / "desktop" / "scripts" / "notarize.js"
 
 
 class FrontendTransitionContractTests(unittest.TestCase):
@@ -21,6 +28,11 @@ class FrontendTransitionContractTests(unittest.TestCase):
         cls.logo_svg = LOGO_SVG.read_text(encoding="utf-8")
         cls.icon_build = ICON_BUILD.read_text(encoding="utf-8")
         cls.desktop_main = DESKTOP_MAIN.read_text(encoding="utf-8")
+        cls.desktop_preload = DESKTOP_PRELOAD.read_text(encoding="utf-8")
+        cls.desktop_package = DESKTOP_PACKAGE.read_text(encoding="utf-8")
+        cls.desktop_ui_smoke = DESKTOP_UI_SMOKE.read_text(encoding="utf-8")
+        cls.desktop_verify_build = DESKTOP_VERIFY_BUILD.read_text(encoding="utf-8")
+        cls.desktop_notarize = DESKTOP_NOTARIZE.read_text(encoding="utf-8")
 
     def assert_function_contains(self, name: str, text: str, span: int = 6_000) -> None:
         match = re.search(rf"(?:async\s+)?function\s+{re.escape(name)}\b", self.source)
@@ -186,10 +198,79 @@ class FrontendTransitionContractTests(unittest.TestCase):
         self.assertIn('app.on("second-instance", async () => {', self.desktop_main)
         self.assertIn("await createWindow();", self.desktop_main)
 
-    def test_saved_desktop_window_position_must_still_intersect_a_display(self) -> None:
-        self.assertIn("function visibleSavedPosition(saved)", self.desktop_main)
+    def test_saved_desktop_window_bounds_are_clamped_to_a_current_display(self) -> None:
+        self.assertIn("function restoredWindowState(saved)", self.desktop_main)
         self.assertIn("screen.getAllDisplays()", self.desktop_main)
-        self.assertIn("const position = visibleSavedPosition(saved);", self.desktop_main)
+        self.assertIn("const restored = restoredWindowState(saved);", self.desktop_main)
+        self.assertIn("Math.min(saved.width, workArea.width)", self.desktop_main)
+        self.assertIn("Math.min(saved.height, workArea.height)", self.desktop_main)
+
+    def test_desktop_backend_restart_preserves_a_bounded_renderer_snapshot(self) -> None:
+        self.assertIn(
+            'restartBackend: (snapshot) => ipcRenderer.invoke("backend:restart", snapshot)',
+            self.desktop_preload,
+        )
+        self.assertIn("function validateRestartSnapshot(snapshot)", self.desktop_main)
+        self.assertIn("async function restoreBackendSnapshot(url, snapshot)", self.desktop_main)
+        self.assertIn('sendCommand("restart-backend")', self.desktop_main)
+        self.assert_function_contains("restartDesktopBackend", "boundedDesktopRestartSnapshot")
+        self.assert_function_contains("handleDesktopCommand", 'command === "restart-backend"')
+        self.assertIn("const DESKTOP_BACKEND_PORT = 8765;", self.desktop_main)
+
+    def test_large_local_metadata_moves_to_indexeddb_with_fallback(self) -> None:
+        self.assertIn('const DURABLE_DB_NAME = "FunChessEngine.LocalData"', self.source)
+        self.assertIn("globalThis.indexedDB", self.source)
+        self.assert_function_contains("persistDurableValue", "writeDurableValue")
+        self.assert_function_contains("hydrateDurableMetadata", "readDurableValue")
+        self.assertIn("void hydrateDurableMetadata();", self.source)
+
+    def test_browser_imports_are_bounded_before_file_contents_are_read(self) -> None:
+        self.assert_function_contains("assertBrowserFileSize", "file.size > maxBytes")
+        self.assert_function_contains("handleDroppedFiles", "MAX_PGN_BYTES")
+        self.assert_function_contains("handleDroppedFiles", "MAX_FEN_BYTES")
+        self.assert_function_contains("loadGamePng", "MAX_SAVE_BYTES")
+
+    def test_analysis_refreshes_queue_the_latest_position_after_busy_searches(self) -> None:
+        self.assertIn("let autoPositionAnalysisQueued = false", self.source)
+        self.assertIn("let evalBreakdownQueued = false", self.source)
+        self.assert_function_contains(
+            "scheduleAutoPositionAnalysis", "autoPositionAnalysisQueued = true"
+        )
+        self.assert_function_contains("runMultiPv", "scheduleAutoPositionAnalysis(true)")
+        self.assert_function_contains("refreshEvaluationBreakdown", "evalBreakdownQueued = true")
+
+    def test_last_session_recovery_survives_normal_quit_and_is_launcher_accessible(self) -> None:
+        self.assertNotIn("RECOVERY_CLEAN_EXIT_KEY", self.source)
+        self.assert_function_contains(
+            "renderLauncher", 'playLabel.textContent = "Resume last session"'
+        )
+        self.assert_function_contains("continueFromLauncher", "resumeRecovery")
+        self.assertIn(
+            '$("startPlayBtn").addEventListener("click", continueFromLauncher)', self.source
+        )
+
+    def test_portable_png_uses_utf8_itxt_and_keeps_legacy_text_compatibility(self) -> None:
+        self.assert_function_contains("makePngITxtChunk", 'encoder.encode("iTXt")')
+        self.assert_function_contains("extractPngSnapshot", 'type === "tEXt"')
+        self.assert_function_contains("extractPngSnapshot", 'type === "iTXt"')
+        self.assert_function_contains("saveGamePng", 'setStatus("Save canceled.")')
+
+    def test_desktop_release_has_behavioral_and_packaged_smokes(self) -> None:
+        self.assertIn('"smoke:ui": "electron scripts/ui-smoke.js"', self.desktop_package)
+        self.assertIn('"verify:build": "node scripts/verify-build.js"', self.desktop_package)
+        self.assertIn(
+            "electron-builder --mac --arm64 && npm run verify:build", self.desktop_package
+        )
+        self.assertIn("Review navigation mutated the live game", self.desktop_ui_smoke)
+        self.assertIn("Packaged macOS build smoke OK", self.desktop_verify_build)
+        self.assertIn("requireArm64(appExecutable)", self.desktop_verify_build)
+        self.assertIn("requireArm64(backendExecutable)", self.desktop_verify_build)
+
+    def test_mac_notarization_hook_is_opt_in_and_credential_gated(self) -> None:
+        self.assertIn('"afterSign": "scripts/notarize.js"', self.desktop_package)
+        for name in ("APPLE_ID", "APPLE_APP_SPECIFIC_PASSWORD", "APPLE_TEAM_ID"):
+            self.assertIn(name, self.desktop_notarize)
+        self.assertIn('tool: "notarytool"', self.desktop_notarize)
 
 
 if __name__ == "__main__":

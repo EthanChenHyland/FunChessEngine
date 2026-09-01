@@ -14,6 +14,12 @@ const intentionalBackends = new WeakSet();
 const MAX_FEN_BYTES = 64 * 1024;
 const MAX_PGN_BYTES = 2 * 1024 * 1024;
 const MAX_SAVE_BYTES = 50 * 1024 * 1024;
+const MAX_RESTART_SNAPSHOT_BYTES = 512 * 1024;
+const DESKTOP_BACKEND_PORT = 8765;
+const MIN_WINDOW_WIDTH = 900;
+const MIN_WINDOW_HEIGHT = 680;
+const DEFAULT_WINDOW_WIDTH = 1320;
+const DEFAULT_WINDOW_HEIGHT = 900;
 
 app.setName("FunChessEngine");
 
@@ -29,14 +35,20 @@ function loadWindowState() {
   try {
     const saved = JSON.parse(fs.readFileSync(settingsPath(), "utf8"));
     return {
-      width: Math.max(900, Number(saved.width) || 1320),
-      height: Math.max(680, Number(saved.height) || 900),
+      width: Math.max(1, Number(saved.width) || DEFAULT_WINDOW_WIDTH),
+      height: Math.max(1, Number(saved.height) || DEFAULT_WINDOW_HEIGHT),
       x: Number.isFinite(saved.x) ? saved.x : undefined,
       y: Number.isFinite(saved.y) ? saved.y : undefined,
       maximized: Boolean(saved.maximized),
     };
   } catch (_) {
-    return { width: 1320, height: 900, x: undefined, y: undefined, maximized: false };
+    return {
+      width: DEFAULT_WINDOW_WIDTH,
+      height: DEFAULT_WINDOW_HEIGHT,
+      x: undefined,
+      y: undefined,
+      maximized: false,
+    };
   }
 }
 
@@ -51,22 +63,72 @@ function saveWindowState() {
   }
 }
 
-function visibleSavedPosition(saved) {
-  if (!Number.isFinite(saved.x) || !Number.isFinite(saved.y)) return {};
-  const intersectsDisplay = screen.getAllDisplays().some(({ workArea }) => (
-    saved.x < workArea.x + workArea.width
-    && saved.x + saved.width > workArea.x
-    && saved.y < workArea.y + workArea.height
-    && saved.y + saved.height > workArea.y
-  ));
-  return intersectsDisplay ? { x: saved.x, y: saved.y } : {};
+function intersectionArea(bounds, workArea) {
+  const width = Math.max(
+    0,
+    Math.min(bounds.x + bounds.width, workArea.x + workArea.width)
+      - Math.max(bounds.x, workArea.x),
+  );
+  const height = Math.max(
+    0,
+    Math.min(bounds.y + bounds.height, workArea.y + workArea.height)
+      - Math.max(bounds.y, workArea.y),
+  );
+  return width * height;
+}
+
+function savedDisplay(saved) {
+  if (!Number.isFinite(saved.x) || !Number.isFinite(saved.y)) return null;
+  const bounds = {
+    x: saved.x,
+    y: saved.y,
+    width: Math.max(1, Number(saved.width) || DEFAULT_WINDOW_WIDTH),
+    height: Math.max(1, Number(saved.height) || DEFAULT_WINDOW_HEIGHT),
+  };
+  let best = null;
+  let bestArea = 0;
+  for (const display of screen.getAllDisplays()) {
+    const area = intersectionArea(bounds, display.workArea);
+    if (area > bestArea) {
+      best = display;
+      bestArea = area;
+    }
+  }
+  return best;
+}
+
+function visibleSavedPosition(saved, workArea) {
+  if (!Number.isFinite(saved.x) || !Number.isFinite(saved.y) || !workArea) return {};
+  const maxX = workArea.x + Math.max(0, workArea.width - saved.width);
+  const maxY = workArea.y + Math.max(0, workArea.height - saved.height);
+  return {
+    x: Math.min(Math.max(saved.x, workArea.x), maxX),
+    y: Math.min(Math.max(saved.y, workArea.y), maxY),
+  };
+}
+
+function restoredWindowState(saved) {
+  const display = savedDisplay(saved) || screen.getPrimaryDisplay();
+  const workArea = display.workArea;
+  const minWidth = Math.min(MIN_WINDOW_WIDTH, workArea.width);
+  const minHeight = Math.min(MIN_WINDOW_HEIGHT, workArea.height);
+  const width = Math.max(minWidth, Math.min(saved.width, workArea.width));
+  const height = Math.max(minHeight, Math.min(saved.height, workArea.height));
+  const position = savedDisplay(saved)
+    ? visibleSavedPosition({ ...saved, width, height }, workArea)
+    : {};
+  return { width, height, minWidth, minHeight, ...position, maximized: saved.maximized };
 }
 
 function devBackendCommand() {
   const root = projectRoot();
   const localPython = path.join(root, ".venv", "bin", "python");
   if (fs.existsSync(localPython)) {
-    return { command: localPython, args: ["-m", "gui.server", "--no-open", "--port", "0"], cwd: root };
+    return {
+      command: localPython,
+      args: ["-m", "gui.server", "--no-open", "--port", String(DESKTOP_BACKEND_PORT)],
+      cwd: root,
+    };
   }
 
   const uvCandidates = [
@@ -77,15 +139,27 @@ function devBackendCommand() {
   ].filter(Boolean);
   const uv = uvCandidates.find((candidate) => fs.existsSync(candidate));
   if (uv) {
-    return { command: uv, args: ["run", "python", "-m", "gui.server", "--no-open", "--port", "0"], cwd: root };
+    return {
+      command: uv,
+      args: ["run", "python", "-m", "gui.server", "--no-open", "--port", String(DESKTOP_BACKEND_PORT)],
+      cwd: root,
+    };
   }
-  return { command: "uv", args: ["run", "python", "-m", "gui.server", "--no-open", "--port", "0"], cwd: root };
+  return {
+    command: "uv",
+    args: ["run", "python", "-m", "gui.server", "--no-open", "--port", String(DESKTOP_BACKEND_PORT)],
+    cwd: root,
+  };
 }
 
 function backendCommand() {
   if (!app.isPackaged) return devBackendCommand();
   const executable = path.join(process.resourcesPath, "bin", "funchess-backend");
-  return { command: executable, args: ["--no-open", "--port", "0"], cwd: process.resourcesPath };
+  return {
+    command: executable,
+    args: ["--no-open", "--port", String(DESKTOP_BACKEND_PORT)],
+    cwd: process.resourcesPath,
+  };
 }
 
 function startBackend() {
@@ -147,11 +221,7 @@ function startBackend() {
           cancelId: 1,
         }).then(async ({ response }) => {
           if (response === 0) {
-            try {
-              await restartBackend();
-            } catch (error) {
-              await showBackendFailure(error);
-            }
+            sendCommand("restart-backend");
           } else {
             app.quit();
           }
@@ -162,19 +232,99 @@ function startBackend() {
 }
 
 function stopBackend() {
-  if (!backend) return;
+  if (!backend) return null;
   const child = backend;
   intentionalBackends.add(child);
   child.kill("SIGTERM");
   backend = null;
   backendUrl = null;
+  return child;
 }
 
-async function restartBackend() {
-  stopBackend();
+async function stopBackendAndWait() {
+  const child = stopBackend();
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  await new Promise((resolve) => {
+    let settled = false;
+    let forceTimer = null;
+    let hardTimer = null;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (forceTimer) clearTimeout(forceTimer);
+      if (hardTimer) clearTimeout(hardTimer);
+      resolve();
+    };
+    child.once("exit", finish);
+    forceTimer = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }, 1_500);
+    hardTimer = setTimeout(finish, 2_500);
+  });
+}
+
+function validateRestartSnapshot(snapshot) {
+  if (snapshot == null) return null;
+  if (typeof snapshot !== "object" || Array.isArray(snapshot)) {
+    throw new Error("Backend restart snapshot is invalid.");
+  }
+  const serialized = JSON.stringify(snapshot);
+  if (Buffer.byteLength(serialized, "utf8") > MAX_RESTART_SNAPSHOT_BYTES) {
+    throw new Error("Backend restart snapshot is too large.");
+  }
+  if (
+    snapshot.format !== "FunChessEngine.GamePNG"
+    || snapshot.version !== 1
+    || !Array.isArray(snapshot.moves)
+    || snapshot.moves.length > 1_000
+  ) {
+    throw new Error("Backend restart snapshot uses an unsupported game format.");
+  }
+  for (const key of ["clock_history", "recorded_clock_history"]) {
+    if (Array.isArray(snapshot[key]) && snapshot[key].length > 1_000) {
+      throw new Error("Backend restart snapshot contains too much history.");
+    }
+  }
+  return JSON.parse(serialized);
+}
+
+async function restoreBackendSnapshot(url, snapshot) {
+  if (!snapshot) return;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8_000);
+  try {
+    const response = await fetch(`${url}/api/load-game`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(snapshot),
+      signal: controller.signal,
+    });
+    let payload = {};
+    try {
+      payload = await response.json();
+    } catch (_) {
+      // The HTTP status below still provides a useful failure if JSON is malformed.
+    }
+    if (!response.ok) {
+      throw new Error(payload.error || `Backend restore failed (HTTP ${response.status}).`);
+    }
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function restartBackend(snapshot = null) {
+  const restoredSnapshot = validateRestartSnapshot(snapshot);
+  await stopBackendAndWait();
   const url = await startBackend();
-  backendUrl = url;
-  if (mainWindow && !mainWindow.isDestroyed()) await mainWindow.loadURL(url);
+  try {
+    await restoreBackendSnapshot(url, restoredSnapshot);
+    backendUrl = url;
+    return url;
+  } catch (error) {
+    stopBackend();
+    throw error;
+  }
 }
 
 async function showBackendFailure(error) {
@@ -215,7 +365,7 @@ function installMenu() {
       label: app.name,
       submenu: [
         { label: `About ${app.name}`, click: () => showAbout() },
-        { label: "Restart Engine Backend", click: () => restartBackend().catch(showBackendFailure) },
+        { label: "Restart Engine Backend", click: () => sendCommand("restart-backend") },
         { type: "separator" },
         { role: "services" },
         { type: "separator" },
@@ -363,15 +513,26 @@ function registerFileHandlers() {
   });
 }
 
+function registerBackendHandlers() {
+  ipcMain.handle("backend:restart", async (event, snapshot) => {
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
+      throw new Error("Backend restart request did not come from the active application window.");
+    }
+    return restartBackend(snapshot);
+  });
+}
+
 async function createWindow() {
   const saved = loadWindowState();
-  const position = visibleSavedPosition(saved);
+  const restored = restoredWindowState(saved);
   mainWindow = new BrowserWindow({
-    width: saved.width,
-    height: saved.height,
-    ...position,
-    minWidth: 900,
-    minHeight: 680,
+    width: restored.width,
+    height: restored.height,
+    ...(Number.isFinite(restored.x) && Number.isFinite(restored.y)
+      ? { x: restored.x, y: restored.y }
+      : {}),
+    minWidth: restored.minWidth,
+    minHeight: restored.minHeight,
     show: false,
     backgroundColor: "#0d100e",
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
@@ -382,7 +543,7 @@ async function createWindow() {
       sandbox: true,
     },
   });
-  if (saved.maximized) mainWindow.maximize();
+  if (restored.maximized) mainWindow.maximize();
   mainWindow.once("ready-to-show", () => mainWindow.show());
   mainWindow.on("close", saveWindowState);
   mainWindow.on("closed", () => {
@@ -437,6 +598,7 @@ if (!singleInstance) {
       if (!dockIcon.isEmpty()) app.dock.setIcon(dockIcon);
     }
     registerFileHandlers();
+    registerBackendHandlers();
     installMenu();
     await createWindow();
     app.on("activate", async () => {

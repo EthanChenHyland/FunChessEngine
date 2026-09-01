@@ -407,6 +407,26 @@ def _terminal_score(board: chess.Board, ply: int) -> int | None:
     return None
 
 
+def _score_to_tt(score: int, ply: int) -> int:
+    """Normalize mate scores so TT entries are independent of the current search ply."""
+
+    if score >= MATE - MAX_PLY:
+        return score + ply
+    if score <= -MATE + MAX_PLY:
+        return score - ply
+    return score
+
+
+def _score_from_tt(score: int, ply: int) -> int:
+    """Restore a normalized TT mate score for the current search ply."""
+
+    if score >= MATE - MAX_PLY:
+        return score - ply
+    if score <= -MATE + MAX_PLY:
+        return score + ply
+    return score
+
+
 def _check_time() -> None:
     global NODES
     NODES += 1
@@ -567,14 +587,15 @@ def negamax(
     tt_move = entry.move if entry is not None else None
     original_alpha = alpha
     if entry is not None and entry.depth >= depth:
+        entry_score = _score_from_tt(entry.score, ply)
         if entry.flag == EXACT:
-            return entry.score
+            return entry_score
         if entry.flag == LOWER:
-            alpha = max(alpha, entry.score)
+            alpha = max(alpha, entry_score)
         else:
-            beta = min(beta, entry.score)
+            beta = min(beta, entry_score)
         if alpha >= beta:
-            return entry.score
+            return entry_score
 
     best_score = -INF
     best_move: chess.Move | None = None
@@ -630,7 +651,7 @@ def negamax(
         flag = UPPER
     elif best_score >= beta:
         flag = LOWER
-    TT[key] = TTEntry(depth, best_score, flag, best_move)
+    TT[key] = TTEntry(depth, _score_to_tt(best_score, ply), flag, best_move)
     return best_score
 
 

@@ -8,7 +8,7 @@ Keep engine changes measurable, source-original, and easy to audit.
 - `agent.py` exposes `get_move(fen: str, time_left_ms: int) -> str`.
 - Return a legal UCI move such as `e2e4` or `e7e8q`.
 - Keep module state bounded and deterministic across moves in one game.
-- Use Python 3.12 and the dependencies declared in `pyproject.toml`.
+- Use the repository-pinned Python 3.12.14 runtime and the dependencies declared in `pyproject.toml`.
 - Keep the engine independent from the GUI, desktop shell, and development harness.
 
 ## Development rules
@@ -31,4 +31,4 @@ make gate
 
 ## Style
 
-Python 3.12, type-annotated, Ruff and mypy clean. Keep `agent.py` readable and source-original.
+Python 3.12.14, type-annotated, Ruff and mypy clean. Keep `agent.py` readable and source-original.
