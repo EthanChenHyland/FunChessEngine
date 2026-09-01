@@ -1695,7 +1695,7 @@ def main() -> None:
     url = f"http://{arguments.host}:{server.server_port}"
     if arguments.port != 0 and server.server_port != arguments.port:
         print(f"Port {arguments.port} is busy; using {server.server_port} instead.")
-    print(f"FunChessEngine GUI: {url}")
+    print(f"FunChessEngine GUI: {url}", flush=True)
     if not arguments.no_open:
         threading.Timer(0.35, webbrowser.open, args=(url,)).start()
     try:
