@@ -259,6 +259,10 @@ class FrontendTransitionContractTests(unittest.TestCase):
 
     def test_linux_ci_configures_electron_suid_sandbox(self) -> None:
         self.assertIn("chrome-sandbox", self.ci)
+        self.assertIn("node node_modules/electron/install.js", self.ci)
+        self.assertIn("node -p \"require('electron')\"", self.ci)
+        self.assertIn('SANDBOX_PATH="$(dirname "$ELECTRON_PATH")/chrome-sandbox"', self.ci)
+        self.assertIn('test -f "$SANDBOX_PATH"', self.ci)
         self.assertIn("sudo chown root:root", self.ci)
         self.assertIn("sudo chmod 4755", self.ci)
         self.assertNotIn("--no-sandbox", self.ci)
