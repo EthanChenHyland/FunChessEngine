@@ -43,6 +43,26 @@ def elo_from_score(score: float) -> float | None:
     return 400.0 * math.log10(score / (1.0 - score))
 
 
+def score_interval(wins: int, draws: int, losses: int) -> tuple[float, float]:
+    """Approximate 95% Wilson interval, treating each draw as one half-point."""
+
+    games = wins + draws + losses
+    if games <= 0:
+        return 0.0, 1.0
+    # Two pseudo-trials per game represent the match points exactly:
+    # win=2/2, draw=1/2, loss=0/2. This is intentionally an approximate
+    # uncertainty display, not a replacement for SPRT or a large match.
+    trials = games * 2
+    successes = wins * 2 + draws
+    p = successes / trials
+    z = 1.96
+    z2 = z * z
+    denominator = 1.0 + z2 / trials
+    center = (p + z2 / (2 * trials)) / denominator
+    margin = z * math.sqrt((p * (1.0 - p) + z2 / (4 * trials)) / trials) / denominator
+    return max(0.0, center - margin), min(1.0, center + margin)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Score an agent over several games.")
     parser.add_argument("--agent", type=Path, default=Path("."))
@@ -98,10 +118,19 @@ def main() -> None:
 
     score = (wins + draws / 2) / arguments.games
     elo = elo_from_score(score)
+    score_low, score_high = score_interval(wins, draws, losses)
+    elo_low = elo_from_score(score_low)
+    elo_high = elo_from_score(score_high)
     print(f"\n{arguments.agent} vs {arguments.opponent} over {arguments.games} games")
     print(f"+{wins} ={draws} -{losses}, score {score:.1%}")
+    print(f"approx. 95% score interval {score_low:.1%} to {score_high:.1%}")
     if elo is not None:
-        print(f"logistic Elo estimate {elo:+.0f} (small samples are noisy)")
+        interval = (
+            f" [{elo_low:+.0f}, {elo_high:+.0f}]"
+            if elo_low is not None and elo_high is not None
+            else ""
+        )
+        print(f"logistic Elo estimate {elo:+.0f}{interval} (approximate; small samples are noisy)")
     print("terminations: " + ", ".join(f"{name} {count}" for name, count in terminations.items()))
     broken = {name: count for name, count in terminations.items() if name in FAILED_TERMINATIONS}
     if broken:
@@ -122,7 +151,9 @@ def main() -> None:
                     "draws": draws,
                     "losses": losses,
                     "score": score,
+                    "score_interval_95": [score_low, score_high],
                     "elo_estimate": elo,
+                    "elo_interval_95": [elo_low, elo_high],
                     "terminations": terminations,
                     "results": game_results,
                 },

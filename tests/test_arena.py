@@ -6,7 +6,7 @@ from pathlib import Path
 
 import chess
 
-from harness.arena import elo_from_score, load_openings
+from harness.arena import elo_from_score, load_openings, score_interval
 
 
 class ArenaTests(unittest.TestCase):
@@ -32,6 +32,14 @@ class ArenaTests(unittest.TestCase):
         self.assertIsNotNone(lower)
         self.assertAlmostEqual(midpoint or 0.0, 0.0)
         self.assertAlmostEqual(upper or 0.0, -(lower or 0.0))
+
+    def test_score_interval_contains_observed_score_and_is_nonzero_at_extreme(self) -> None:
+        low, high = score_interval(6, 0, 0)
+        self.assertLess(low, 1.0)
+        self.assertEqual(high, 1.0)
+        low, high = score_interval(2, 2, 2)
+        self.assertLess(low, 0.5)
+        self.assertGreater(high, 0.5)
 
 
 if __name__ == "__main__":
