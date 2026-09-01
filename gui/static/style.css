@@ -463,16 +463,25 @@ input[type="range"] { height: 28px; padding: 0; border: 0; background: transpare
 .game-actions #resignBtn:not([hidden]):last-child { grid-column: 1 / -1; }
 .game-actions:has(#drawBtn:not([hidden])) #resignBtn:not([hidden]) { grid-column: auto; }
 .row.two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+.row.three { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 14px; }
 .align-end { align-self: end; }
 .full { width: 100%; margin-top: 12px; }
 .inline-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; margin-top: 8px; }
 .time-card .label, .file-card .label { margin: 0; }
 .recent-games-card summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; color: var(--text); font-size: 11px; font-weight: 780; }
 .recent-games-card[open] summary { margin-bottom: 10px; }
+.recent-games-tools { display: grid; gap: 7px; margin-bottom: 9px; }
+.recent-games-tools input[type="search"] { min-width: 0; }
+.recent-favorites-filter { display: flex; align-items: center; gap: 7px; margin: 0; cursor: pointer; }
+.recent-favorites-filter input { width: auto; margin: 0; }
 .recent-games-list { display: grid; gap: 6px; }
 .recent-game-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 8px; border-radius: 8px; background: var(--panel-2); }
+.recent-game-row.favorite { box-shadow: inset 2px 0 var(--accent); }
 .recent-game-row strong { display: block; overflow: hidden; color: var(--text); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .recent-game-row span { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; }
+.recent-game-actions { display: flex; align-items: center; gap: 5px; }
+.recent-favorite { min-width: 30px; padding-inline: 7px; font-size: 14px; }
+.recent-delete { padding-inline: 4px; }
 .recent-empty { margin: 0; padding: 5px 2px; }
 .recent-clear { margin-top: 9px; }
 .compact-row { margin-top: 10px !important; }
@@ -783,7 +792,7 @@ kbd { padding: 2px 5px; border: 1px solid var(--line-strong); border-bottom-widt
   .brand-subtitle { display: none; }
   .board-actions { grid-template-columns: 1fr 1fr; }
   .tab-panel { padding: 15px; }
-  .play-controls, .row.two { grid-template-columns: 1fr; }
+  .play-controls, .row.two, .row.three { grid-template-columns: 1fr; }
   .game-actions { grid-template-columns: 1fr 1fr; }
   #resignBtn:not([hidden]) { grid-column: 1 / -1; }
   .promotion-options { grid-template-columns: repeat(2, 1fr); }

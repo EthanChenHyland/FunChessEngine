@@ -149,7 +149,9 @@ function loadRecoverySnapshot() {
 function loadRecentGames() {
   try {
     const saved = JSON.parse(localStorage.getItem(RECENTS_KEY) || "[]");
-    return Array.isArray(saved) ? saved.filter((item) => item && Array.isArray(item.moves)).slice(0, 12) : [];
+    return Array.isArray(saved)
+      ? saved.filter((item) => item && Array.isArray(item.moves)).slice(0, 24)
+      : [];
   } catch (_) {
     return [];
   }
@@ -289,9 +291,23 @@ function ingestTrainerFromAnalysis() {
 
 function saveRecentGames() {
   try {
-    localStorage.setItem(RECENTS_KEY, JSON.stringify(recentGames.slice(0, 12)));
+    localStorage.setItem(RECENTS_KEY, JSON.stringify(recentGames.slice(0, 24)));
   } catch (_) {
     // Recent games are optional local convenience data.
+  }
+}
+
+function trimRecentGames() {
+  while (recentGames.length > 24) {
+    let removeIndex = -1;
+    for (let index = recentGames.length - 1; index >= 0; index -= 1) {
+      if (!recentGames[index]?.favorite) {
+        removeIndex = index;
+        break;
+      }
+    }
+    if (removeIndex < 0) removeIndex = recentGames.length - 1;
+    recentGames.splice(removeIndex, 1);
   }
 }
 
@@ -311,10 +327,15 @@ function archiveCompletedGame() {
   if (signature === archivedResultKey) return;
   archivedResultKey = signature;
   const existing = recentGames.findIndex((item) => gameSignature(item) === signature);
-  if (existing >= 0) recentGames.splice(existing, 1);
+  if (existing >= 0) {
+    const previous = recentGames[existing];
+    snapshot.favorite = Boolean(previous.favorite);
+    if (!snapshot.analysis && previous.analysis) snapshot.analysis = previous.analysis;
+    recentGames.splice(existing, 1);
+  }
   snapshot.recent_id = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
   recentGames.unshift(snapshot);
-  recentGames = recentGames.slice(0, 12);
+  trimRecentGames();
   saveRecentGames();
 }
 
@@ -322,35 +343,96 @@ function renderRecentGames() {
   const target = $("recentGamesList");
   if (!target) return;
   target.innerHTML = "";
-  $("recentGameCount").textContent = String(recentGames.length);
+  const query = $("recentGamesSearch")?.value.trim().toLowerCase() || "";
+  const favoritesOnly = Boolean($("recentFavoritesOnly")?.checked);
+  const entries = recentGames
+    .map((snapshot, index) => ({ snapshot, index }))
+    .filter(({ snapshot }) => {
+      if (favoritesOnly && !snapshot.favorite) return false;
+      if (!query) return true;
+      const saved = snapshot.saved_at ? new Date(snapshot.saved_at) : null;
+      const when = saved && !Number.isNaN(saved.getTime())
+        ? `${saved.toLocaleDateString()} ${saved.toLocaleTimeString()}`
+        : "saved game";
+      const opening = snapshot.opening?.name || snapshot.opening?.eco || "";
+      const result = snapshot.result || snapshot.manual_result || "*";
+      const mode = snapshot.human_side || "";
+      const headers = snapshot.pgn_headers || {};
+      const people = `${headers.White || ""} ${headers.Black || ""} ${headers.Event || ""}`;
+      return `${opening} ${snapshot.opening?.eco || ""} ${result} ${mode} ${when} ${people}`
+        .toLowerCase()
+        .includes(query);
+    })
+    .sort((left, right) => Number(Boolean(right.snapshot.favorite)) - Number(Boolean(left.snapshot.favorite)));
+  $("recentGameCount").textContent = query || favoritesOnly
+    ? `${entries.length}/${recentGames.length}`
+    : String(recentGames.length);
   $("clearRecentGamesBtn").hidden = recentGames.length === 0;
-  if (!recentGames.length) {
+  if (!entries.length) {
     const empty = document.createElement("p");
     empty.className = "hint recent-empty";
-    empty.textContent = "Completed and imported games will appear here.";
+    empty.textContent = recentGames.length
+      ? "No saved games match this filter."
+      : "Completed and imported games will appear here.";
     target.appendChild(empty);
     return;
   }
-  recentGames.forEach((snapshot, index) => {
+  entries.forEach(({ snapshot, index }) => {
     const row = document.createElement("div");
     row.className = "recent-game-row";
+    row.classList.toggle("favorite", Boolean(snapshot.favorite));
     const info = document.createElement("div");
     const result = snapshot.result || snapshot.manual_result || "*";
     const moves = snapshot.moves?.length || 0;
     const saved = snapshot.saved_at ? new Date(snapshot.saved_at) : null;
     const when = saved && !Number.isNaN(saved.getTime()) ? saved.toLocaleDateString() : "Saved game";
     const title = document.createElement("strong");
-    title.textContent = `${result} · ${Math.ceil(moves / 2)} moves`;
+    const white = snapshot.pgn_headers?.White;
+    const black = snapshot.pgn_headers?.Black;
+    title.textContent = white || black
+      ? `${white || "White"} – ${black || "Black"} · ${result}`
+      : `${result} · ${Math.ceil(moves / 2)} moves`;
     const meta = document.createElement("span");
-    meta.textContent = when;
+    const opening = snapshot.opening?.name || snapshot.opening?.eco || "Opening not recorded";
+    meta.textContent = `${opening} · ${when}`;
     info.append(title, meta);
+    const actions = document.createElement("div");
+    actions.className = "recent-game-actions";
+    const favorite = document.createElement("button");
+    favorite.className = "secondary compact recent-favorite";
+    favorite.textContent = snapshot.favorite ? "★" : "☆";
+    favorite.title = snapshot.favorite ? "Remove from favorites" : "Add to favorites";
+    favorite.setAttribute("aria-label", favorite.title);
+    favorite.addEventListener("click", () => toggleRecentFavorite(index));
     const open = document.createElement("button");
     open.className = "secondary compact";
     open.textContent = "Review";
     open.addEventListener("click", () => openRecentGame(index));
-    row.append(info, open);
+    const remove = document.createElement("button");
+    remove.className = "text-button compact recent-delete";
+    remove.textContent = "Delete";
+    remove.addEventListener("click", () => deleteRecentGame(index));
+    actions.append(favorite, open, remove);
+    row.append(info, actions);
     target.appendChild(row);
   });
+}
+
+function toggleRecentFavorite(index) {
+  const snapshot = recentGames[index];
+  if (!snapshot) return;
+  snapshot.favorite = !snapshot.favorite;
+  saveRecentGames();
+  renderRecentGames();
+  renderOpeningExplorer();
+}
+
+function deleteRecentGame(index) {
+  if (!recentGames[index]) return;
+  recentGames.splice(index, 1);
+  saveRecentGames();
+  renderRecentGames();
+  renderOpeningExplorer();
 }
 
 async function openRecentGame(index) {
@@ -381,11 +463,20 @@ async function openRecentGame(index) {
   }
 }
 
-function clearRecentGames() {
+async function clearRecentGames() {
+  if (!recentGames.length) return;
+  const confirmed = await confirmAction(
+    "Clear game library?",
+    `Delete all ${recentGames.length} locally saved game${recentGames.length === 1 ? "" : "s"}, including favorites?`,
+    "Clear library",
+    true,
+  );
+  if (!confirmed) return;
   recentGames = [];
   archivedResultKey = null;
   saveRecentGames();
   renderRecentGames();
+  renderOpeningExplorer();
 }
 
 function scheduleRecoverySave() {
@@ -1714,6 +1805,7 @@ function gameSnapshot() {
     manual_termination: state.manual_termination || null,
     result: state.result || null,
     termination: state.termination || null,
+    opening: state.opening || null,
     pgn_headers: state.pgn_headers || {},
     analysis: gameAnalysis?.results?.length ? gameAnalysis : null,
   };
@@ -2057,8 +2149,13 @@ function render() {
     ? gameAnalysis.status === "running"
     : state.analysis_status === "running";
   const liveControlsLocked = reviewMode || setupMode || trainerMode || variationMode || retryMode;
+  const humanSide = $("humanSide").value;
+  const smartTakeback = (humanSide === "white" || humanSide === "black")
+    && (state.moves_uci?.length || 0) >= 2
+    && state.turn === humanSide;
   $("engineBtn").disabled = liveControlsLocked || busy || state.game_over || state.paused;
   $("undoBtn").disabled = liveControlsLocked || busy || state.pgn.length === 0;
+  $("undoBtn").textContent = smartTakeback ? "Take back turn" : "Undo";
   $("undoBtn").title = reviewMode
     ? "Undo changes the live game. Return to the live game first; review arrows are non-destructive."
     : trainerMode
@@ -2067,6 +2164,8 @@ function render() {
     ? "Use variation navigation inside the workspace; Undo changes only the live game."
     : setupMode
     ? "Finish or cancel position setup before undoing the live game."
+    : smartTakeback
+    ? "Take back your last move and the engine reply, returning the move to you (U)."
     : "Undo the most recent live-game move (U).";
   $("pauseBtn").disabled = liveControlsLocked || busy || state.game_over || analysisRunning;
   $("pauseBtn").textContent = state.paused ? "Resume clocks" : "Pause clocks";
@@ -2818,7 +2917,15 @@ async function undoLiveMove() {
     );
     return false;
   }
-  const succeeded = await act(() => api("/api/undo", {}), "Live-game move undone.");
+  const humanSide = $("humanSide").value;
+  const moveCount = state.moves_uci?.length || 0;
+  const versusEngine = humanSide === "white" || humanSide === "black";
+  const takeBackTurn = versusEngine && moveCount >= 2 && state.turn === humanSide;
+  const plies = takeBackTurn ? 2 : 1;
+  const succeeded = await act(
+    () => api("/api/undo", { plies }),
+    takeBackTurn ? "Last turn taken back." : "Live-game move undone.",
+  );
   if (succeeded) scheduleComputerReply();
   return succeeded;
 }
@@ -2883,17 +2990,32 @@ async function downloadFen() {
   $("statusLine").textContent = "FEN downloaded.";
 }
 
+async function currentPgnText() {
+  const result = await api("/api/export-pgn", {});
+  const pgn = String(result.pgn || "").trim();
+  if (!pgn) throw new Error("The current game could not be exported as PGN.");
+  return `${pgn}\n`;
+}
+
+async function copyPgn() {
+  try {
+    const pgn = await currentPgnText();
+    await navigator.clipboard.writeText(pgn);
+    $("statusLine").textContent = "PGN copied to clipboard.";
+  } catch (error) {
+    $("statusLine").textContent = error.message;
+  }
+}
+
 async function exportPgn() {
   try {
-    const result = await api("/api/export-pgn", {});
-    const pgn = String(result.pgn || "");
-    if (!pgn.trim()) throw new Error("The current game could not be exported as PGN.");
+    const pgn = await currentPgnText();
     const desktop = desktopApi();
     if (desktop?.savePgn) {
       const saved = await desktop.savePgn("funchess-game.pgn", pgn);
       if (!saved) return;
     } else {
-      await downloadBlob(new Blob([`${pgn.trim()}\n`], { type: "application/x-chess-pgn;charset=utf-8" }), "funchess-game.pgn");
+      await downloadBlob(new Blob([pgn], { type: "application/x-chess-pgn;charset=utf-8" }), "funchess-game.pgn");
     }
     $("statusLine").textContent = "PGN exported.";
   } catch (error) {
@@ -3195,9 +3317,12 @@ $("clearDevHistoryBtn").addEventListener("click", () => {
 $("resumeRecoveryBtn").addEventListener("click", resumeRecovery);
 $("discardRecoveryBtn").addEventListener("click", discardRecovery);
 $("clearRecentGamesBtn").addEventListener("click", clearRecentGames);
+$("recentGamesSearch").addEventListener("input", renderRecentGames);
+$("recentFavoritesOnly").addEventListener("change", renderRecentGames);
 $("copyFenBtn").addEventListener("click", copyFen);
 $("downloadFenBtn").addEventListener("click", downloadFen);
 $("openPgnBtn").addEventListener("click", openPgnFile);
+$("copyPgnBtn").addEventListener("click", copyPgn);
 $("exportPgnBtn").addEventListener("click", exportPgn);
 $("loadPgnInput").addEventListener("change", async (event) => {
   const file = event.target.files?.[0];

@@ -35,6 +35,8 @@ const args = [
   path.dirname(spec),
   "--add-data",
   `${path.join(projectRoot, "gui", "static")}${separator}gui/static`,
+  "--add-data",
+  `${path.join(projectRoot, "gui", "openings.json")}${separator}gui`,
   "--paths",
   projectRoot,
   path.join(projectRoot, "gui", "server.py"),

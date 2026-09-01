@@ -37,6 +37,20 @@ class GameSessionTests(unittest.TestCase):
         time.sleep(0.01)
         self.assertEqual(self.game.state()["black_ms"], paused_black)
 
+    def test_multi_ply_undo_restores_position_and_clock_history(self) -> None:
+        self.game.reset(clock_ms=60_000, increment_ms=1_000)
+        self.game.play_move("e2e4")
+        after_white = self.game.state()
+        self.game.play_move("e7e5")
+        self.game.play_move("g1f3")
+
+        self.game.undo(2)
+
+        state = self.game.state()
+        self.assertEqual(state["moves_uci"], ["e2e4"])
+        self.assertEqual(state["turn"], "black")
+        self.assertAlmostEqual(state["white_ms"], after_white["white_ms"], delta=30)
+
     def test_undo_reopens_manual_result_without_preserving_result_pause(self) -> None:
         self.game.play_move("e2e4")
         self.game.resign("black")

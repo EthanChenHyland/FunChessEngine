@@ -148,16 +148,21 @@
           </div>
 
           <details class="file-card recent-games-card">
-            <summary><span>Recent games</span><span id="recentGameCount" class="setting-value">0</span></summary>
+            <summary><span>Game library</span><span id="recentGameCount" class="setting-value">0</span></summary>
+            <div class="recent-games-tools">
+              <input id="recentGamesSearch" type="search" placeholder="Search opening, result, date…" aria-label="Search saved games">
+              <label class="recent-favorites-filter"><input id="recentFavoritesOnly" type="checkbox"> Favorites only</label>
+            </div>
             <div id="recentGamesList" class="recent-games-list"></div>
-            <button id="clearRecentGamesBtn" class="text-button recent-clear" hidden>Clear recent games</button>
+            <button id="clearRecentGamesBtn" class="text-button recent-clear" hidden>Clear game library</button>
           </details>
 
           <div class="file-card">
             <div class="setting-heading"><span class="label">Portable game record</span><span class="setting-value">PGN</span></div>
             <p class="hint">Open a standard PGN for review or export the current main line for other chess software.</p>
-            <div class="row two save-actions">
+            <div class="row three save-actions">
               <button id="openPgnBtn" class="secondary">Open PGN…</button>
+              <button id="copyPgnBtn" class="secondary">Copy PGN</button>
               <button id="exportPgnBtn" class="secondary">Export PGN…</button>
             </div>
             <input id="loadPgnInput" type="file" accept=".pgn,application/x-chess-pgn,text/plain" hidden>

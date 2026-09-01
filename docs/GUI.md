@@ -84,8 +84,10 @@ The server binds to `127.0.0.1:8765` by default and opens the browser automatica
   position, and restore automatically when that study is reopened.
 - Right-click square highlights and right-drag arrows are stored locally by position and support
   multiple colors.
-- A compact local opening recognizer exposes ECO/opening family and phase; a personal explorer uses
-  recent local games to summarize next moves and outcomes.
+- A bundled, original FunChessEngine-curated opening dataset recognizes common ECO families and named
+  variations by longest played-move prefix. It is review metadata only (not an engine opening book),
+  stays fully local, and is included in both source and packaged desktop builds. A personal explorer
+  uses recent local games to summarize next moves and outcomes.
 - Post-game summaries include a transparent FunChess Accuracy score, opening/middlegame/endgame CPL,
   deterministic move explanations, and an inspectable evaluation-component breakdown.
 - Significant analyzed misses feed a local personal trainer with best-move puzzles, hints, progress,

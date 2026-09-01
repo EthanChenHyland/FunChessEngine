@@ -21,8 +21,16 @@ class FrontendTransitionContractTests(unittest.TestCase):
     def test_live_undo_has_one_guarded_backend_entry_point(self) -> None:
         self.assertEqual(self.source.count('api("/api/undo"'), 1)
         self.assert_function_contains("undoLiveMove", 'api("/api/undo"')
+        self.assert_function_contains("undoLiveMove", "takeBackTurn")
+        self.assert_function_contains("undoLiveMove", "{ plies }")
         self.assertIn('$("undoBtn").addEventListener("click", undoLiveMove)', self.source)
         self.assertIn('command === "undo") undoLiveMove()', self.source)
+
+    def test_game_library_supports_search_favorites_and_delete(self) -> None:
+        self.assert_function_contains("renderRecentGames", '$("recentGamesSearch")')
+        self.assert_function_contains("renderRecentGames", '$("recentFavoritesOnly")')
+        self.assert_function_contains("toggleRecentFavorite", "snapshot.favorite")
+        self.assert_function_contains("deleteRecentGame", "recentGames.splice")
 
     def test_game_replacements_clear_transient_workspaces_only_after_success(self) -> None:
         for name in (

@@ -42,36 +42,67 @@ else:
     ROOT = Path(__file__).resolve().parent
 DEFAULT_CLOCK_MS = 120_000
 DEFAULT_INCREMENT_MS = 500
+OPENING_DATA_PATH = ROOT / "openings.json"
 
-# A compact original opening recognizer for the most common families.  This is
-# intentionally local metadata rather than a bundled third-party opening book.
-# Longest matching UCI prefix wins.
-OPENING_PREFIXES: dict[tuple[str, ...], tuple[str, str]] = {
-    ("e2e4",): ("B00", "King's Pawn Game"),
-    ("d2d4",): ("A40", "Queen's Pawn Game"),
-    ("c2c4",): ("A10", "English Opening"),
-    ("g1f3",): ("A04", "Réti Opening"),
-    ("e2e4", "c7c5"): ("B20", "Sicilian Defense"),
-    ("e2e4", "e7e6"): ("C00", "French Defense"),
-    ("e2e4", "c7c6"): ("B10", "Caro-Kann Defense"),
-    ("e2e4", "e7e5"): ("C20", "Open Game"),
-    ("e2e4", "e7e5", "g1f3", "b8c6", "f1b5"): ("C60", "Ruy Lopez"),
-    ("e2e4", "e7e5", "g1f3", "b8c6", "f1c4"): ("C50", "Italian Game"),
-    ("e2e4", "e7e5", "g1f3", "g8f6"): ("C42", "Petrov's Defense"),
-    ("e2e4", "e7e5", "f2f4"): ("C30", "King's Gambit"),
-    ("e2e4", "c7c5", "g1f3", "d7d6"): ("B50", "Sicilian · Modern"),
-    ("e2e4", "c7c5", "g1f3", "b8c6"): ("B30", "Sicilian · Old Sicilian"),
-    ("e2e4", "c7c5", "g1f3", "e7e6"): ("B40", "Sicilian · French Variation"),
-    ("d2d4", "d7d5", "c2c4"): ("D06", "Queen's Gambit"),
-    ("d2d4", "d7d5", "c2c4", "e7e6"): ("D30", "Queen's Gambit Declined"),
-    ("d2d4", "d7d5", "c2c4", "c7c6"): ("D10", "Slav Defense"),
-    ("d2d4", "g8f6", "c2c4", "e7e6"): ("E00", "Indian Game"),
-    ("d2d4", "g8f6", "c2c4", "g7g6"): ("E60", "King's Indian Defense"),
-    ("d2d4", "g8f6", "c2c4", "e7e6", "b1c3", "f8b4"): ("E20", "Nimzo-Indian Defense"),
-    ("c2c4", "e7e5"): ("A20", "English · King's English"),
-    ("c2c4", "c7c5"): ("A30", "English · Symmetrical"),
-    ("g1f3", "d7d5", "g2g3"): ("A05", "Réti · King's Indian Attack setup"),
-}
+
+def _load_opening_prefixes(
+    path: Path = OPENING_DATA_PATH,
+) -> dict[tuple[str, ...], tuple[str, str]]:
+    """Load and validate the bundled FunChessEngine opening recognizer data."""
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Could not load opening data from {path.name}.") from exc
+    if not isinstance(raw, dict) or raw.get("schema_version") != 1:
+        raise RuntimeError("Opening data has an unsupported schema version.")
+    entries = raw.get("entries")
+    if not isinstance(entries, list) or not entries:
+        raise RuntimeError("Opening data must contain a non-empty entries list.")
+
+    result: dict[tuple[str, ...], tuple[str, str]] = {}
+    for index, entry in enumerate(entries, start=1):
+        if not isinstance(entry, dict):
+            raise RuntimeError(f"Opening entry {index} must be an object.")
+        eco = entry.get("eco")
+        name = entry.get("name")
+        moves = entry.get("moves")
+        if (
+            not isinstance(eco, str)
+            or len(eco) != 3
+            or eco[0] not in "ABCDE"
+            or not eco[1:].isdigit()
+        ):
+            raise RuntimeError(f"Opening entry {index} has an invalid ECO code.")
+        if not isinstance(name, str) or not name.strip():
+            raise RuntimeError(f"Opening entry {index} has an invalid name.")
+        if not isinstance(moves, list) or not moves or len(moves) > 32:
+            raise RuntimeError(f"Opening entry {index} has an invalid move prefix.")
+
+        board = chess.Board()
+        prefix: list[str] = []
+        for ply, raw_move in enumerate(moves, start=1):
+            if not isinstance(raw_move, str):
+                raise RuntimeError(f"Opening entry {index} move {ply} is not UCI text.")
+            try:
+                move = chess.Move.from_uci(raw_move)
+            except ValueError as exc:
+                raise RuntimeError(f"Opening entry {index} move {ply} is malformed.") from exc
+            if move not in board.legal_moves:
+                raise RuntimeError(f"Opening entry {index} move {ply} is illegal.")
+            prefix.append(move.uci())
+            board.push(move)
+        key = tuple(prefix)
+        if key in result:
+            raise RuntimeError(f"Opening entry {index} duplicates an earlier move prefix.")
+        result[key] = (eco, name.strip())
+    return result
+
+
+# The recognizer is local metadata, not an engine opening book: it labels games
+# already played by the user and never supplies moves to agent.py. Longest UCI
+# prefix wins so specific variations naturally refine broader opening families.
+OPENING_PREFIXES = _load_opening_prefixes()
 
 
 def _phase_name(board: chess.Board) -> str:
@@ -1380,12 +1411,13 @@ class GameSession:
             self.last_move = move
             return uci
 
-    def undo(self) -> None:
+    def undo(self, plies: int = 1) -> None:
         with self.lock:
             # Review navigation is handled entirely by review_state() and never
             # calls this method.  Undo is a live-game mutation, so invalidate
             # any analysis tied to the old main line before changing the board.
             self._cancel_analysis_locked()
+            plies = max(1, min(8, int(plies)))
             preserve_pause = self.paused and self.manual_result is None
             self.manual_result = None
             self.manual_termination = None
@@ -1393,9 +1425,10 @@ class GameSession:
             if not self.board.move_stack:
                 self.turn_started_ns = time.monotonic_ns()
                 return
-            self.board.pop()
-            if self.history:
-                self.white_ms, self.black_ms = self.history.pop()
+            for _ in range(min(plies, len(self.board.move_stack))):
+                self.board.pop()
+                if self.history:
+                    self.white_ms, self.black_ms = self.history.pop()
             self.last_move = self.board.peek() if self.board.move_stack else None
             self.turn_started_ns = time.monotonic_ns()
 
@@ -1603,7 +1636,7 @@ class Handler(SimpleHTTPRequestHandler):
                 )
                 return
             elif self.path == "/api/undo":
-                SESSION.undo()
+                SESSION.undo(int(payload.get("plies", 1)))
             elif self.path == "/api/pause":
                 SESSION.set_paused(bool(payload.get("paused", True)))
             elif self.path == "/api/resign":
