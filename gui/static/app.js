@@ -59,6 +59,8 @@ let archivedResultKey = null;
 let multiPvData = null;
 let multiPvBusy = false;
 let multiPvArrowMove = null;
+let autoPositionAnalysisTimer = null;
+let autoPositionAnalysisFen = null;
 let variationMode = false;
 let variationWorkspace = null;
 let variationNodeId = null;
@@ -93,9 +95,16 @@ const $ = (id) => document.getElementById(id);
 
 function setStatus(message, tone = "info") {
   const target = $("statusLine");
-  if (!target) return;
-  target.textContent = String(message || "");
-  target.dataset.tone = tone;
+  const launcherTarget = $("startStatus");
+  const text = String(message || "");
+  if (target) {
+    target.textContent = text;
+    target.dataset.tone = tone;
+  }
+  if (launcherTarget && !$("startScreen")?.hidden) {
+    launcherTarget.textContent = text;
+    launcherTarget.dataset.tone = tone;
+  }
 }
 
 function setEngineStatus(message, mode = "ready") {
@@ -566,8 +575,17 @@ function loadDisplaySettings() {
       merged.accent = DISPLAY_DEFAULTS.accent;
     }
     if (!["dark", "light"].includes(merged.appearance)) merged.appearance = DISPLAY_DEFAULTS.appearance;
+    if (!["forest", "walnut", "ocean", "slate"].includes(merged.theme)) merged.theme = DISPLAY_DEFAULTS.theme;
     if (!["classic", "clean", "bold", "soft", "outline", "tournament"].includes(merged.pieceTheme)) {
       merged.pieceTheme = DISPLAY_DEFAULTS.pieceTheme;
+    }
+    if (!["white", "turn"].includes(merged.evalPerspective)) merged.evalPerspective = DISPLAY_DEFAULTS.evalPerspective;
+    const pieceScale = Number(merged.pieceScale);
+    merged.pieceScale = Number.isFinite(pieceScale)
+      ? Math.max(66, Math.min(90, pieceScale))
+      : DISPLAY_DEFAULTS.pieceScale;
+    for (const key of ["coords", "targets", "lastMove", "autoOrient", "sound"]) {
+      if (typeof merged[key] !== "boolean") merged[key] = DISPLAY_DEFAULTS[key];
     }
     return merged;
   } catch (_) {
@@ -1059,6 +1077,7 @@ async function startVariationWorkspace() {
     variationMode = true;
     selected = null;
     render();
+    scheduleAutoPositionAnalysis(true);
     setStatus("Restored your saved analysis workspace for this position.", "success");
     return;
   }
@@ -1074,6 +1093,7 @@ async function startVariationWorkspace() {
   selected = null;
   saveCurrentVariationWorkspace();
   render();
+  scheduleAutoPositionAnalysis(true);
   setStatus("Variation workspace active — play either side to explore branches.", "success");
 }
 
@@ -1129,6 +1149,7 @@ async function playVariationMove(move) {
     variationNodeId = existing.id;
     saveCurrentVariationWorkspace();
     render();
+    scheduleAutoPositionAnalysis();
     return true;
   }
   if (Object.keys(variationWorkspace.nodes).length >= 500) {
@@ -1144,6 +1165,7 @@ async function playVariationMove(move) {
     saveCurrentVariationWorkspace();
     playUiSound("move");
     render();
+    scheduleAutoPositionAnalysis();
     return true;
   } catch (error) {
     setStatus(error.message, "error");
@@ -1157,6 +1179,7 @@ function navigateVariation(id) {
   selected = null;
   saveCurrentVariationWorkspace();
   render();
+  scheduleAutoPositionAnalysis();
 }
 
 function variationBack() {
@@ -1179,6 +1202,7 @@ function deleteVariationBranch() {
   variationNodeId = parentId;
   saveCurrentVariationWorkspace();
   render();
+  scheduleAutoPositionAnalysis();
 }
 
 function variationPath() {
@@ -1216,6 +1240,7 @@ function resetVariationWorkspace() {
   selected = null;
   saveCurrentVariationWorkspace();
   render();
+  scheduleAutoPositionAnalysis(true);
   setStatus("Saved analysis workspace reset to its root position.", "success");
 }
 
@@ -1227,6 +1252,7 @@ async function exitVariationWorkspace() {
   variationNodeId = null;
   selected = null;
   render();
+  scheduleAutoPositionAnalysis();
   setStatus("Study saved locally. Returned to the main line.", "success");
 }
 
@@ -1511,6 +1537,32 @@ function hasGameProgress() {
   return Boolean(state.pgn?.length) || state.initial_fen !== STARTING_FEN;
 }
 
+function launcherVisible() {
+  return Boolean($("startScreen") && !$("startScreen").hidden);
+}
+
+function renderLauncher() {
+  const summary = $("startSessionSummary");
+  const playLabel = $("startPlayLabel");
+  if (!summary || !playLabel) return;
+  if (!state) {
+    summary.textContent = "Connecting to local engine…";
+    playLabel.textContent = "Start playing";
+    return;
+  }
+  const plies = state.moves_uci?.length || 0;
+  const progressed = hasGameProgress();
+  const opening = state.opening?.name || (state.initial_fen === STARTING_FEN ? "Starting position" : "Custom position");
+  const clockText = formatTimeControl(Number(state.base_clock_ms || 120000), Number(state.increment_ms || 0));
+  const positionState = state.game_over
+    ? `${state.result || "Game over"}`
+    : `${capitalize(state.turn)} to move${state.paused ? " · paused" : ""}`;
+  summary.textContent = progressed
+    ? `${plies} ${plies === 1 ? "ply" : "plies"} · ${opening} · ${positionState} · ${clockText}`
+    : `${opening} · ${positionState} · ${clockText}`;
+  playLabel.textContent = state.game_over ? "View finished game" : progressed ? "Continue game" : "Start playing";
+}
+
 function confirmRestartIfNeeded(message) {
   const setupWarning = setupMode ? " Unapplied position-setup changes will also be discarded." : "";
   return hasGameProgress() || setupMode
@@ -1524,6 +1576,10 @@ function clearTransientUiForReplacement() {
   // Retry/Review/Trainer/Variation state can never leak across games.
   clearTimeout(autoplayTimer);
   autoplayTimer = null;
+  clearTimeout(autoPositionAnalysisTimer);
+  autoPositionAnalysisTimer = null;
+  autoPositionAnalysisFen = null;
+  homeAutoPaused = false;
   if (variationMode) saveCurrentVariationWorkspace();
 
   setupMode = false;
@@ -1972,13 +2028,14 @@ async function saveGamePng() {
     const snapshot = gameSnapshot();
     const blob = await renderGamePng(snapshot);
     await downloadBlob(blob, `funchess-${new Date().toISOString().replace(/[:.]/g, "-")}.png`);
-    $("statusLine").textContent = "Game saved as a portable PNG.";
+    setStatus("Game saved as a portable PNG.", "success");
   } catch (error) {
-    $("statusLine").textContent = error.message;
+    setStatus(error.message, "error");
   }
 }
 
 async function loadGamePng(file) {
+  const fromLauncher = launcherVisible();
   try {
     const snapshot = extractPngSnapshot(new Uint8Array(await file.arrayBuffer()));
     const confirmed = await confirmRestartIfNeeded(
@@ -1999,11 +2056,12 @@ async function loadGamePng(file) {
       syncTimeControlsFromState();
       orientForHuman();
       render();
-      scheduleComputerReply();
+      if (fromLauncher) await enterWorkbench("engine", false);
+      else scheduleComputerReply();
     }
     return succeeded;
   } catch (error) {
-    $("statusLine").textContent = error.message;
+    setStatus(error.message, "error");
     return false;
   }
 }
@@ -2159,6 +2217,7 @@ function renderClocks() {
 function render() {
   if (!state) return;
   const view = currentBoardView() || state;
+  renderLauncher();
   renderBoard();
   renderClocks();
   $("fenInput").value = state.fen;
@@ -2248,6 +2307,7 @@ function render() {
   renderRecentGames();
   renderMoves();
   renderReviewPanel();
+  renderAnalysisNotation();
   renderVariationWorkspace();
   renderAnalysisPanel();
   renderMultiPvPanel();
@@ -2354,6 +2414,115 @@ function appendMoveGrade(button, ply) {
   button.appendChild(grade);
 }
 
+function recordedClockTextForPly(ply) {
+  const pair = ply === 0
+    ? state?.recorded_initial_clocks
+    : state?.recorded_clock_history?.[ply - 1];
+  const sideIndex = ply % 2 === 1 ? 0 : 1;
+  const value = Array.isArray(pair) ? pair[sideIndex] : null;
+  return Number.isFinite(value) ? clock(Number(value)) : "Clock —";
+}
+
+function renderAnalysisNotation() {
+  const target = $("analysisNotation");
+  const meta = $("analysisNotationMeta");
+  if (!target || !meta || !state) return;
+  const total = state.pgn?.length || 0;
+  const currentPly = reviewMode ? Number(reviewSnapshot?.ply || 0) : total;
+  const navigationLocked = busy || setupMode || trainerMode || variationMode || retryMode;
+  meta.textContent = `${total} ${total === 1 ? "ply" : "plies"}`;
+  target.innerHTML = "";
+  if (!total) {
+    const empty = document.createElement("p");
+    empty.className = "analysis-notation-empty";
+    empty.textContent = "Moves will appear here as the game develops or after you import a PGN.";
+    target.appendChild(empty);
+    return;
+  }
+
+  const makeMove = (index) => {
+    const move = state.pgn[index];
+    if (!move) {
+      const placeholder = document.createElement("span");
+      placeholder.className = "analysis-notation-move";
+      placeholder.setAttribute("aria-hidden", "true");
+      return placeholder;
+    }
+    const ply = index + 1;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "analysis-notation-move";
+    button.classList.toggle("review-current", reviewMode && currentPly === ply);
+    button.disabled = navigationLocked;
+    button.title = navigationLocked
+      ? "Finish the current workspace before navigating the saved main line."
+      : `Review ply ${ply} without changing the live game.`;
+    const san = document.createElement("span");
+    san.className = "analysis-notation-san";
+    san.textContent = move.san || "";
+    button.appendChild(san);
+    appendMoveGrade(button, ply);
+    const recordedClock = document.createElement("span");
+    recordedClock.className = "analysis-notation-clock";
+    recordedClock.textContent = recordedClockTextForPly(ply);
+    button.appendChild(recordedClock);
+    button.addEventListener("click", () => enterReviewMode(ply));
+    return button;
+  };
+
+  for (let index = 0; index < total; index += 2) {
+    const row = document.createElement("div");
+    row.className = "analysis-notation-row";
+    const moveNumber = document.createElement("span");
+    moveNumber.className = "analysis-move-number";
+    moveNumber.textContent = `${index / 2 + 1}.`;
+    row.append(moveNumber, makeMove(index), makeMove(index + 1));
+    target.appendChild(row);
+  }
+}
+
+function analysisErrorPlies() {
+  const notable = new Set(["Inaccuracy", "Mistake", "Blunder"]);
+  return (Array.isArray(gameAnalysis?.results) ? gameAnalysis.results : [])
+    .filter((result) => notable.has(result.classification))
+    .map((result) => Number(result.ply))
+    .filter((ply) => Number.isInteger(ply) && ply > 0)
+    .sort((a, b) => a - b);
+}
+
+async function jumpAnalysisError(direction) {
+  const errors = analysisErrorPlies();
+  const current = reviewMode ? Number(reviewSnapshot?.ply || 0) : (state?.moves_uci?.length || 0);
+  const target = direction < 0
+    ? [...errors].reverse().find((ply) => ply < current)
+    : errors.find((ply) => ply > current);
+  if (!target) {
+    setStatus(direction < 0 ? "No earlier analyzed error." : "No later analyzed error.");
+    return;
+  }
+  await enterReviewMode(target);
+}
+
+async function copyCurrentAnalysisFen() {
+  const fen = currentBoardView()?.fen || state?.fen || "";
+  if (!fen) return;
+  try {
+    await navigator.clipboard.writeText(fen);
+    setStatus("Current analysis FEN copied.", "success");
+  } catch (_) {
+    const textarea = document.createElement("textarea");
+    textarea.value = fen;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.appendChild(textarea);
+    textarea.select();
+    const copied = document.execCommand("copy");
+    textarea.remove();
+    setStatus(copied ? "Current analysis FEN copied." : "Could not copy the analysis FEN.", copied ? "success" : "error");
+  }
+}
+
 async function ensureReviewSeries() {
   const total = state?.moves_uci?.length || 0;
   if (reviewSeries?.total_plies === total) return reviewSeries;
@@ -2371,6 +2540,7 @@ async function jumpReview(ply) {
   }
   selected = null;
   render();
+  scheduleAutoPositionAnalysis();
 }
 
 async function enterReviewMode(ply = null) {
@@ -2427,6 +2597,9 @@ function renderReviewPanel() {
   const total = state?.moves_uci?.length || 0;
   const ply = reviewMode ? Number(reviewSnapshot?.ply || 0) : total;
   const navigationLocked = busy || setupMode || trainerMode || variationMode || retryMode;
+  const errors = analysisErrorPlies();
+  const hasPreviousError = errors.some((errorPly) => errorPly < ply);
+  const hasNextError = errors.some((errorPly) => errorPly > ply);
   $("reviewPositionLabel").textContent = retryMode && retryTargetPly
     ? `Retry ply ${retryTargetPly}`
     : reviewMode ? `Ply ${ply} / ${total}` : `${total} plies`;
@@ -2445,6 +2618,16 @@ function renderReviewPanel() {
   for (const id of ["reviewFirstBtn", "reviewPrevBtn", "reviewNextBtn", "reviewLastBtn"]) {
     $(id).title = navigationTitle;
   }
+  $("reviewPlySlider").min = "0";
+  $("reviewPlySlider").max = String(total);
+  $("reviewPlySlider").value = String(Math.max(0, Math.min(total, ply)));
+  $("reviewPlySlider").disabled = navigationLocked || total === 0;
+  $("reviewSliderLabel").textContent = `${ply} / ${total}`;
+  $("reviewPrevErrorBtn").disabled = navigationLocked || !hasPreviousError;
+  $("reviewNextErrorBtn").disabled = navigationLocked || !hasNextError;
+  $("reviewPrevErrorBtn").title = errors.length ? "Jump to the previous inaccuracy, mistake, or blunder." : "Analyze the game first to enable error navigation.";
+  $("reviewNextErrorBtn").title = $("reviewPrevErrorBtn").title;
+  $("copyAnalysisFenBtn").disabled = !state || navigationLocked;
   if (reviewMode && reviewSnapshot) {
     const cp = Number(reviewSnapshot.eval_cp || 0) / 100;
     $("reviewEval").textContent = `${cp >= 0 ? "+" : ""}${cp.toFixed(2)}`;
@@ -2562,6 +2745,36 @@ function renderMultiPvPanel() {
     });
     target.appendChild(button);
   });
+}
+
+function scheduleAutoPositionAnalysis(force = false) {
+  clearTimeout(autoPositionAnalysisTimer);
+  autoPositionAnalysisTimer = null;
+  if (
+    !$("analysisAutoToggle")?.checked
+    || launcherVisible()
+    || !$("engineTab")?.classList.contains("active")
+    || !state
+    || busy
+    || multiPvBusy
+    || gameAnalysis?.status === "running"
+  ) return;
+  const fen = currentBoardView()?.fen || state.fen;
+  if (!fen || (!force && autoPositionAnalysisFen === fen)) return;
+  autoPositionAnalysisTimer = setTimeout(() => {
+    autoPositionAnalysisTimer = null;
+    const currentFen = currentBoardView()?.fen || state?.fen;
+    if (
+      currentFen !== fen
+      || !$("analysisAutoToggle")?.checked
+      || launcherVisible()
+      || !$("engineTab")?.classList.contains("active")
+      || busy
+      || multiPvBusy
+      || gameAnalysis?.status === "running"
+    ) return;
+    runMultiPv({ quiet: true });
+  }, 220);
 }
 
 function currentMovePrefix() {
@@ -2781,20 +2994,23 @@ async function runDeveloperArena() {
   }
 }
 
-async function runMultiPv() {
+async function runMultiPv(options = {}) {
   if (!state || multiPvBusy || gameAnalysis?.status === "running") return;
+  const quiet = Boolean(options?.quiet);
   const ply = reviewMode ? Number(reviewSnapshot?.ply || 0) : (state.moves_uci?.length || 0);
   const fen = currentBoardView()?.fen || state.fen;
   const lines = Math.max(1, Math.min(5, Number($("multipvCount").value) || 3));
+  const budgetMs = Math.max(100, Math.min(2000, Number($("positionAnalysisQuality")?.value || 350)));
   multiPvBusy = true;
   multiPvArrowMove = null;
   renderMultiPvPanel();
   try {
-    multiPvData = await api("/api/multipv", { ply, fen, lines, budget_ms: 350 });
-    $("statusLine").textContent = `Candidate lines searched to depth ${multiPvData.depth}.`;
+    multiPvData = await api("/api/multipv", { ply, fen, lines, budget_ms: budgetMs });
+    autoPositionAnalysisFen = fen;
+    if (!quiet) setStatus(`Candidate lines searched to depth ${multiPvData.depth}.`, "success");
   } catch (error) {
     multiPvData = null;
-    $("statusLine").textContent = error.message;
+    setStatus(error.message, "error");
   } finally {
     multiPvBusy = false;
     renderMultiPvPanel();
@@ -3027,11 +3243,11 @@ async function copyFen() {
   const value = $("fenInput").value.trim();
   try {
     await navigator.clipboard.writeText(value);
-    $("statusLine").textContent = "FEN copied to clipboard.";
+    setStatus("FEN copied to clipboard.", "success");
   } catch (_) {
     $("fenInput").focus();
     $("fenInput").select();
-    $("statusLine").textContent = "FEN selected — copy it with your keyboard shortcut.";
+    setStatus("FEN selected — copy it with your keyboard shortcut.");
   }
 }
 
@@ -3045,7 +3261,7 @@ async function downloadFen() {
   } else {
     await downloadBlob(new Blob([`${fen}\n`], { type: "text/plain;charset=utf-8" }), "funchess-position.fen");
   }
-  $("statusLine").textContent = "FEN downloaded.";
+  setStatus("FEN downloaded.", "success");
 }
 
 async function currentPgnText() {
@@ -3059,9 +3275,9 @@ async function copyPgn() {
   try {
     const pgn = await currentPgnText();
     await navigator.clipboard.writeText(pgn);
-    $("statusLine").textContent = "PGN copied to clipboard.";
+    setStatus("PGN copied to clipboard.", "success");
   } catch (error) {
-    $("statusLine").textContent = error.message;
+    setStatus(error.message, "error");
   }
 }
 
@@ -3075,9 +3291,9 @@ async function exportPgn() {
     } else {
       await downloadBlob(new Blob([pgn], { type: "application/x-chess-pgn;charset=utf-8" }), "funchess-game.pgn");
     }
-    $("statusLine").textContent = "PGN exported.";
+    setStatus("PGN exported.", "success");
   } catch (error) {
-    $("statusLine").textContent = error.message;
+    setStatus(error.message, "error");
   }
 }
 
@@ -3149,11 +3365,12 @@ async function togglePause() {
   }
   clearTimeout(autoplayTimer);
   const wasPaused = Boolean(state.paused);
-  await act(
+  const succeeded = await act(
     () => api("/api/pause", { paused: !wasPaused }),
     wasPaused ? "Game resumed." : "Game paused.",
   );
-  if (!state?.paused) scheduleComputerReply();
+  if (succeeded) homeAutoPaused = false;
+  if (succeeded && !state?.paused) scheduleComputerReply();
 }
 
 async function agreeDraw() {
@@ -3284,7 +3501,7 @@ function closeCommandPalette() {
 function runPaletteCommand(command) {
   closeCommandPalette();
   Promise.resolve(command?.action?.()).catch((error) => {
-    $("statusLine").textContent = error.message;
+    setStatus(error.message, "error");
   });
 }
 
@@ -3303,7 +3520,7 @@ async function handleDroppedFiles(files) {
     else if (name.endsWith(".png")) await loadGamePng(file);
     else throw new Error("Drop a .pgn, .fen, or FunChessEngine .png file.");
   } catch (error) {
-    $("statusLine").textContent = error.message;
+    setStatus(error.message, "error");
   }
 }
 
@@ -3316,6 +3533,7 @@ function setLauncherVisible(visible) {
   $("commandOpenBtn").hidden = visible;
   const skipLink = document.querySelector(".skip-link");
   if (skipLink) skipLink.hidden = visible;
+  if (visible) renderLauncher();
 }
 
 async function enterWorkbench(tabName = "game", resumeHomeClock = false) {
@@ -3324,9 +3542,13 @@ async function enterWorkbench(tabName = "game", resumeHomeClock = false) {
   await activateTab(target);
   if (resumeHomeClock && homeAutoPaused && state?.paused && !state.game_over) {
     const resumed = await act(() => api("/api/pause", { paused: false }), "Game resumed.");
-    if (resumed) scheduleComputerReply();
+    if (resumed) {
+      homeAutoPaused = false;
+      scheduleComputerReply();
+    }
+  } else if (resumeHomeClock && (!state?.paused || state?.game_over)) {
+    homeAutoPaused = false;
   }
-  homeAutoPaused = false;
 }
 
 async function showLauncher() {
@@ -3338,10 +3560,19 @@ async function showLauncher() {
   if (state && !state.game_over && !state.paused) {
     const paused = await act(() => api("/api/pause", { paused: true }), "Game paused while Home is open.");
     homeAutoPaused = Boolean(paused);
-  } else {
+  } else if (state?.game_over) {
     homeAutoPaused = false;
   }
   setLauncherVisible(true);
+}
+
+async function startNewGameFromLauncher() {
+  const confirmed = await confirmRestartIfNeeded(
+    "Starting a new game replaces the current game. Save or export a copy first if you want to keep it.",
+  );
+  if (!confirmed) return false;
+  await enterWorkbench("game", false);
+  return restartStandardGame();
 }
 
 async function activateTab(button, focus = false) {
@@ -3349,6 +3580,11 @@ async function activateTab(button, focus = false) {
   const previous = tabButtons.find((tab) => tab.classList.contains("active"));
   const previousTab = previous?.dataset.tab;
   const nextTab = button.dataset.tab;
+  $("mainWorkspace").dataset.activeTab = nextTab;
+  if (nextTab !== "engine") {
+    clearTimeout(autoPositionAnalysisTimer);
+    autoPositionAnalysisTimer = null;
+  }
 
   if (
     previousTab === "engine"
@@ -3383,6 +3619,7 @@ async function activateTab(button, focus = false) {
   } else if (nextTab === "engine" && state?.moves_uci?.length) {
     ensureReviewSeries().then(renderReviewPanel).catch((error) => setStatus(error.message, "error"));
   }
+  if (nextTab === "engine") scheduleAutoPositionAnalysis();
 }
 
 tabButtons.forEach((button, index) => {
@@ -3407,6 +3644,7 @@ tabButtons.forEach((button, index) => {
 $("homeBtn").addEventListener("click", showLauncher);
 $("startPlayBtn").addEventListener("click", () => enterWorkbench("game", true));
 $("startAnalysisBtn").addEventListener("click", () => enterWorkbench("engine", false));
+$("startNewGameBtn").addEventListener("click", startNewGameFromLauncher);
 $("startPgnBtn").addEventListener("click", openPgnFile);
 $("startFenBtn").addEventListener("click", openFenFile);
 $("startLibraryBtn").addEventListener("click", () => enterWorkbench("position", false));
@@ -3420,6 +3658,22 @@ $("flipBtn").addEventListener("click", () => {
 $("undoBtn").addEventListener("click", undoLiveMove);
 $("engineBtn").addEventListener("click", engineMove);
 $("multipvBtn").addEventListener("click", runMultiPv);
+$("multipvCount").addEventListener("change", () => {
+  autoPositionAnalysisFen = null;
+  scheduleAutoPositionAnalysis(true);
+});
+$("positionAnalysisQuality").addEventListener("change", () => {
+  autoPositionAnalysisFen = null;
+  scheduleAutoPositionAnalysis(true);
+});
+$("analysisAutoToggle").addEventListener("change", (event) => {
+  clearTimeout(autoPositionAnalysisTimer);
+  autoPositionAnalysisTimer = null;
+  if (event.target.checked) {
+    autoPositionAnalysisFen = null;
+    scheduleAutoPositionAnalysis(true);
+  }
+});
 $("analyzeGameBtn").addEventListener("click", startGameAnalysis);
 $("cancelAnalysisBtn").addEventListener("click", cancelGameAnalysis);
 $("variationStartBtn").addEventListener("click", startVariationWorkspace);
@@ -3524,6 +3778,13 @@ $("reviewPrevBtn").addEventListener("click", () => enterReviewMode(Math.max(0, N
 $("reviewNextBtn").addEventListener("click", () => enterReviewMode(Math.min(state?.moves_uci?.length || 0, Number(reviewSnapshot?.ply ?? 0) + 1)));
 $("reviewLastBtn").addEventListener("click", () => enterReviewMode(state?.moves_uci?.length || 0));
 $("reviewExitBtn").addEventListener("click", exitReviewMode);
+$("reviewPlySlider").addEventListener("input", (event) => {
+  $("reviewSliderLabel").textContent = `${event.target.value} / ${state?.moves_uci?.length || 0}`;
+});
+$("reviewPlySlider").addEventListener("change", (event) => enterReviewMode(Number(event.target.value || 0)));
+$("reviewPrevErrorBtn").addEventListener("click", () => jumpAnalysisError(-1));
+$("reviewNextErrorBtn").addEventListener("click", () => jumpAnalysisError(1));
+$("copyAnalysisFenBtn").addEventListener("click", copyCurrentAnalysisFen);
 $("retryMoveBtn").addEventListener("click", startRetryMove);
 $("retryBackBtn").addEventListener("click", exitRetryMove);
 $("evalGraph").addEventListener("click", (event) => {
@@ -3664,11 +3925,12 @@ window.addEventListener("drop", (event) => {
 document.addEventListener("keydown", (event) => {
   if (event.defaultPrevented) return;
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
-    if (!$("startScreen").hidden) return;
     event.preventDefault();
+    if (launcherVisible()) return;
     openCommandPalette();
     return;
   }
+  if (launcherVisible()) return;
   const tag = document.activeElement?.tagName;
   if (["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(tag) || document.activeElement?.isContentEditable) return;
   const key = event.key.toLowerCase();
@@ -3752,27 +4014,55 @@ const desktop = desktopApi();
 if (desktop) {
   document.documentElement.dataset.desktop = "true";
   desktop.onCommand?.((command) => {
-    if (command === "new-game") $("newGameBtn").click();
-    else if (command === "setup-position") {
-      document.querySelector('[data-tab="position"]')?.click();
-      enterSetupMode();
-    }
-    else if (command === "open-fen") openFenFile();
-    else if (command === "open-pgn") openPgnFile();
-    else if (command === "open-png") openPngFile();
-    else if (command === "save-fen") downloadFen();
-    else if (command === "save-pgn") exportPgn();
-    else if (command === "save-png") saveGamePng();
-    else if (command === "undo") undoLiveMove();
-    else if (command === "flip") $("flipBtn").click();
-    else if (command === "engine-move") $("engineBtn").click();
-    else if (command === "pause") $("pauseBtn").click();
-    else if (command === "analyze-game") startGameAnalysis();
-    else if (command === "multipv") activateTab(document.querySelector('[data-tab="engine"]')).then(runMultiPv);
-    else if (command === "variation") activateTab(document.querySelector('[data-tab="engine"]')).then(startVariationWorkspace);
-    else if (command === "trainer") startTrainer();
-    else if (command === "command-palette") openCommandPalette();
+    handleDesktopCommand(command).catch((error) => setStatus(error.message, "error"));
   });
+}
+
+async function handleDesktopCommand(command) {
+  if (command === "new-game") {
+    if (launcherVisible()) await startNewGameFromLauncher();
+    else $("newGameBtn").click();
+  } else if (command === "setup-position") {
+    if (launcherVisible()) await enterWorkbench("position", false);
+    else await activateTab(document.querySelector('[data-tab="position"]'));
+    await enterSetupMode();
+  } else if (command === "open-fen") await openFenFile();
+  else if (command === "open-pgn") await openPgnFile();
+  else if (command === "open-png") await openPngFile();
+  else if (command === "save-fen") await downloadFen();
+  else if (command === "save-pgn") await exportPgn();
+  else if (command === "save-png") await saveGamePng();
+  else if (command === "undo") {
+    if (launcherVisible()) await enterWorkbench("game", false);
+    await undoLiveMove();
+  } else if (command === "flip") {
+    if (launcherVisible()) await enterWorkbench("game", false);
+    $("flipBtn").click();
+  } else if (command === "engine-move") {
+    if (launcherVisible()) await enterWorkbench("game", true);
+    await engineMove();
+  } else if (command === "pause") {
+    if (launcherVisible()) await enterWorkbench("game", false);
+    await togglePause();
+  } else if (command === "analyze-game") {
+    if (launcherVisible()) await enterWorkbench("engine", false);
+    else await activateTab(document.querySelector('[data-tab="engine"]'));
+    await startGameAnalysis();
+  } else if (command === "multipv") {
+    if (launcherVisible()) await enterWorkbench("engine", false);
+    else await activateTab(document.querySelector('[data-tab="engine"]'));
+    await runMultiPv();
+  } else if (command === "variation") {
+    if (launcherVisible()) await enterWorkbench("engine", false);
+    else await activateTab(document.querySelector('[data-tab="engine"]'));
+    await startVariationWorkspace();
+  } else if (command === "trainer") {
+    if (launcherVisible()) await enterWorkbench("train", false);
+    await startTrainer();
+  } else if (command === "command-palette") {
+    if (launcherVisible()) setStatus("Quick actions are already available on Home.");
+    else openCommandPalette();
+  }
 }
 
 async function reconnectBackend() {

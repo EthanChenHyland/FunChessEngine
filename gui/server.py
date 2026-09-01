@@ -42,6 +42,7 @@ else:
     ROOT = Path(__file__).resolve().parent
 DEFAULT_CLOCK_MS = 120_000
 DEFAULT_INCREMENT_MS = 500
+MAX_API_BODY_BYTES = 4 * 1024 * 1024
 OPENING_DATA_PATH = ROOT / "openings.json"
 
 
@@ -858,6 +859,8 @@ class GameSession:
             raise ValueError("Could not parse this PGN.") from exc
         if game is None:
             raise ValueError("No chess game was found in this PGN.")
+        if game.errors:
+            raise ValueError("PGN contains invalid or illegal notation.")
 
         board = game.board()
         if not board.is_valid():
@@ -925,6 +928,12 @@ class GameSession:
             if base_clock_ms is not None:
                 self.base_clock_ms = base_clock_ms
                 self.increment_ms = increment_ms
+            else:
+                # Imported games without a TimeControl tag must not inherit the
+                # unrelated clock settings from whichever game happened to be
+                # open before the import.
+                self.base_clock_ms = DEFAULT_CLOCK_MS
+                self.increment_ms = DEFAULT_INCREMENT_MS
             self.white_ms = self.base_clock_ms
             self.black_ms = self.base_clock_ms
             self.recorded_initial_clocks = recorded_initial
@@ -1765,7 +1774,9 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _body(self) -> dict[str, Any]:
         size = int(self.headers.get("Content-Length", "0"))
-        if size > 64 * 1024:
+        if size < 0:
+            raise ValueError("Request body length is invalid.")
+        if size > MAX_API_BODY_BYTES:
             raise ValueError("Request body is too large.")
         raw = self.rfile.read(size) if size else b"{}"
         value = json.loads(raw)

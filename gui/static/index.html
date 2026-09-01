@@ -16,9 +16,11 @@
         <p class="eyebrow">ENGINE LAB</p>
         <div class="brand-title-row">
           <span class="brand-mark" aria-hidden="true"></span>
-          <h1>FunChessEngine</h1>
+          <div class="brand-copy">
+            <h1>FunChessEngine</h1>
+            <p class="brand-subtitle">Local play, analysis, and engine development</p>
+          </div>
         </div>
-        <p class="brand-subtitle">Local play, analysis, and engine development</p>
       </div>
       <div class="topbar-actions">
         <button id="homeBtn" class="command-trigger" type="button" hidden><span>Home</span></button>
@@ -33,45 +35,47 @@
     </div>
 
     <section id="startScreen" class="start-screen" aria-labelledby="startTitle">
-      <div class="start-hero">
-        <span class="start-mark" aria-hidden="true"></span>
-        <p class="eyebrow">CHESS WORKSTATION</p>
-        <h2 id="startTitle">What do you want to do?</h2>
-        <p>Play a game, inspect an existing one, or open a position without dropping straight into a live chessboard.</p>
+      <div class="start-shell">
+        <div class="start-hero">
+          <div class="start-heading-row">
+            <span class="start-mark" aria-hidden="true"></span>
+            <div>
+              <p class="eyebrow">CHESS WORKSTATION</p>
+              <h2 id="startTitle">Ready when you are.</h2>
+            </div>
+          </div>
+          <p>Continue the board already on this computer, start fresh, or jump straight into review.</p>
+          <div class="start-session" aria-live="polite">
+            <span>Current session</span>
+            <strong id="startSessionSummary">Loading local board…</strong>
+          </div>
+        </div>
+
+        <div class="start-primary-grid">
+          <button id="startPlayBtn" class="start-card start-card-primary" type="button">
+            <span class="start-card-kicker">PLAY</span>
+            <strong id="startPlayLabel">Continue game</strong>
+            <span>Open the board and resume the current game when appropriate.</span>
+          </button>
+          <button id="startAnalysisBtn" class="start-card" type="button">
+            <span class="start-card-kicker">ANALYZE</span>
+            <strong>Analysis &amp; review</strong>
+            <span>Notation, recorded clocks, engine lines, evaluation graph, and variations.</span>
+          </button>
+        </div>
+
+        <div class="start-quick-actions" aria-label="Quick start actions">
+          <button id="startNewGameBtn" class="start-quick" type="button"><strong>New game</strong><span>Fresh board</span></button>
+          <button id="startPgnBtn" class="start-quick" type="button"><strong>Open PGN</strong><span>Game file</span></button>
+          <button id="startFenBtn" class="start-quick" type="button"><strong>Open FEN</strong><span>Position</span></button>
+          <button id="startLibraryBtn" class="start-quick" type="button"><strong>Library</strong><span>Saved games</span></button>
+          <button id="startSettingsBtn" class="start-quick" type="button"><strong>Settings</strong><span>Appearance</span></button>
+        </div>
+        <div class="start-footer-row">
+          <p class="start-footnote">Everything stays local on this computer.</p>
+          <p id="startStatus" class="start-status" role="status" aria-live="polite"></p>
+        </div>
       </div>
-      <div class="start-grid">
-        <button id="startPlayBtn" class="start-card start-card-primary" type="button">
-          <strong>Play</strong>
-          <span>Continue the current board or start a new game against the engine, locally, or engine vs engine.</span>
-          <small>Play</small>
-        </button>
-        <button id="startAnalysisBtn" class="start-card" type="button">
-          <strong>Analysis &amp; review</strong>
-          <span>Review moves, recorded game clocks, evaluations, MultiPV lines, and variations.</span>
-          <small>Analysis</small>
-        </button>
-        <button id="startPgnBtn" class="start-card" type="button">
-          <strong>Open PGN</strong>
-          <span>Load a game record directly into the review workstation.</span>
-          <small>Game file</small>
-        </button>
-        <button id="startFenBtn" class="start-card" type="button">
-          <strong>Open FEN</strong>
-          <span>Open a saved position or begin analysis from a specific board state.</span>
-          <small>Position</small>
-        </button>
-        <button id="startLibraryBtn" class="start-card" type="button">
-          <strong>Game library</strong>
-          <span>Browse recent local games, favorites, saved PNG records, and imports.</span>
-          <small>Library</small>
-        </button>
-        <button id="startSettingsBtn" class="start-card" type="button">
-          <strong>Settings</strong>
-          <span>Change appearance, board and piece themes, accents, sound, and board behavior.</span>
-          <small>Preferences</small>
-        </button>
-      </div>
-      <p class="start-footnote">Everything stays local on this computer.</p>
     </section>
 
     <section id="mainWorkspace" class="workspace" hidden>
@@ -289,9 +293,22 @@
               <button id="reviewLastBtn" class="secondary compact" title="Last position">▶|</button>
               <button id="reviewExitBtn" class="secondary compact" hidden>Return to game</button>
             </div>
+            <label class="review-slider-label" for="reviewPlySlider"><span>Game position</span><span id="reviewSliderLabel">0 / 0</span></label>
+            <input id="reviewPlySlider" class="review-slider" type="range" min="0" max="0" step="1" value="0" aria-label="Review game position">
+            <div class="review-jump-tools">
+              <button id="reviewPrevErrorBtn" class="secondary compact" type="button">← Previous error</button>
+              <button id="reviewNextErrorBtn" class="secondary compact" type="button">Next error →</button>
+              <button id="copyAnalysisFenBtn" class="secondary compact" type="button">Copy position FEN</button>
+            </div>
             <canvas id="evalGraph" class="eval-graph" height="150" tabindex="0" role="img" aria-label="Evaluation history graph. Use left and right arrows to review moves." aria-describedby="graphKeyboardHint"></canvas>
             <div class="review-meta"><span id="reviewEval">—</span><span id="reviewFen">Select a move or graph point to review.</span></div>
             <p id="graphKeyboardHint" class="shortcut-hint">Review: <kbd>←</kbd>/<kbd>→</kbd> browse only · <kbd>Home</kbd>/<kbd>End</kbd> ends · <kbd>Esc</kbd> return. Undo changes the live game only.</p>
+          </div>
+
+          <div class="analysis-notation-card">
+            <div class="setting-heading"><span class="label">Main-line notation</span><span id="analysisNotationMeta" class="setting-value">0 plies</span></div>
+            <p class="hint">ChessBase-style move list with move grades and recorded clock snapshots. Select any move to jump there without editing the game.</p>
+            <div id="analysisNotation" class="analysis-notation" aria-label="Analysis move notation"></div>
           </div>
 
           <div class="variation-card">
@@ -380,10 +397,12 @@
           </div>
           <div class="multipv-card">
             <div class="setting-heading"><span class="label">Candidate lines</span><span id="multipvMeta" class="setting-value">Current position</span></div>
-            <div class="row two compact-row">
+            <div class="analysis-engine-controls compact-row">
               <div><label for="multipvCount">Lines</label><select id="multipvCount"><option value="1">1</option><option value="3" selected>3</option><option value="5">5</option></select></div>
+              <div><label for="positionAnalysisQuality">Search</label><select id="positionAnalysisQuality"><option value="150">Fast</option><option value="350" selected>Normal</option><option value="750">Deep</option><option value="1500">Maximum</option></select></div>
               <button id="multipvBtn" class="secondary align-end">Analyze position</button>
             </div>
+            <label class="analysis-auto"><input id="analysisAutoToggle" type="checkbox"> <span><strong>Auto-refresh engine lines</strong><small>Re-analyze when you browse or branch to a new position.</small></span></label>
             <div id="multipvLines" class="multipv-lines"><p class="hint">Rank the strongest candidate moves for the live or reviewed position.</p></div>
           </div>
           <div class="opening-explorer-card">

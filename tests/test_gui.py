@@ -12,7 +12,7 @@ from unittest.mock import patch
 import chess
 import chess.pgn
 
-from gui.server import SESSION, GameSession, Handler
+from gui.server import DEFAULT_CLOCK_MS, DEFAULT_INCREMENT_MS, SESSION, GameSession, Handler
 
 
 class GameSessionTests(unittest.TestCase):
@@ -189,6 +189,19 @@ class GameSessionTests(unittest.TestCase):
         self.assertEqual(self.game.review_state(2)["recorded_white_ms"], 598_000)
         self.assertEqual(self.game.review_state(2)["recorded_black_ms"], 597_000)
         self.assertEqual(self.game.review_state(3)["recorded_white_ms"], 595_000)
+
+    def test_pgn_without_time_control_does_not_inherit_previous_game_clock(self) -> None:
+        self.game.reset(clock_ms=600_000, increment_ms=10_000)
+        self.game.load_pgn('[Result "*"]\n\n1. e4 e5 *\n')
+        state = self.game.state()
+        self.assertEqual(state["base_clock_ms"], DEFAULT_CLOCK_MS)
+        self.assertEqual(state["increment_ms"], DEFAULT_INCREMENT_MS)
+        self.assertEqual(state["recorded_initial_clocks"], [None, None])
+        self.assertIsNone(self.game.review_state(1)["recorded_white_ms"])
+
+    def test_pgn_with_parser_errors_is_rejected_instead_of_partially_loaded(self) -> None:
+        with self.assertRaisesRegex(ValueError, "invalid or illegal notation"):
+            self.game.load_pgn('[Result "*"]\n\n1. e4 e5 2. Bh6 *\n')
 
     def test_load_pgn_preserves_headers_and_result(self) -> None:
         pgn = """[Event \"Review Test\"]
@@ -486,6 +499,18 @@ class HandlerSecurityTests(unittest.TestCase):
         self.assertEqual(payload["fen"], chess.STARTING_FEN)
         self.assertEqual(headers.get("x-content-type-options"), "nosniff")
         self.assertEqual(headers.get("cross-origin-resource-policy"), "same-origin")
+
+    def test_accepts_reasonably_large_local_json_for_game_imports(self) -> None:
+        origin = f"http://127.0.0.1:{self.port}"
+        body = json.dumps({"clock_ms": 120_000, "padding": "x" * 70_000})
+        status, payload, _headers = self.request(
+            "POST",
+            "/api/reset",
+            body=body,
+            headers={"Content-Type": "application/json", "Origin": origin},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["fen"], chess.STARTING_FEN)
 
 
 if __name__ == "__main__":

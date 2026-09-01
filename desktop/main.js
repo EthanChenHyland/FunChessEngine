@@ -1,6 +1,6 @@
 "use strict";
 
-const { app, BrowserWindow, Menu, dialog, ipcMain, nativeImage, shell } = require("electron");
+const { app, BrowserWindow, Menu, dialog, ipcMain, nativeImage, screen, shell } = require("electron");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -12,7 +12,7 @@ let quitting = false;
 const intentionalBackends = new WeakSet();
 
 const MAX_FEN_BYTES = 64 * 1024;
-const MAX_PGN_BYTES = 10 * 1024 * 1024;
+const MAX_PGN_BYTES = 2 * 1024 * 1024;
 const MAX_SAVE_BYTES = 50 * 1024 * 1024;
 
 app.setName("FunChessEngine");
@@ -49,6 +49,17 @@ function saveWindowState() {
   } catch (_) {
     // Window persistence is optional.
   }
+}
+
+function visibleSavedPosition(saved) {
+  if (!Number.isFinite(saved.x) || !Number.isFinite(saved.y)) return {};
+  const intersectsDisplay = screen.getAllDisplays().some(({ workArea }) => (
+    saved.x < workArea.x + workArea.width
+    && saved.x + saved.width > workArea.x
+    && saved.y < workArea.y + workArea.height
+    && saved.y + saved.height > workArea.y
+  ));
+  return intersectsDisplay ? { x: saved.x, y: saved.y } : {};
 }
 
 function devBackendCommand() {
@@ -354,11 +365,11 @@ function registerFileHandlers() {
 
 async function createWindow() {
   const saved = loadWindowState();
+  const position = visibleSavedPosition(saved);
   mainWindow = new BrowserWindow({
     width: saved.width,
     height: saved.height,
-    x: saved.x,
-    y: saved.y,
+    ...position,
     minWidth: 900,
     minHeight: 680,
     show: false,
@@ -411,8 +422,11 @@ const singleInstance = app.requestSingleInstanceLock();
 if (!singleInstance) {
   app.quit();
 } else {
-  app.on("second-instance", () => {
-    if (!mainWindow) return;
+  app.on("second-instance", async () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      await createWindow();
+      return;
+    }
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.focus();
   });

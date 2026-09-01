@@ -9,6 +9,7 @@ INDEX_HTML = Path(__file__).resolve().parents[1] / "gui" / "static" / "index.htm
 STYLE_CSS = Path(__file__).resolve().parents[1] / "gui" / "static" / "style.css"
 LOGO_SVG = Path(__file__).resolve().parents[1] / "gui" / "static" / "app-mark.svg"
 ICON_BUILD = Path(__file__).resolve().parents[1] / "desktop" / "scripts" / "build-icon.sh"
+DESKTOP_MAIN = Path(__file__).resolve().parents[1] / "desktop" / "main.js"
 
 
 class FrontendTransitionContractTests(unittest.TestCase):
@@ -19,6 +20,7 @@ class FrontendTransitionContractTests(unittest.TestCase):
         cls.css = STYLE_CSS.read_text(encoding="utf-8")
         cls.logo_svg = LOGO_SVG.read_text(encoding="utf-8")
         cls.icon_build = ICON_BUILD.read_text(encoding="utf-8")
+        cls.desktop_main = DESKTOP_MAIN.read_text(encoding="utf-8")
 
     def assert_function_contains(self, name: str, text: str, span: int = 6_000) -> None:
         match = re.search(rf"(?:async\s+)?function\s+{re.escape(name)}\b", self.source)
@@ -32,7 +34,8 @@ class FrontendTransitionContractTests(unittest.TestCase):
         self.assert_function_contains("undoLiveMove", "takeBackTurn")
         self.assert_function_contains("undoLiveMove", "{ plies }")
         self.assertIn('$("undoBtn").addEventListener("click", undoLiveMove)', self.source)
-        self.assertIn('command === "undo") undoLiveMove()', self.source)
+        self.assert_function_contains("handleDesktopCommand", 'command === "undo"')
+        self.assert_function_contains("handleDesktopCommand", "await undoLiveMove()")
 
     def test_game_library_supports_search_favorites_and_delete(self) -> None:
         self.assert_function_contains("renderRecentGames", '$("recentGamesSearch")')
@@ -103,7 +106,8 @@ class FrontendTransitionContractTests(unittest.TestCase):
         self.assertIn('stroke="#111111"', self.logo_svg)
         self.assertIn('viewBox="48 48 928 928"', self.logo_svg)
         self.assertIn('class="brand-title-row"', self.html)
-        self.assertIn("width: 42px", self.css)
+        self.assertIn('class="brand-copy"', self.html)
+        self.assertIn("width: 56px", self.css)
 
     def test_light_mode_uses_tuned_accent_variants(self) -> None:
         for accent in ("green", "blue", "purple", "orange"):
@@ -121,6 +125,7 @@ class FrontendTransitionContractTests(unittest.TestCase):
         for control in (
             "startPlayBtn",
             "startAnalysisBtn",
+            "startNewGameBtn",
             "startPgnBtn",
             "startFenBtn",
             "startLibraryBtn",
@@ -136,10 +141,55 @@ class FrontendTransitionContractTests(unittest.TestCase):
         self.assert_function_contains("activateTab", "enterReviewMode")
         self.assert_function_contains("showLauncher", 'api("/api/pause"')
         self.assert_function_contains("enterWorkbench", "homeAutoPaused")
+        self.assertIn('id="startSessionSummary"', self.html)
+        self.assert_function_contains("renderLauncher", "startPlayLabel")
+
+    def test_analysis_workspace_has_chessbase_style_navigation_and_engine_tools(self) -> None:
+        for control in (
+            "reviewPlySlider",
+            "reviewPrevErrorBtn",
+            "reviewNextErrorBtn",
+            "copyAnalysisFenBtn",
+            "analysisNotation",
+            "positionAnalysisQuality",
+            "analysisAutoToggle",
+        ):
+            self.assertIn(f'id="{control}"', self.html)
+        self.assert_function_contains("renderAnalysisNotation", "recordedClockTextForPly")
+        self.assert_function_contains("jumpAnalysisError", "analysisErrorPlies")
+        self.assert_function_contains("scheduleAutoPositionAnalysis", "analysisAutoToggle")
+        self.assert_function_contains("runMultiPv", "positionAnalysisQuality")
+        self.assertIn('.workspace[data-active-tab="engine"]', self.css)
+
+    def test_launcher_blocks_hidden_board_shortcuts_and_routes_desktop_commands(self) -> None:
+        self.assertIn("if (launcherVisible()) return;", self.source)
+        self.assert_function_contains("loadGamePng", "fromLauncher")
+        self.assert_function_contains("handleDesktopCommand", "enterWorkbench")
+        self.assert_function_contains("togglePause", "homeAutoPaused = false")
+
+    def test_display_settings_sanitize_corrupt_local_storage_values(self) -> None:
+        self.assert_function_contains(
+            "loadDisplaySettings",
+            '["forest", "walnut", "ocean", "slate"]',
+        )
+        self.assert_function_contains("loadDisplaySettings", '["white", "turn"]')
+        self.assert_function_contains("loadDisplaySettings", "Number.isFinite(pieceScale)")
 
     def test_dock_icon_build_preserves_svg_transparency(self) -> None:
         self.assertIn('sips -s format png "$SOURCE"', self.icon_build)
         self.assertNotIn("qlmanage -t", self.icon_build)
+
+    def test_desktop_and_backend_pgn_import_limits_are_aligned(self) -> None:
+        self.assertIn("const MAX_PGN_BYTES = 2 * 1024 * 1024;", self.desktop_main)
+
+    def test_second_desktop_launch_reopens_a_closed_mac_window(self) -> None:
+        self.assertIn('app.on("second-instance", async () => {', self.desktop_main)
+        self.assertIn("await createWindow();", self.desktop_main)
+
+    def test_saved_desktop_window_position_must_still_intersect_a_display(self) -> None:
+        self.assertIn("function visibleSavedPosition(saved)", self.desktop_main)
+        self.assertIn("screen.getAllDisplays()", self.desktop_main)
+        self.assertIn("const position = visibleSavedPosition(saved);", self.desktop_main)
 
 
 if __name__ == "__main__":
