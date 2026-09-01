@@ -5,7 +5,7 @@
       <path d="M512 298v270M402 407h220" stroke="#000" stroke-width="54" stroke-linecap="round"/>
     </mask>
   </defs>
-  <g fill="#e85d4a" mask="url(#cutout)">
+  <g fill="#5667e8" mask="url(#cutout)">
     <path d="M512 124l70 101 122-39-16 132 111 70-100 81 39 124-134-6-92 104-92-104-134 6 39-124-100-81 111-70-16-132 122 39z"/>
     <path d="M352 625h320l51 101H301z"/>
     <rect x="278" y="725" width="468" height="88" rx="38"/>

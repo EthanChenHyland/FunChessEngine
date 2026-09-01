@@ -7,6 +7,7 @@ from pathlib import Path
 APP_JS = Path(__file__).resolve().parents[1] / "gui" / "static" / "app.js"
 INDEX_HTML = Path(__file__).resolve().parents[1] / "gui" / "static" / "index.html"
 STYLE_CSS = Path(__file__).resolve().parents[1] / "gui" / "static" / "style.css"
+ICON_BUILD = Path(__file__).resolve().parents[1] / "desktop" / "scripts" / "build-icon.sh"
 
 
 class FrontendTransitionContractTests(unittest.TestCase):
@@ -15,6 +16,7 @@ class FrontendTransitionContractTests(unittest.TestCase):
         cls.source = APP_JS.read_text(encoding="utf-8")
         cls.html = INDEX_HTML.read_text(encoding="utf-8")
         cls.css = STYLE_CSS.read_text(encoding="utf-8")
+        cls.icon_build = ICON_BUILD.read_text(encoding="utf-8")
 
     def assert_function_contains(self, name: str, text: str, span: int = 6_000) -> None:
         match = re.search(rf"(?:async\s+)?function\s+{re.escape(name)}\b", self.source)
@@ -90,8 +92,21 @@ class FrontendTransitionContractTests(unittest.TestCase):
     def test_logo_is_fixed_and_not_user_configurable(self) -> None:
         self.assertNotIn('id="logoColorSelect"', self.html)
         self.assertNotIn("data-logo-color", self.css)
-        self.assertIn("--logo-color: #e85d4a", self.css)
+        self.assertIn("--logo-color: #5667e8", self.css)
         self.assertNotIn("root.dataset.logoColor", self.source)
+
+    def test_light_mode_uses_tuned_accent_variants(self) -> None:
+        for accent in ("lime", "cyan", "violet", "amber"):
+            self.assertIn(
+                f':root[data-appearance="light"][data-accent="{accent}"]',
+                self.css,
+            )
+        self.assertIn("--accent-contrast: #ffffff", self.css)
+        self.assertIn("color: var(--accent-contrast)", self.css)
+
+    def test_dock_icon_build_preserves_svg_transparency(self) -> None:
+        self.assertIn('sips -s format png "$SOURCE"', self.icon_build)
+        self.assertNotIn("qlmanage -t", self.icon_build)
 
 
 if __name__ == "__main__":

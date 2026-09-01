@@ -12,8 +12,8 @@ PREVIEW_DIR="$WORK_DIR/preview"
 rm -rf "$WORK_DIR"
 mkdir -p "$ICONSET" "$PREVIEW_DIR" "$DESKTOP_DIR/assets"
 
-qlmanage -t -s 1024 -o "$PREVIEW_DIR" "$SOURCE" >/dev/null 2>&1
-PNG="$PREVIEW_DIR/app-mark.svg.png"
+sips -s format png "$SOURCE" --out "$PREVIEW_DIR/app-mark.png" >/dev/null
+PNG="$PREVIEW_DIR/app-mark.png"
 cp "$PNG" "$DESKTOP_DIR/assets/icon.png"
 
 while read -r size name; do

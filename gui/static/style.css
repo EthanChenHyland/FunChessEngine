@@ -17,7 +17,8 @@
   --coord-on-dark: rgba(235, 240, 226, .7);
   --board-max: 720px;
   --piece-size: 9.75cqw;
-  --logo-color: #e85d4a;
+  --logo-color: #5667e8;
+  --accent-contrast: #17200f;
   --piece-font: "Arial Unicode MS", "Apple Symbols", "Symbol", serif;
   --piece-weight: 400;
   --piece-shadow: drop-shadow(0 2px 1px rgba(0, 0, 0, .22));
@@ -113,7 +114,28 @@
   --line-strong: #b8c2b5;
   --text: #172019;
   --muted: #68736a;
-  --accent-dark: color-mix(in srgb, var(--accent) 20%, white);
+  --accent-contrast: #ffffff;
+  --accent-dark: color-mix(in srgb, var(--accent) 16%, white);
+}
+
+:root[data-appearance="light"][data-accent="lime"] {
+  --accent: #54820d;
+  --select: #89b940;
+}
+
+:root[data-appearance="light"][data-accent="cyan"] {
+  --accent: #087f9c;
+  --select: #47aec2;
+}
+
+:root[data-appearance="light"][data-accent="violet"] {
+  --accent: #6a4fc5;
+  --select: #9b86dc;
+}
+
+:root[data-appearance="light"][data-accent="amber"] {
+  --accent: #a86600;
+  --select: #d7a14c;
 }
 
 * { box-sizing: border-box; }
@@ -128,7 +150,7 @@ html { color-scheme: dark; }
   left: 10px;
   padding: 9px 12px;
   border-radius: 8px;
-  color: #17200f;
+  color: var(--accent-contrast);
   background: var(--accent);
   font-size: 12px;
   font-weight: 800;
@@ -496,7 +518,7 @@ button.danger { min-height: 39px; border-radius: 8px; padding: 9px 12px; color: 
 button.danger:hover { border-color: #8b463e; }
 button.danger:focus-visible { outline: 2px solid #ff8c82; outline-offset: 2px; }
 
-button.primary { color: #17200f; background: var(--accent); }
+button.primary { color: var(--accent-contrast); background: var(--accent); }
 button.primary:hover { filter: brightness(1.045); }
 button.secondary { color: var(--text); background: var(--panel-2); border-color: var(--line); }
 button.secondary:hover { border-color: var(--line-strong); }
