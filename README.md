@@ -33,7 +33,8 @@ or reviewed position. Version 0.5 adds a non-destructive variation-tree workspac
 NAGs, persistent square highlights/arrows, local opening/ECO recognition, personal opening statistics,
 FunChess Accuracy and phase-by-phase CPL, deterministic move explanations, an inspectable evaluation
 breakdown, a spaced-repetition mistake trainer built from analyzed games, local move sounds, drag/drop
-for PGN/FEN/saved PNG files, and a Cmd/Ctrl+K command palette. Preferences and training data stay local.
+for PGN/FEN/saved PNG files, and a Cmd/Ctrl+K command palette. Advanced diagnostics also expose an
+isolated benchmark/A-B development lab with local result history. Preferences and training data stay local.
 
 ## Writing an agent
 

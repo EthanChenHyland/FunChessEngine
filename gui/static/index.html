@@ -342,6 +342,23 @@
               <input id="budgetInput" type="number" min="10" step="50" placeholder="Automatic">
               <p class="hint">Leave blank to use the engine's normal clock-aware time manager.</p>
               <div class="advanced-stat"><span>Aspiration re-searches</span><strong id="researches">0</strong></div>
+              <div class="devlab-section">
+                <div class="setting-heading"><span class="label">Engine development lab</span><span id="devLabStatus" class="setting-value">Ready</span></div>
+                <p class="hint">Run isolated regression benchmarks. A/B games execute agent.py from the source checkout and the comparison folder you provide.</p>
+                <div class="row two compact-row">
+                  <div><label for="devClockMs">Benchmark clock</label><input id="devClockMs" type="number" min="1500" max="30000" step="500" value="10000"></div>
+                  <button id="devBenchmarkBtn" class="secondary align-end">Run benchmark</button>
+                </div>
+                <label for="devComparePath">Comparison agent folder</label>
+                <input id="devComparePath" type="text" placeholder="/tmp/fce-baseline">
+                <div class="row two compact-row">
+                  <div><label for="devArenaGames">A/B games</label><input id="devArenaGames" type="number" min="2" max="40" step="2" value="6"></div>
+                  <button id="devArenaBtn" class="secondary align-end">Run A/B</button>
+                </div>
+                <div id="devLabResult" class="devlab-result"><p class="hint">No experiment run yet.</p></div>
+                <div class="setting-heading dev-history-heading"><span class="label">Benchmark history</span><button id="clearDevHistoryBtn" class="text-button">Clear</button></div>
+                <div id="devBenchmarkHistory" class="dev-history"></div>
+              </div>
             </div>
           </details>
         </div>

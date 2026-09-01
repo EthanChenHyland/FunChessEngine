@@ -186,6 +186,14 @@ class GameSessionTests(unittest.TestCase):
         )
         self.assertEqual(self.game.board.fen(), live_fen)
 
+    def test_development_benchmark_runs_in_isolated_worker(self) -> None:
+        live_fen = self.game.board.fen()
+        result = self.game.benchmark_engine(1_500)
+        self.assertEqual(result["summary"]["positions"], 12)
+        self.assertGreaterEqual(result["summary"]["mean_depth"], 1)
+        self.assertGreater(result["summary"]["aggregate_nps"], 0)
+        self.assertEqual(self.game.board.fen(), live_fen)
+
     def test_human_clock_consumes_time_and_applies_increment(self) -> None:
         self.game.reset(clock_ms=10_000, increment_ms=2_000)
         self.game.turn_started_ns -= 1_000_000_000

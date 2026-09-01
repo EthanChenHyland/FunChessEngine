@@ -587,6 +587,16 @@ input[type="range"] { height: 28px; padding: 0; border: 0; background: transpare
 .advanced-body { padding: 12px; }
 .advanced-stat { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 10px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; }
 .advanced-stat strong { color: var(--text); font: 750 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.devlab-section { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.devlab-section .label { margin: 0; }
+.devlab-result { margin-top: 10px; padding: 9px; border-radius: 8px; background: var(--panel-2); }
+.devlab-result strong { display: block; color: var(--text); font-size: 10px; }
+.devlab-result span { display: block; margin-top: 4px; color: var(--muted); font: 9px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.dev-history-heading { margin-top: 13px; }
+.dev-history { display: grid; gap: 5px; margin-top: 8px; }
+.dev-history-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding: 7px 8px; border-radius: 7px; background: rgba(255, 255, 255, .025); }
+.dev-history-row strong { font-size: 9px; }
+.dev-history-row span { color: var(--muted); font: 8px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
 
 .setting-group { margin-bottom: 19px; }
 .display-selects { margin: 0 0 19px; }

@@ -21,6 +21,7 @@ import sys
 import threading
 import time
 import webbrowser
+from dataclasses import asdict
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -30,6 +31,9 @@ import chess
 import chess.pgn
 
 import agent
+from harness import benchmark as benchmark_harness
+from harness.referee import FAILED_TERMINATIONS, play_match
+from harness.sandbox import local
 
 if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
     ROOT = Path(str(sys._MEIPASS)) / "gui"
@@ -355,6 +359,91 @@ def _run_multipv_worker(payload: dict[str, Any]) -> None:
                 "nodes": int(agent.NODES),
                 "elapsed_ms": int(elapsed_ms),
                 "lines": result_lines,
+            },
+            separators=(",", ":"),
+        ),
+        flush=True,
+    )
+
+
+def _run_benchmark_worker(payload: dict[str, Any]) -> None:
+    """Run the repeatable position suite in an isolated process."""
+
+    clock_ms = max(1_500, min(30_000, int(payload.get("clock_ms", 10_000))))
+    agent.reset_game_state()
+    rows = benchmark_harness.benchmark(agent, clock_ms)
+    result: dict[str, Any] = {
+        "clock_ms": clock_ms,
+        "summary": benchmark_harness.summary(rows),
+        "positions": [asdict(row) for row in rows],
+    }
+    compare_raw = str(payload.get("compare_path", "")).strip()
+    if compare_raw:
+        compare = Path(compare_raw).expanduser().resolve()
+        if not (compare / "agent.py").is_file():
+            raise ValueError("Comparison path must be a directory containing agent.py.")
+        other = benchmark_harness.benchmark(benchmark_harness.load_agent(compare), clock_ms)
+        left = benchmark_harness.summary(rows)
+        right = benchmark_harness.summary(other)
+        result["comparison"] = {
+            "path": str(compare),
+            "summary": right,
+            "depth_delta": float(left["mean_depth"]) - float(right["mean_depth"]),
+            "nps_delta": int(left["aggregate_nps"]) - int(right["aggregate_nps"]),
+            "changed_moves": sum(
+                a.move != b.move for a, b in zip(rows, other, strict=True)
+            ),
+        }
+    print(json.dumps(result, separators=(",", ":")), flush=True)
+
+
+def _run_arena_worker(payload: dict[str, Any]) -> None:
+    """Run a paired source-checkout A/B match and return aggregate results."""
+
+    if getattr(sys, "frozen", False):
+        raise ValueError("A/B matches require the source checkout so agent.py can be sandboxed.")
+    opponent = Path(str(payload.get("opponent_path", ""))).expanduser().resolve()
+    project = ROOT.parent.resolve()
+    if not (project / "agent.py").is_file():
+        raise ValueError("Current source checkout does not contain agent.py.")
+    if not (opponent / "agent.py").is_file():
+        raise ValueError("Opponent path must be a directory containing agent.py.")
+    games = max(2, min(40, int(payload.get("games", 6))))
+    if games % 2:
+        games += 1
+    base_ms = max(1_000, min(30_000, int(payload.get("base_ms", 5_000))))
+    increment_ms = max(0, min(2_000, int(payload.get("increment_ms", 100))))
+    wins = draws = losses = 0
+    terminations: dict[str, int] = {}
+    for game in range(games):
+        plays_white = game % 2 == 0
+        white, black = (project, opponent) if plays_white else (opponent, project)
+        outcome = play_match(local(white), local(black), base_ms, increment_ms)
+        terminations[outcome.termination] = terminations.get(outcome.termination, 0) + 1
+        if outcome.result in {"draw", "void"}:
+            draws += 1
+        elif (outcome.result == "white") == plays_white:
+            wins += 1
+        else:
+            losses += 1
+    broken = {name: count for name, count in terminations.items() if name in FAILED_TERMINATIONS}
+    if broken:
+        raise RuntimeError(
+            "A/B match contained engine failures: "
+            + ", ".join(f"{name} {count}" for name, count in broken.items())
+        )
+    print(
+        json.dumps(
+            {
+                "opponent_path": str(opponent),
+                "games": games,
+                "base_ms": base_ms,
+                "increment_ms": increment_ms,
+                "wins": wins,
+                "draws": draws,
+                "losses": losses,
+                "score": (wins + draws / 2) / games,
+                "terminations": terminations,
             },
             separators=(",", ":"),
         ),
@@ -949,6 +1038,71 @@ class GameSession:
         result["fen"] = str(payload["fen"])
         return result
 
+    @staticmethod
+    def _run_json_worker(flag: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+        if getattr(sys, "frozen", False):
+            command = [sys.executable, flag]
+        else:
+            command = [sys.executable, "-m", "gui.server", flag]
+        completed = subprocess.run(
+            command,
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).resolve().parents[1]),
+            timeout=timeout,
+            check=False,
+        )
+        output = [line for line in completed.stdout.splitlines() if line.strip()]
+        if completed.returncode != 0 or not output:
+            detail = (
+                output[-1]
+                if output
+                else completed.stderr.strip()
+                or f"Worker {flag} failed without output."
+            )
+            try:
+                message = json.loads(detail)
+                detail = str(message.get("error", detail))
+            except json.JSONDecodeError:
+                pass
+            raise RuntimeError(detail)
+        result = json.loads(output[-1])
+        if not isinstance(result, dict):
+            raise RuntimeError(f"Worker {flag} returned an invalid result.")
+        return result
+
+    def benchmark_engine(self, clock_ms: int = 10_000, compare_path: str = "") -> dict[str, Any]:
+        """Run the development benchmark outside the live engine process."""
+
+        clock = max(1_500, min(30_000, int(clock_ms)))
+        payload = {"clock_ms": clock, "compare_path": str(compare_path).strip()}
+        # The clock-aware manager allocates only a small fraction of clock_ms per
+        # position, but leave ample headroom for 12 positions plus a comparison.
+        return self._run_json_worker("--benchmark-worker", payload, timeout=45.0)
+
+    def arena_compare(
+        self,
+        opponent_path: str,
+        games: int = 6,
+        base_ms: int = 5_000,
+        increment_ms: int = 100,
+    ) -> dict[str, Any]:
+        """Run a paired A/B match from a source checkout."""
+
+        payload = {
+            "opponent_path": str(opponent_path).strip(),
+            "games": int(games),
+            "base_ms": int(base_ms),
+            "increment_ms": int(increment_ms),
+        }
+        game_count = max(2, min(40, int(games)))
+        return self._run_json_worker(
+            "--arena-worker",
+            payload,
+            timeout=max(60.0, game_count * max(8.0, base_ms / 1_000 * 3)),
+        )
+
     def start_analysis(self, budget_ms: int = 100) -> dict[str, Any]:
         """Start isolated main-line analysis without touching the live agent search state."""
 
@@ -1353,6 +1507,24 @@ class Handler(SimpleHTTPRequestHandler):
                     )
                 )
                 return
+            elif self.path == "/api/dev-benchmark":
+                self._json(
+                    SESSION.benchmark_engine(
+                        int(payload.get("clock_ms", 10_000)),
+                        str(payload.get("compare_path", "")),
+                    )
+                )
+                return
+            elif self.path == "/api/dev-arena":
+                self._json(
+                    SESSION.arena_compare(
+                        str(payload.get("opponent_path", "")),
+                        int(payload.get("games", 6)),
+                        int(payload.get("base_ms", 5_000)),
+                        int(payload.get("increment_ms", 100)),
+                    )
+                )
+                return
             elif self.path == "/api/undo":
                 SESSION.undo()
             elif self.path == "/api/pause":
@@ -1395,6 +1567,8 @@ def main() -> None:
     parser.add_argument("--no-open", action="store_true", help="Do not open a browser tab.")
     parser.add_argument("--analysis-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--multipv-worker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--benchmark-worker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--arena-worker", action="store_true", help=argparse.SUPPRESS)
     arguments = parser.parse_args()
 
     if arguments.analysis_worker:
@@ -1416,6 +1590,28 @@ def main() -> None:
             _run_multipv_worker(payload)
         except Exception as exc:
             print(json.dumps({"type": "error", "error": str(exc)}), flush=True)
+            raise SystemExit(1) from exc
+        return
+
+    if arguments.benchmark_worker:
+        try:
+            payload = json.load(sys.stdin)
+            if not isinstance(payload, dict):
+                raise ValueError("Benchmark worker input must be an object.")
+            _run_benchmark_worker(payload)
+        except Exception as exc:
+            print(json.dumps({"error": str(exc)}), flush=True)
+            raise SystemExit(1) from exc
+        return
+
+    if arguments.arena_worker:
+        try:
+            payload = json.load(sys.stdin)
+            if not isinstance(payload, dict):
+                raise ValueError("Arena worker input must be an object.")
+            _run_arena_worker(payload)
+        except Exception as exc:
+            print(json.dumps({"error": str(exc)}), flush=True)
             raise SystemExit(1) from exc
         return
 

@@ -10,6 +10,7 @@ const RECOVERY_CLEAN_EXIT_KEY = "funChessEngine.recovery.cleanExit.v1";
 const RECENTS_KEY = "funChessEngine.recents.v1";
 const TRAINER_KEY = "funChessEngine.trainer.v1";
 const ANNOTATIONS_KEY = "funChessEngine.annotations.v1";
+const BENCHMARK_HISTORY_KEY = "funChessEngine.benchmarks.v1";
 const DISPLAY_DEFAULTS = {
   theme: "forest",
   accent: "lime",
@@ -71,6 +72,8 @@ let trainerWasPaused = false;
 let commandSelection = 0;
 let evalBreakdownData = null;
 let evalBreakdownBusy = false;
+let devLabBusy = false;
+let benchmarkHistory = loadBenchmarkHistory();
 
 try {
   localStorage.setItem(RECOVERY_CLEAN_EXIT_KEY, "0");
@@ -151,6 +154,23 @@ function saveTrainerItems() {
     localStorage.setItem(TRAINER_KEY, JSON.stringify(trainerItems.slice(0, 250)));
   } catch (_) {
     // Trainer history is optional local data.
+  }
+}
+
+function loadBenchmarkHistory() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(BENCHMARK_HISTORY_KEY) || "[]");
+    return Array.isArray(saved) ? saved.slice(0, 20) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function saveBenchmarkHistory() {
+  try {
+    localStorage.setItem(BENCHMARK_HISTORY_KEY, JSON.stringify(benchmarkHistory.slice(0, 20)));
+  } catch (_) {
+    // Development benchmark history is optional local metadata.
   }
 }
 
@@ -1824,6 +1844,7 @@ function render() {
   renderOpeningExplorer();
   renderEvaluationBreakdown();
   renderTrainerPanel();
+  renderDeveloperHistory();
   if ($("engineTab").classList.contains("active") && evalBreakdownData?.fen !== view.fen && !evalBreakdownBusy) {
     setTimeout(refreshEvaluationBreakdown, 0);
   }
@@ -2182,6 +2203,136 @@ async function refreshEvaluationBreakdown() {
   } finally {
     evalBreakdownBusy = false;
     renderEvaluationBreakdown();
+  }
+}
+
+function renderDeveloperHistory() {
+  const target = $("devBenchmarkHistory");
+  if (!target) return;
+  target.innerHTML = "";
+  benchmarkHistory.slice(0, 10).forEach((entry) => {
+    const row = document.createElement("div");
+    row.className = "dev-history-row";
+    const info = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = entry.kind === "arena"
+      ? `A/B ${entry.wins || 0}-${entry.losses || 0} (${Math.round(Number(entry.score || 0) * 100)}%)`
+      : `Depth ${Number(entry.mean_depth || 0).toFixed(2)} · ${Number(entry.aggregate_nps || 0).toLocaleString()} NPS`;
+    const meta = document.createElement("span");
+    meta.textContent = `${new Date(entry.saved_at).toLocaleString()}${entry.note ? ` · ${entry.note}` : ""}`;
+    info.append(title, meta);
+    const delta = document.createElement("span");
+    if (entry.kind === "benchmark" && entry.nps_delta != null) {
+      delta.textContent = `${Number(entry.nps_delta) >= 0 ? "+" : ""}${Number(entry.nps_delta).toLocaleString()} NPS`;
+    } else if (entry.kind === "arena") {
+      delta.textContent = `+${entry.wins} =${entry.draws} -${entry.losses}`;
+    } else delta.textContent = `${entry.clock_ms || ""} ms`;
+    row.append(info, delta);
+    target.appendChild(row);
+  });
+  if (!benchmarkHistory.length) {
+    const empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent = "Benchmark and A/B results will be retained here locally.";
+    target.appendChild(empty);
+  }
+}
+
+function renderDevLabResult(title, detail) {
+  const target = $("devLabResult");
+  if (!target) return;
+  target.innerHTML = "";
+  const heading = document.createElement("strong");
+  heading.textContent = title;
+  const body = document.createElement("span");
+  body.textContent = detail;
+  target.append(heading, body);
+}
+
+async function runDeveloperBenchmark() {
+  if (devLabBusy) return;
+  devLabBusy = true;
+  $("devLabStatus").textContent = "Benchmarking…";
+  $("devBenchmarkBtn").disabled = true;
+  $("devArenaBtn").disabled = true;
+  try {
+    const clockMs = Number($("devClockMs").value || 10000);
+    const comparePath = $("devComparePath").value.trim();
+    const result = await api("/api/dev-benchmark", { clock_ms: clockMs, compare_path: comparePath });
+    const summary = result.summary || {};
+    const comparison = result.comparison || null;
+    const detail = comparison
+      ? `Mean depth ${Number(summary.mean_depth).toFixed(2)} · ${Number(summary.aggregate_nps).toLocaleString()} NPS · Δdepth ${Number(comparison.depth_delta) >= 0 ? "+" : ""}${Number(comparison.depth_delta).toFixed(2)} · ΔNPS ${Number(comparison.nps_delta) >= 0 ? "+" : ""}${Number(comparison.nps_delta).toLocaleString()} · ${comparison.changed_moves}/12 moves changed.`
+      : `Mean depth ${Number(summary.mean_depth).toFixed(2)} · ${Number(summary.aggregate_nps).toLocaleString()} aggregate NPS · ${Number(summary.nodes).toLocaleString()} nodes.`;
+    renderDevLabResult("Benchmark complete", detail);
+    benchmarkHistory.unshift({
+      kind: "benchmark",
+      saved_at: new Date().toISOString(),
+      clock_ms: result.clock_ms,
+      mean_depth: summary.mean_depth,
+      aggregate_nps: summary.aggregate_nps,
+      nodes: summary.nodes,
+      depth_delta: comparison?.depth_delta ?? null,
+      nps_delta: comparison?.nps_delta ?? null,
+      changed_moves: comparison?.changed_moves ?? null,
+      note: comparison?.path ? `vs ${comparison.path}` : "current engine",
+    });
+    benchmarkHistory = benchmarkHistory.slice(0, 20);
+    saveBenchmarkHistory();
+    renderDeveloperHistory();
+    $("devLabStatus").textContent = "Complete";
+  } catch (error) {
+    $("devLabStatus").textContent = "Error";
+    renderDevLabResult("Benchmark failed", error.message);
+  } finally {
+    devLabBusy = false;
+    $("devBenchmarkBtn").disabled = false;
+    $("devArenaBtn").disabled = false;
+  }
+}
+
+async function runDeveloperArena() {
+  if (devLabBusy) return;
+  const opponentPath = $("devComparePath").value.trim();
+  if (!opponentPath) {
+    renderDevLabResult("A/B needs a baseline", "Enter a comparison agent folder containing agent.py.");
+    return;
+  }
+  devLabBusy = true;
+  $("devLabStatus").textContent = "Playing A/B…";
+  $("devBenchmarkBtn").disabled = true;
+  $("devArenaBtn").disabled = true;
+  try {
+    const result = await api("/api/dev-arena", {
+      opponent_path: opponentPath,
+      games: Number($("devArenaGames").value || 6),
+      base_ms: 5000,
+      increment_ms: 100,
+    });
+    renderDevLabResult(
+      "A/B complete",
+      `+${result.wins} =${result.draws} -${result.losses} · ${(Number(result.score) * 100).toFixed(1)}% · ${Object.entries(result.terminations || {}).map(([name, count]) => `${name} ${count}`).join(", ")}.`,
+    );
+    benchmarkHistory.unshift({
+      kind: "arena",
+      saved_at: new Date().toISOString(),
+      wins: result.wins,
+      draws: result.draws,
+      losses: result.losses,
+      score: result.score,
+      note: `vs ${result.opponent_path}`,
+    });
+    benchmarkHistory = benchmarkHistory.slice(0, 20);
+    saveBenchmarkHistory();
+    renderDeveloperHistory();
+    $("devLabStatus").textContent = "Complete";
+  } catch (error) {
+    $("devLabStatus").textContent = "Error";
+    renderDevLabResult("A/B failed", error.message);
+  } finally {
+    devLabBusy = false;
+    $("devBenchmarkBtn").disabled = false;
+    $("devArenaBtn").disabled = false;
   }
 }
 
@@ -2574,6 +2725,7 @@ function commandDefinitions() {
     { label: "Analyze candidate lines", hint: "MultiPV", action: () => { document.querySelector('[data-tab="engine"]')?.click(); runMultiPv(); } },
     { label: "Branch from current position", hint: "Variation workspace", action: () => { document.querySelector('[data-tab="engine"]')?.click(); startVariationWorkspace(); } },
     { label: "Start mistake trainer", hint: "Personal puzzles", action: startTrainer },
+    { label: "Run engine benchmark", hint: "Developer lab", action: () => { document.querySelector('[data-tab="engine"]')?.click(); runDeveloperBenchmark(); } },
     { label: "Flip board", hint: "F", action: () => $("flipBtn").click() },
     { label: "Undo move", hint: "U", action: () => $("undoBtn").click() },
     { label: "Pause / resume", hint: "Space", action: togglePause },
@@ -2687,6 +2839,13 @@ $("trainerStartBtn").addEventListener("click", startTrainer);
 $("trainerHintBtn").addEventListener("click", trainerHint);
 $("trainerExitBtn").addEventListener("click", exitTrainer);
 $("clearTrainerBtn").addEventListener("click", clearTrainer);
+$("devBenchmarkBtn").addEventListener("click", runDeveloperBenchmark);
+$("devArenaBtn").addEventListener("click", runDeveloperArena);
+$("clearDevHistoryBtn").addEventListener("click", () => {
+  benchmarkHistory = [];
+  saveBenchmarkHistory();
+  renderDeveloperHistory();
+});
 $("resumeRecoveryBtn").addEventListener("click", resumeRecovery);
 $("discardRecoveryBtn").addEventListener("click", discardRecovery);
 $("clearRecentGamesBtn").addEventListener("click", clearRecentGames);

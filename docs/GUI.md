@@ -91,6 +91,9 @@ The server binds to `127.0.0.1:8765` by default and opens the browser automatica
   a phase weakness profile, and lightweight spaced repetition.
 - Cmd/Ctrl+K opens a command palette; PGN, FEN, and FunChessEngine PNG files can also be dropped onto
   the window. Optional move/check/training sounds are generated locally with WebAudio.
+- Advanced diagnostics can launch the repeatable 12-position benchmark in an isolated worker, retain
+  benchmark history locally, compare against another agent folder, and run paired A/B games from a
+  source checkout. Packaged builds retain benchmark support; source A/B intentionally requires agent.py.
 - Keyboard shortcuts for board flip, undo, engine move, pause/resume, and clearing the current selection.
 - A shared original FunChessEngine mark is used for the in-app brand, Dock icon, and packaged macOS icon;
   icon binaries are generated from the SVG source during desktop builds rather than stored as build artifacts.
