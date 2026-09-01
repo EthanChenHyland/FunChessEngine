@@ -7,6 +7,7 @@ auditable, and robust in the standalone runtime.
 
 Strength comes from:
 
+* a compact original position-based opening repertoire;
 * iterative-deepening negamax with alpha-beta pruning;
 * a persistent transposition table;
 * a bounded evaluation cache for repeated transpositions;
@@ -137,6 +138,35 @@ EG_TABLE = ((), PAWN_EG, KNIGHT, BISHOP, ROOK, QUEEN, KING_EG)
 
 PASSED_BONUS = (0, 5, 10, 20, 35, 60, 100, 0)
 
+# Compact original opening repertoire.  The book is position based rather than
+# history based, so transpositions reached by a different move order still
+# work from the FEN supplied to get_move().  It deliberately covers only sound
+# early development; search takes over once the position leaves these lines.
+OPENING_LINES = (
+    "e2e4 e7e5 g1f3 b8c6 f1b5 a7a6 b5a4 g8f6 e1g1 f8e7",
+    "e2e4 e7e5 g1f3 b8c6 f1c4 g8f6 d2d3 f8c5 e1g1 d7d6",
+    "e2e4 c7c5 g1f3 d7d6 d2d4 c5d4 f3d4 g8f6 b1c3 a7a6",
+    "e2e4 c7c5 g1f3 b8c6 d2d4 c5d4 f3d4 g7g6 b1c3 f8g7",
+    "e2e4 e7e6 d2d4 d7d5 b1c3 g8f6 e4e5 f6d7 f2f4 c7c5",
+    "e2e4 c7c6 d2d4 d7d5 e4e5 c8f5 g1f3 e7e6 f1e2 c6c5",
+    "e2e4 e7e5 g1f3 b8c6 d2d4 e5d4 f3d4 g8f6 b1c3 f8b4",
+    "e2e4 d7d6 d2d4 g8f6 b1c3 g7g6 f2f4 f8g7 g1f3 e8g8",
+    "e2e4 d7d5 e4d5 d8d5 b1c3 d5d8 d2d4 g8f6 g1f3 c7c6",
+    "e2e4 g8f6 e4e5 f6d5 d2d4 d7d6 g1f3 g7g6 c2c4 d5b6",
+    "d2d4 d7d5 c2c4 e7e6 b1c3 g8f6 c1g5 f8e7 e2e3 e8g8",
+    "d2d4 d7d5 c2c4 d5c4 g1f3 g8f6 e2e3 e7e6 f1c4 c7c5",
+    "d2d4 d7d5 c2c4 c7c6 g1f3 g8f6 b1c3 d5c4 a2a4 c8f5",
+    "d2d4 d7d5 g1f3 g8f6 c1f4 e7e6 e2e3 f8d6 f1d3 e8g8",
+    "d2d4 g8f6 c2c4 g7g6 b1c3 f8g7 e2e4 d7d6 g1f3 e8g8",
+    "d2d4 g8f6 c2c4 g7g6 b1c3 d7d5 c4d5 f6d5 e2e4 d5c3",
+    "d2d4 g8f6 c2c4 e7e6 b1c3 f8b4 e2e3 e8g8 f1d3 d7d5",
+    "d2d4 g8f6 c2c4 e7e6 g2g3 d7d5 f1g2 f8e7 g1f3 e8g8",
+    "d2d4 f7f5 g2g3 g8f6 f1g2 g7g6 g1f3 f8g7 e1g1 e8g8",
+    "c2c4 e7e5 b1c3 g8f6 g2g3 d7d5 c4d5 f6d5 f1g2 d5b6",
+    "c2c4 c7c5 b1c3 b8c6 g2g3 g7g6 f1g2 f8g7 g1f3 g8f6",
+    "g1f3 d7d5 g2g3 g8f6 f1g2 g7g6 e1g1 f8g7 d2d3 e8g8",
+)
+
 
 @dataclass(slots=True)
 class TTEntry:
@@ -193,6 +223,36 @@ def _repetition_key(board: chess.Board) -> object:
     """
 
     return board._transposition_key()
+
+
+def _build_opening_book() -> dict[object, tuple[chess.Move, ...]]:
+    choices: dict[object, list[chess.Move]] = {}
+    for line in OPENING_LINES:
+        board = chess.Board()
+        for raw in line.split():
+            move = chess.Move.from_uci(raw)
+            if move not in board.legal_moves:
+                raise RuntimeError(f"invalid built-in opening move {raw} in {line}")
+            key = _repetition_key(board)
+            candidates = choices.setdefault(key, [])
+            if move not in candidates:
+                candidates.append(move)
+            board.push(move)
+    return {key: tuple(moves) for key, moves in choices.items()}
+
+
+OPENING_BOOK = _build_opening_book()
+
+
+def _opening_book_move(board: chess.Board, time_left_ms: int) -> chess.Move | None:
+    choices = OPENING_BOOK.get(_repetition_key(board), ())
+    legal = [move for move in choices if move in board.legal_moves]
+    if not legal:
+        return None
+    # Keep the preferred line stable at ordinary clocks while letting different
+    # time controls naturally exercise alternate sound choices at transpositions.
+    index = (max(0, time_left_ms) // 10_000) % len(legal)
+    return legal[index]
 
 
 def reset_game_state() -> None:
@@ -683,6 +743,21 @@ def get_move(fen: str, time_left_ms: int) -> str:
         SEEN_POSITIONS[child_key] = SEEN_POSITIONS.get(child_key, 0) + 1
         LAST_SEARCH_INFO = SearchInfo(depth=0, score=0, nodes=0, elapsed_ms=0, pv=(forced.uci(),))
         return forced.uci()
+
+    book_move = _opening_book_move(board, time_left_ms)
+    if book_move is not None:
+        board.push(book_move)
+        played_key = _repetition_key(board)
+        board.pop()
+        SEEN_POSITIONS[played_key] = SEEN_POSITIONS.get(played_key, 0) + 1
+        LAST_SEARCH_INFO = SearchInfo(
+            depth=0,
+            score=0,
+            nodes=0,
+            elapsed_ms=0,
+            pv=(book_move.uci(),),
+        )
+        return book_move.uci()
 
     _trim_state()
     root_key = _key(board)

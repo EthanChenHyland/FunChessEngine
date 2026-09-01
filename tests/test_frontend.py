@@ -5,12 +5,16 @@ import unittest
 from pathlib import Path
 
 APP_JS = Path(__file__).resolve().parents[1] / "gui" / "static" / "app.js"
+INDEX_HTML = Path(__file__).resolve().parents[1] / "gui" / "static" / "index.html"
+STYLE_CSS = Path(__file__).resolve().parents[1] / "gui" / "static" / "style.css"
 
 
 class FrontendTransitionContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.source = APP_JS.read_text(encoding="utf-8")
+        cls.html = INDEX_HTML.read_text(encoding="utf-8")
+        cls.css = STYLE_CSS.read_text(encoding="utf-8")
 
     def assert_function_contains(self, name: str, text: str, span: int = 6_000) -> None:
         match = re.search(rf"(?:async\s+)?function\s+{re.escape(name)}\b", self.source)
@@ -59,6 +63,42 @@ class FrontendTransitionContractTests(unittest.TestCase):
         self.assert_function_contains("render", "liveControlsLocked")
         self.assert_function_contains("render", '$("humanSide").disabled')
         self.assertIn("Review navigation changes only the viewed position", self.source)
+
+    def test_appearance_settings_are_backward_compatible_and_independent(self) -> None:
+        self.assertIn('appearance: "dark"', self.source)
+        self.assertIn('pieceTheme: "classic"', self.source)
+        self.assertIn('logoColor: "coral"', self.source)
+        self.assertIn("const merged = { ...DISPLAY_DEFAULTS,", self.source)
+        self.assertIn("return merged;", self.source)
+        self.assertIn('root.dataset.appearance = display.appearance', self.source)
+        self.assertIn('root.dataset.pieceTheme = display.pieceTheme', self.source)
+        self.assertIn('root.dataset.logoColor = display.logoColor', self.source)
+
+    def test_light_mode_piece_themes_and_logo_controls_exist(self) -> None:
+        for control in ("appearanceSelect", "pieceThemeSelect", "logoColorSelect"):
+            self.assertIn(f'id="{control}"', self.html)
+        for theme in ("classic", "clean", "bold", "soft", "outline", "tournament"):
+            self.assertIn(f'value="{theme}"', self.html)
+        self.assertIn(':root[data-appearance="light"]', self.css)
+        self.assertIn(':root[data-piece-theme="clean"]', self.css)
+        self.assertIn(':root[data-piece-theme="bold"]', self.css)
+        self.assertIn(':root[data-piece-theme="soft"]', self.css)
+        self.assertIn(':root[data-piece-theme="outline"]', self.css)
+        self.assertIn(':root[data-piece-theme="tournament"]', self.css)
+        self.assertIn('background: var(--logo-color)', self.css)
+        self.assertIn('mask: url("/app-mark.svg")', self.css)
+
+    def test_logo_palette_is_distinct_from_accent_palette(self) -> None:
+        logo_match = re.search(r'<select id="logoColorSelect">(.*?)</select>', self.html)
+        accent_match = re.search(r'<select id="accentSelect">(.*?)</select>', self.html)
+        self.assertIsNotNone(logo_match)
+        self.assertIsNotNone(accent_match)
+        logo_values = set(re.findall(r'value="([^"]+)"', logo_match.group(1) if logo_match else ""))
+        accent_values = set(
+            re.findall(r'value="([^"]+)"', accent_match.group(1) if accent_match else "")
+        )
+        self.assertEqual(logo_values, {"coral", "rose", "cobalt", "silver", "graphite"})
+        self.assertTrue(logo_values.isdisjoint(accent_values))
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@
   <main class="app-shell">
     <header class="topbar">
       <div class="brand-lockup">
-        <img class="brand-mark" src="/app-mark.svg" alt="">
+        <span class="brand-mark" aria-hidden="true"></span>
         <div>
           <p class="eyebrow">ENGINE LAB</p>
           <h1>FunChessEngine</h1>
@@ -414,6 +414,15 @@
           <div class="row two display-selects">
             <div><label for="themeSelect">Board theme</label><select id="themeSelect"><option value="forest">Forest</option><option value="walnut">Walnut</option><option value="ocean">Ocean</option><option value="slate">Slate</option></select></div>
             <div><label for="accentSelect">Accent</label><select id="accentSelect"><option value="lime">Lime</option><option value="cyan">Cyan</option><option value="violet">Violet</option><option value="amber">Amber</option></select></div>
+          </div>
+          <div class="row two display-selects">
+            <div><label for="appearanceSelect">App appearance</label><select id="appearanceSelect"><option value="dark">Dark</option><option value="light">Light</option></select></div>
+            <div><label for="pieceThemeSelect">Piece theme</label><select id="pieceThemeSelect"><option value="classic">Classic</option><option value="clean">Clean</option><option value="bold">Bold</option><option value="soft">Soft</option><option value="outline">Outline</option><option value="tournament">Tournament</option></select></div>
+          </div>
+          <div class="setting-group">
+            <label for="logoColorSelect">Logo color</label>
+            <select id="logoColorSelect"><option value="coral">Coral</option><option value="rose">Rose</option><option value="cobalt">Cobalt</option><option value="silver">Silver</option><option value="graphite">Graphite</option></select>
+            <p class="hint">Logo color is independent of the interface accent.</p>
           </div>
           <div class="setting-group">
             <div class="setting-heading"><label for="pieceSizeInput">Piece size</label><span id="pieceSizeValue" class="setting-value">78%</span></div>

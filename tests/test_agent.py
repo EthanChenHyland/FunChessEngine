@@ -14,12 +14,33 @@ class AgentTests(unittest.TestCase):
 
     def test_returns_legal_move(self) -> None:
         board = chess.Board()
+        for raw in [
+            "e2e4", "e7e5", "g1f3", "b8c6", "f1b5",
+            "a7a6", "b5a4", "g8f6", "e1g1", "f8e7",
+        ]:
+            board.push_uci(raw)
         move = chess.Move.from_uci(agent.get_move(board.fen(), 2_000))
         self.assertIn(move, board.legal_moves)
         self.assertGreaterEqual(agent.LAST_SEARCH_INFO.depth, 1)
         self.assertGreater(agent.LAST_SEARCH_INFO.nodes, 0)
         self.assertTrue(agent.LAST_SEARCH_INFO.pv)
         self.assertEqual(agent.LAST_SEARCH_INFO.pv[0], move.uci())
+
+    def test_builtin_opening_book_is_legal_and_position_based(self) -> None:
+        board = chess.Board()
+        self.assertGreaterEqual(len(agent.OPENING_BOOK), 150)
+        self.assertEqual(
+            {move.uci() for move in agent.OPENING_BOOK[agent._repetition_key(board)]},
+            {"e2e4", "d2d4", "c2c4", "g1f3"},
+        )
+        first = chess.Move.from_uci(agent.get_move(board.fen(), 120_000))
+        self.assertEqual(first.uci(), "e2e4")
+        self.assertIn(first, board.legal_moves)
+
+        board.push(first)
+        reply = agent._opening_book_move(board, 120_000)
+        self.assertIsNotNone(reply)
+        self.assertIn(reply, board.legal_moves)
 
     def test_exchange_filter_only_marks_obvious_defended_loss(self) -> None:
         defended = chess.Board("4k3/8/2p5/3p4/4Q3/8/8/4K3 w - - 0 1")

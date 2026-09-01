@@ -85,6 +85,8 @@ class GameSessionTests(unittest.TestCase):
             self.game.play_move("e2e5")
 
     def test_engine_move_is_legal_and_records_metrics(self) -> None:
+        # Leave the built-in opening repertoire so this test exercises search telemetry.
+        self.game.play_move("e2e3")
         before = self.game.board.copy()
         uci = self.game.engine_move(100)
         self.assertIn(chess.Move.from_uci(uci), before.legal_moves)

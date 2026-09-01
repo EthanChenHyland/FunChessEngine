@@ -23,15 +23,16 @@ FunChessEngine 1.0's Engine Lab includes a responsive board, click-to-move or dr
 two-player and engine/engine modes, 17 built-in clock presets plus custom controls, pause/resume,
 resign/draw/rematch, captured-piece/material tracking, portable PNG saves, FEN and PGN import/export,
 a full piece-by-piece setup editor, keyboard-friendly pawn promotion, non-destructive move-by-move
-review, a clickable evaluation-history graph, search telemetry/PV, themes, accent colors, piece
-sizing, orientation preferences, and display toggles. Post-game analysis runs in an isolated local
+review, a clickable evaluation-history graph, search telemetry/PV, true dark/light appearance, four board
+themes, six piece styles, independent accent/logo palettes, piece sizing, orientation preferences, and
+display toggles. Post-game analysis runs in an isolated local
 engine process and adds best-move comparisons, CPL, move grades, searched graph points, and a
 non-destructive Retry Move trainer. Crash recovery autosaves interrupted sessions, and a collapsed
 Recent Games library keeps the latest completed/imported games available for one-click review.
 Analyze also supports isolated MultiPV ranking for the top 1, 3, or 5 candidate lines at the live
 or reviewed position. The non-destructive variation-tree workspace supports comments and NAGs,
-persistent local studies, square highlights/arrows, local opening/ECO recognition, personal opening statistics,
-FunChess Accuracy and phase-by-phase CPL, deterministic move explanations, an inspectable evaluation
+persistent local studies, square highlights/arrows, 94-prefix local opening/ECO recognition, personal opening statistics,
+and a compact position-based engine opening repertoire. FunChess Accuracy and phase-by-phase CPL, deterministic move explanations, an inspectable evaluation
 breakdown, a spaced-repetition mistake trainer built from analyzed games, local move sounds, drag/drop
 for PGN/FEN/saved PNG files, and a Cmd/Ctrl+K command palette. Advanced diagnostics also expose an
 isolated benchmark/A-B development lab with local result history. Preferences and training data stay local.

@@ -1,16 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="FunChessEngine mark">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#151b17"/><stop offset="1" stop-color="#090c0a"/></linearGradient>
-    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#c7ff72"/><stop offset="1" stop-color="#8fda45"/></linearGradient>
+    <mask id="cutout">
+      <rect width="1024" height="1024" fill="#fff"/>
+      <path d="M512 298v270M402 407h220" stroke="#000" stroke-width="54" stroke-linecap="round"/>
+    </mask>
   </defs>
-  <rect x="52" y="52" width="920" height="920" rx="226" fill="url(#bg)"/>
-  <rect x="91" y="91" width="842" height="842" rx="190" fill="none" stroke="#334137" stroke-width="14"/>
-  <g opacity=".18" fill="#dbe7dc">
-    <rect x="238" y="238" width="137" height="137" rx="18"/><rect x="512" y="238" width="137" height="137" rx="18"/><rect x="375" y="375" width="137" height="137" rx="18"/><rect x="649" y="375" width="137" height="137" rx="18"/>
-    <rect x="238" y="512" width="137" height="137" rx="18"/><rect x="512" y="512" width="137" height="137" rx="18"/><rect x="375" y="649" width="137" height="137" rx="18"/><rect x="649" y="649" width="137" height="137" rx="18"/>
+  <g fill="#ff7a6f" mask="url(#cutout)">
+    <path d="M512 124l70 101 122-39-16 132 111 70-100 81 39 124-134-6-92 104-92-104-134 6 39-124-100-81 111-70-16-132 122 39z"/>
+    <path d="M352 625h320l51 101H301z"/>
+    <rect x="278" y="725" width="468" height="88" rx="38"/>
   </g>
-  <path d="M512 210l58 84 101-32-13 109 92 58-83 67 32 103-111-5-76 86-76-86-111 5 32-103-83-67 92-58-13-109 101 32z" fill="url(#accent)"/>
-  <path d="M512 312v260M416 410h192" stroke="#101611" stroke-width="48" stroke-linecap="round"/>
-  <path d="M367 618h290l46 92H321z" fill="#101611"/>
-  <rect x="300" y="704" width="424" height="76" rx="30" fill="url(#accent)"/>
 </svg>
