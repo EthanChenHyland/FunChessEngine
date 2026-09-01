@@ -2,7 +2,7 @@ SHELL := /bin/bash
 
 UV := $(shell command -v uv 2>/dev/null || printf '%s' '/Users/ethius/AI-Workspace/runtimes/uv/bin/uv')
 
-.PHONY: setup play arena benchmark gui desktop desktop-dev desktop-build test zip verify-zip gate release-gate
+.PHONY: setup play arena ab benchmark gui desktop desktop-dev desktop-build test zip verify-zip gate release-gate
 
 setup:
 	$(UV) sync
@@ -12,6 +12,10 @@ play:
 
 arena:
 	$(UV) run python -m harness.arena --opponent baselines/greedy --games 20
+
+ab:
+	@test -n "$(COMPARE)" || (echo "usage: make ab COMPARE=../old-engine [GAMES=12]" && exit 2)
+	$(UV) run python -m harness.arena --opponent "$(COMPARE)" --games "$(or $(GAMES),12)" --base-ms "$(or $(BASE_MS),5000)" --increment-ms "$(or $(INC_MS),100)" --fen-file harness/openings.fen
 
 benchmark:
 	$(UV) run python -m harness.benchmark $(if $(COMPARE),--compare "$(COMPARE)") $(if $(CLOCK_MS),--clock-ms "$(CLOCK_MS)")

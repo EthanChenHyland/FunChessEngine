@@ -61,6 +61,7 @@ def main() -> None:
             f"\nwarning: {unzipped / 1024 / 1024:.1f} MB unzipped is {over:.1f}x the "
             f"{MAX_UNZIPPED_BYTES // 1024 // 1024} MB configured package limit"
         )
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":
