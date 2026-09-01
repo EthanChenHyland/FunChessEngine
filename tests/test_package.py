@@ -23,6 +23,17 @@ class PackageTests(unittest.TestCase):
             self.assertFalse(any(name.startswith("gui/") for name in names))
             self.assertFalse(any(name.startswith("tools/") for name in names))
 
+    def test_default_package_does_not_pick_up_future_root_scripts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "agent.py").write_text("def get_move(fen, time_left_ms): return 'e2e4'\n")
+            (root / "debug_helper.py").write_text("raise RuntimeError('development only')\n")
+            destination = root / "engine-package.zip"
+            written = build(root, destination, ())
+            self.assertEqual(written, ["agent.py"])
+            with zipfile.ZipFile(destination) as archive:
+                self.assertEqual(archive.namelist(), ["agent.py"])
+
 
 if __name__ == "__main__":
     unittest.main()

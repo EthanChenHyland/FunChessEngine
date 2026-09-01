@@ -7,7 +7,13 @@ const path = require("node:path");
 
 let mainWindow = null;
 let backend = null;
+let backendUrl = null;
 let quitting = false;
+const intentionalBackends = new WeakSet();
+
+const MAX_FEN_BYTES = 64 * 1024;
+const MAX_PGN_BYTES = 10 * 1024 * 1024;
+const MAX_SAVE_BYTES = 50 * 1024 * 1024;
 
 app.setName("FunChessEngine");
 
@@ -74,17 +80,21 @@ function backendCommand() {
 function startBackend() {
   return new Promise((resolve, reject) => {
     const spec = backendCommand();
-    backend = spawn(spec.command, spec.args, {
+    const child = spawn(spec.command, spec.args, {
       cwd: spec.cwd,
       env: { ...process.env, PYTHONUNBUFFERED: "1" },
       stdio: ["ignore", "pipe", "pipe"],
     });
+    backend = child;
 
     let output = "";
     let settled = false;
     const timeout = setTimeout(() => {
       if (!settled) {
         settled = true;
+        intentionalBackends.add(child);
+        child.kill("SIGTERM");
+        if (backend === child) backend = null;
         reject(new Error(`Engine backend did not become ready.\n${output.trim()}`));
       }
     }, 15000);
@@ -99,27 +109,41 @@ function startBackend() {
         resolve(match[1]);
       }
     };
-    backend.stdout.on("data", inspect);
-    backend.stderr.on("data", inspect);
-    backend.once("error", (error) => {
+    child.stdout.on("data", inspect);
+    child.stderr.on("data", inspect);
+    child.once("error", (error) => {
       if (!settled) {
         settled = true;
         clearTimeout(timeout);
+        if (backend === child) backend = null;
         reject(error);
       }
     });
-    backend.once("exit", (code, signal) => {
-      backend = null;
+    child.once("exit", (code, signal) => {
+      if (backend === child) backend = null;
       if (!settled) {
         settled = true;
         clearTimeout(timeout);
         reject(new Error(`Engine backend exited before startup (${code ?? signal ?? "unknown"}).\n${output.trim()}`));
-      } else if (!quitting && mainWindow && !mainWindow.isDestroyed()) {
+      } else if (!quitting && !intentionalBackends.has(child) && mainWindow && !mainWindow.isDestroyed()) {
         dialog.showMessageBox(mainWindow, {
           type: "error",
           title: "Engine backend stopped",
           message: "The local chess engine backend stopped unexpectedly.",
-          detail: "Restart FunChessEngine to resume play.",
+          detail: "You can restart the local backend without closing the application.",
+          buttons: ["Restart Backend", "Quit"],
+          defaultId: 0,
+          cancelId: 1,
+        }).then(async ({ response }) => {
+          if (response === 0) {
+            try {
+              await restartBackend();
+            } catch (error) {
+              await showBackendFailure(error);
+            }
+          } else {
+            app.quit();
+          }
         });
       }
     });
@@ -128,8 +152,46 @@ function startBackend() {
 
 function stopBackend() {
   if (!backend) return;
-  backend.kill("SIGTERM");
+  const child = backend;
+  intentionalBackends.add(child);
+  child.kill("SIGTERM");
   backend = null;
+  backendUrl = null;
+}
+
+async function restartBackend() {
+  stopBackend();
+  const url = await startBackend();
+  backendUrl = url;
+  if (mainWindow && !mainWindow.isDestroyed()) await mainWindow.loadURL(url);
+}
+
+async function showBackendFailure(error) {
+  await dialog.showMessageBox(mainWindow, {
+    type: "error",
+    title: "FunChessEngine could not start",
+    message: "The local engine backend could not be launched.",
+    detail: String(error?.message || error),
+  });
+}
+
+function readBounded(filePath, maxBytes, encoding = null) {
+  const size = fs.statSync(filePath).size;
+  if (size > maxBytes) throw new Error(`File is too large (${Math.ceil(size / 1024 / 1024)} MB).`);
+  return encoding ? fs.readFileSync(filePath, encoding) : fs.readFileSync(filePath);
+}
+
+function showAbout() {
+  return dialog.showMessageBox(mainWindow, {
+    type: "info",
+    title: "About FunChessEngine",
+    message: `FunChessEngine ${app.getVersion()}`,
+    detail: [
+      "Original classical chess engine + local analysis and training workspace.",
+      "All analysis stays on this computer; the standalone engine remains isolated from the desktop shell.",
+      `Electron ${process.versions.electron} · Chromium ${process.versions.chrome}`,
+    ].join("\n\n"),
+  });
 }
 
 function sendCommand(command) {
@@ -141,7 +203,8 @@ function installMenu() {
     ...(process.platform === "darwin" ? [{
       label: app.name,
       submenu: [
-        { role: "about" },
+        { label: `About ${app.name}`, click: () => showAbout() },
+        { label: "Restart Engine Backend", click: () => restartBackend().catch(showBackendFailure) },
         { type: "separator" },
         { role: "services" },
         { type: "separator" },
@@ -207,7 +270,10 @@ function installMenu() {
     },
     ...(!app.isPackaged ? [{
       role: "help",
-      submenu: [{ label: "Project Folder", click: () => shell.openPath(projectRoot()) }],
+      submenu: [
+        { label: "About FunChessEngine", click: () => showAbout() },
+        { label: "Project Folder", click: () => shell.openPath(projectRoot()) },
+      ],
     }] : []),
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
@@ -221,7 +287,7 @@ function registerFileHandlers() {
       filters: [{ name: "FEN position", extensions: ["fen", "txt"] }],
     });
     if (result.canceled || !result.filePaths[0]) return null;
-    return fs.readFileSync(result.filePaths[0], "utf8");
+    return readBounded(result.filePaths[0], MAX_FEN_BYTES, "utf8");
   });
 
   ipcMain.handle("file:open-pgn", async () => {
@@ -231,7 +297,7 @@ function registerFileHandlers() {
       filters: [{ name: "Portable Game Notation", extensions: ["pgn"] }],
     });
     if (result.canceled || !result.filePaths[0]) return null;
-    return fs.readFileSync(result.filePaths[0], "utf8");
+    return readBounded(result.filePaths[0], MAX_PGN_BYTES, "utf8");
   });
 
   ipcMain.handle("file:open-png", async () => {
@@ -241,12 +307,13 @@ function registerFileHandlers() {
       filters: [{ name: "PNG saved game", extensions: ["png"] }],
     });
     if (result.canceled || !result.filePaths[0]) return null;
-    const bytes = fs.readFileSync(result.filePaths[0]);
+    const bytes = readBounded(result.filePaths[0], MAX_SAVE_BYTES);
     return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
   });
 
   ipcMain.handle("file:save-text", async (_event, payload) => {
     if (!payload || typeof payload.text !== "string") return false;
+    if (Buffer.byteLength(payload.text, "utf8") > MAX_FEN_BYTES) throw new Error("FEN export is too large.");
     const result = await dialog.showSaveDialog(mainWindow, {
       title: "Export FEN",
       defaultPath: payload.filename || "funchess-position.fen",
@@ -259,6 +326,7 @@ function registerFileHandlers() {
 
   ipcMain.handle("file:save-pgn", async (_event, payload) => {
     if (!payload || typeof payload.text !== "string") return false;
+    if (Buffer.byteLength(payload.text, "utf8") > MAX_PGN_BYTES) throw new Error("PGN export is too large.");
     const result = await dialog.showSaveDialog(mainWindow, {
       title: "Export PGN Game",
       defaultPath: payload.filename || "funchess-game.pgn",
@@ -271,13 +339,15 @@ function registerFileHandlers() {
 
   ipcMain.handle("file:save-binary", async (_event, payload) => {
     if (!payload?.bytes) return false;
+    const bytes = Buffer.from(payload.bytes);
+    if (bytes.byteLength > MAX_SAVE_BYTES) throw new Error("Saved game is too large.");
     const result = await dialog.showSaveDialog(mainWindow, {
       title: "Save FunChessEngine Game",
       defaultPath: payload.filename || "funchess-game.png",
       filters: [{ name: "PNG saved game", extensions: ["png"] }],
     });
     if (result.canceled || !result.filePath) return false;
-    fs.writeFileSync(result.filePath, Buffer.from(payload.bytes));
+    fs.writeFileSync(result.filePath, bytes);
     return true;
   });
 }
@@ -309,17 +379,24 @@ async function createWindow() {
     if (url.startsWith("https://")) shell.openExternal(url);
     return { action: "deny" };
   });
+  mainWindow.webContents.on("will-navigate", (event, targetUrl) => {
+    if (!backendUrl) return event.preventDefault();
+    try {
+      if (new URL(targetUrl).origin !== new URL(backendUrl).origin) event.preventDefault();
+    } catch (_) {
+      event.preventDefault();
+    }
+  });
+  mainWindow.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => {
+    callback(false);
+  });
 
   try {
     const url = await startBackend();
+    backendUrl = url;
     await mainWindow.loadURL(url);
   } catch (error) {
-    await dialog.showMessageBox(mainWindow, {
-      type: "error",
-      title: "FunChessEngine could not start",
-      message: "The local engine backend could not be launched.",
-      detail: String(error?.message || error),
-    });
+    await showBackendFailure(error);
     app.quit();
   }
 }

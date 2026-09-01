@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import statistics
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -76,12 +77,18 @@ def summary(rows: list[BenchRow]) -> dict[str, float | int]:
     total_nodes = sum(row.nodes for row in rows)
     total_depth = sum(row.depth for row in rows)
     count = max(1, len(rows))
+    depths = [row.depth for row in rows]
+    nps_values = [row.nps for row in rows]
     return {
         "positions": len(rows),
         "mean_depth": total_depth / count,
+        "median_depth": float(statistics.median(depths)) if depths else 0.0,
+        "min_depth": min(depths, default=0),
+        "max_depth": max(depths, default=0),
         "nodes": total_nodes,
         "elapsed_ms": total_ms,
         "aggregate_nps": total_nodes * 1000 // max(1, total_ms),
+        "median_nps": int(statistics.median(nps_values)) if nps_values else 0,
     }
 
 
@@ -95,6 +102,7 @@ def print_rows(rows: list[BenchRow]) -> None:
     stats = summary(rows)
     print(
         f"\nmean depth {stats['mean_depth']:.2f} | "
+        f"median {stats['median_depth']:.1f} | "
         f"{stats['nodes']:,} nodes | {stats['elapsed_ms']:,} ms | "
         f"{stats['aggregate_nps']:,} aggregate nps"
     )
@@ -151,10 +159,13 @@ def main() -> None:
         right = summary(other_rows)
         depth_delta = float(left["mean_depth"]) - float(right["mean_depth"])
         nps_delta = int(left["aggregate_nps"]) - int(right["aggregate_nps"])
+        baseline_nps = max(1, int(right["aggregate_nps"]))
+        nps_percent = nps_delta * 100.0 / baseline_nps
         changed_moves = sum(a.move != b.move for a, b in zip(rows, other_rows, strict=True))
         print(
             f"\ndelta vs comparison: depth {depth_delta:+.2f}, "
-            f"nps {nps_delta:+,}, changed moves {changed_moves}/{len(rows)}"
+            f"nps {nps_delta:+,} ({nps_percent:+.1f}%), "
+            f"changed moves {changed_moves}/{len(rows)}"
         )
         payload["comparison"] = {
             "agent": str(arguments.compare.resolve()),
@@ -162,6 +173,7 @@ def main() -> None:
             "positions": [asdict(row) for row in other_rows],
             "depth_delta": depth_delta,
             "nps_delta": nps_delta,
+            "nps_percent": nps_percent,
             "changed_moves": changed_moves,
         }
 

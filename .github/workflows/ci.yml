@@ -15,3 +15,11 @@ jobs:
           enable-cache: true
       - run: uv sync
       - run: make gate
+      - run: make verify-zip
+      - run: node --check gui/static/app.js
+      - run: npm ci
+        working-directory: desktop
+      - run: npm run check
+        working-directory: desktop
+      - run: npm audit --omit=dev
+        working-directory: desktop

@@ -11,9 +11,10 @@ SKIP = {"__pycache__", ".DS_Store"}
 
 def members(root: Path, includes: tuple[str, ...]) -> Iterator[tuple[Path, str]]:
     named: set[str] = set()
-    for path in sorted(root.glob("*.py")):
-        named.add(path.name)
-        yield path, path.name
+    agent = root / "agent.py"
+    if agent.is_file():
+        named.add(agent.name)
+        yield agent, agent.name
     for name in includes:
         if name in named:
             continue

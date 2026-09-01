@@ -22,9 +22,13 @@ class BenchmarkTests(unittest.TestCase):
         stats = summary(rows)
         self.assertEqual(stats["positions"], 2)
         self.assertEqual(stats["mean_depth"], 5.0)
+        self.assertEqual(stats["median_depth"], 5.0)
+        self.assertEqual(stats["min_depth"], 4)
+        self.assertEqual(stats["max_depth"], 6)
         self.assertEqual(stats["nodes"], 4_000)
         self.assertEqual(stats["elapsed_ms"], 250)
         self.assertEqual(stats["aggregate_nps"], 16_000)
+        self.assertEqual(stats["median_nps"], 15_000)
 
 
 if __name__ == "__main__":
