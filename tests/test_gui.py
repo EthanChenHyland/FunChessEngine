@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import http.client
+import io
 import json
 import threading
 import time
@@ -9,6 +10,7 @@ from http.server import ThreadingHTTPServer
 from unittest.mock import patch
 
 import chess
+import chess.pgn
 
 from gui.server import SESSION, GameSession, Handler
 
@@ -131,7 +133,13 @@ class GameSessionTests(unittest.TestCase):
         final_fen = self.game.board.fen()
 
         exported = self.game.export_pgn()
-        self.assertIn("1. e4 e5 2. Nf3", exported)
+        parsed = chess.pgn.read_game(io.StringIO(exported))
+        self.assertIsNotNone(parsed)
+        self.assertEqual(
+            [move.uci() for move in parsed.mainline_moves()] if parsed else [],
+            ["e2e4", "e7e5", "g1f3"],
+        )
+        self.assertIn("[%clk", exported)
 
         review = self.game.review_state(1)
         self.assertEqual(review["ply"], 1)
@@ -147,6 +155,40 @@ class GameSessionTests(unittest.TestCase):
         restored.load_pgn(exported)
         self.assertEqual(restored.board.fen(), final_fen)
         self.assertTrue(restored.paused)
+
+    def test_review_exposes_stable_recorded_clock_snapshots(self) -> None:
+        self.game.reset(clock_ms=10_000, increment_ms=2_000)
+        self.game.play_move("e2e4")
+        first = self.game.review_state(1)
+        self.assertGreater(first["recorded_white_ms"], 11_500)
+        self.assertLessEqual(first["recorded_white_ms"], 12_000)
+        self.assertGreater(first["recorded_black_ms"], 9_500)
+        self.assertLessEqual(first["recorded_black_ms"], 10_000)
+
+        self.game.play_move("e7e5")
+        second = self.game.review_state(2)
+        self.assertGreater(second["recorded_black_ms"], 11_500)
+        self.assertEqual(self.game.review_state(1)["recorded_white_ms"], first["recorded_white_ms"])
+        self.assertEqual(self.game.review_state(1)["recorded_black_ms"], first["recorded_black_ms"])
+        self.assertEqual(self.game.review_state(0)["recorded_white_ms"], 10_000)
+        self.assertEqual(self.game.review_state(0)["recorded_black_ms"], 10_000)
+
+    def test_pgn_clock_comments_drive_review_clock_snapshots(self) -> None:
+        pgn = """[Event \"Clock Review\"]
+[TimeControl \"600+5\"]
+[Result \"*\"]
+
+1. e4 {[%clk 0:09:58]} e5 {[%clk 0:09:57]} 2. Nf3 {[%clk 0:09:55]} *
+"""
+        self.game.load_pgn(pgn)
+        self.assertEqual(self.game.state()["base_clock_ms"], 600_000)
+        self.assertEqual(self.game.state()["increment_ms"], 5_000)
+        self.assertEqual(self.game.review_state(0)["recorded_white_ms"], 600_000)
+        self.assertEqual(self.game.review_state(1)["recorded_white_ms"], 598_000)
+        self.assertEqual(self.game.review_state(1)["recorded_black_ms"], 600_000)
+        self.assertEqual(self.game.review_state(2)["recorded_white_ms"], 598_000)
+        self.assertEqual(self.game.review_state(2)["recorded_black_ms"], 597_000)
+        self.assertEqual(self.game.review_state(3)["recorded_white_ms"], 595_000)
 
     def test_load_pgn_preserves_headers_and_result(self) -> None:
         pgn = """[Event \"Review Test\"]

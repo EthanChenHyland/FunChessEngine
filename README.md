@@ -3,16 +3,73 @@
 FunChessEngine is an original classical chess engine and fully local chess workstation. The project keeps development tooling, GUI code, tests,
 and benchmarks outside the engine package so `engine-package.zip` remains small and auditable.
 
-```
+## Build and test
+
+From the repository root:
+
+```bash
 cd /Users/ethius/VSCode/FunChessEngine
-make setup
-make play
-make gui
-make desktop-dev
 ```
 
-That plays your agent against a baseline over a full 120 s + 0.5 s game and prints the result.
-Use `make zip` to build a portable `engine-package.zip` containing the standalone engine.
+Install/sync the Python environment:
+
+```bash
+make setup
+```
+
+If Electron dependencies are missing or stale:
+
+```bash
+cd desktop
+npm ci
+cd ..
+```
+
+Run the full validation gate before testing a release build:
+
+```bash
+make release-gate
+```
+
+Build the native Apple Silicon desktop app, DMG, and ZIP:
+
+```bash
+make desktop-build
+```
+
+Or validate and build in one command:
+
+```bash
+make release-build
+```
+
+Open the built app:
+
+```bash
+open desktop/dist/mac-arm64/FunChessEngine.app
+```
+
+The release artifacts are written to:
+
+```text
+desktop/dist/mac-arm64/FunChessEngine.app
+desktop/dist/FunChessEngine-1.0.0-arm64.dmg
+desktop/dist/FunChessEngine-1.0.0-arm64.zip
+```
+
+For faster development without producing release artifacts:
+
+```bash
+make gui          # browser GUI
+make desktop-dev  # Electron development mode
+```
+
+For a local engine match or standalone engine package:
+
+```bash
+make play
+make zip
+```
 
 `make gui` launches the local Engine Lab in your browser. `make desktop-dev` launches the same
 Engine Lab in an Electron desktop shell, and `make desktop-build` produces an Apple Silicon macOS
@@ -24,8 +81,11 @@ two-player and engine/engine modes, 17 built-in clock presets plus custom contro
 resign/draw/rematch, captured-piece/material tracking, portable PNG saves, FEN and PGN import/export,
 a full piece-by-piece setup editor, keyboard-friendly pawn promotion, non-destructive move-by-move
 review, a clickable evaluation-history graph, search telemetry/PV, true dark/light appearance, four board
-themes, six piece styles, independent accent/logo palettes, piece sizing, orientation preferences, and
-display toggles. Post-game analysis runs in an isolated local
+themes, six piece styles, Green/Blue/Purple/Orange interface accents, a fixed transparent black-and-white
+brand mark, piece sizing, orientation preferences, and display toggles. A ChessBase-style starter screen
+keeps the board hidden until you choose Play, Analysis, PGN/FEN, Library, or Settings. Analysis shows
+recorded per-ply game clocks (including PGN clock annotations when available) instead of live-running timers.
+Post-game analysis runs in an isolated local
 engine process and adds best-move comparisons, CPL, move grades, searched graph points, and a
 non-destructive Retry Move trainer. Crash recovery autosaves interrupted sessions, and a collapsed
 Recent Games library keeps the latest completed/imported games available for one-click review.
@@ -108,4 +168,3 @@ Local games start from the normal position unless you pass `--fen`. Automated lo
 curated neutral positions.
 
 The harness provides repeatable local matches, clock handling, legality checks, and regression testing.
-

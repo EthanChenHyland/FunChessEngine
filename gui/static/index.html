@@ -6,22 +6,23 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:">
   <title>FunChessEngine · Default Lab</title>
   <link rel="icon" href="/app-mark.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/style.css?v=9">
+  <link rel="stylesheet" href="/style.css?v=10">
 </head>
 <body>
-  <a class="skip-link" href="#board">Skip to chessboard</a>
+  <a class="skip-link" href="#board" hidden>Skip to chessboard</a>
   <main class="app-shell">
     <header class="topbar">
       <div class="brand-lockup">
-        <span class="brand-mark" aria-hidden="true"></span>
-        <div>
-          <p class="eyebrow">ENGINE LAB</p>
+        <p class="eyebrow">ENGINE LAB</p>
+        <div class="brand-title-row">
+          <span class="brand-mark" aria-hidden="true"></span>
           <h1>FunChessEngine</h1>
-          <p class="brand-subtitle">Local play, analysis, and engine development</p>
         </div>
+        <p class="brand-subtitle">Local play, analysis, and engine development</p>
       </div>
       <div class="topbar-actions">
-        <button id="commandOpenBtn" class="command-trigger" type="button" aria-haspopup="dialog" aria-controls="commandDialog"><kbd>⌘K</kbd><span>Commands</span></button>
+        <button id="homeBtn" class="command-trigger" type="button" hidden><span>Home</span></button>
+        <button id="commandOpenBtn" class="command-trigger" type="button" aria-haspopup="dialog" aria-controls="commandDialog" hidden><kbd>⌘K</kbd><span>Commands</span></button>
         <div id="engineBadge" class="engine-badge" role="status" aria-live="polite"><span class="pulse"></span><span id="engineStatusText">Engine ready</span></div>
       </div>
     </header>
@@ -31,7 +32,49 @@
       <button id="retryConnectionBtn" class="secondary compact" type="button">Retry connection</button>
     </div>
 
-    <section class="workspace">
+    <section id="startScreen" class="start-screen" aria-labelledby="startTitle">
+      <div class="start-hero">
+        <span class="start-mark" aria-hidden="true"></span>
+        <p class="eyebrow">CHESS WORKSTATION</p>
+        <h2 id="startTitle">What do you want to do?</h2>
+        <p>Play a game, inspect an existing one, or open a position without dropping straight into a live chessboard.</p>
+      </div>
+      <div class="start-grid">
+        <button id="startPlayBtn" class="start-card start-card-primary" type="button">
+          <strong>Play</strong>
+          <span>Continue the current board or start a new game against the engine, locally, or engine vs engine.</span>
+          <small>Play</small>
+        </button>
+        <button id="startAnalysisBtn" class="start-card" type="button">
+          <strong>Analysis &amp; review</strong>
+          <span>Review moves, recorded game clocks, evaluations, MultiPV lines, and variations.</span>
+          <small>Analysis</small>
+        </button>
+        <button id="startPgnBtn" class="start-card" type="button">
+          <strong>Open PGN</strong>
+          <span>Load a game record directly into the review workstation.</span>
+          <small>Game file</small>
+        </button>
+        <button id="startFenBtn" class="start-card" type="button">
+          <strong>Open FEN</strong>
+          <span>Open a saved position or begin analysis from a specific board state.</span>
+          <small>Position</small>
+        </button>
+        <button id="startLibraryBtn" class="start-card" type="button">
+          <strong>Game library</strong>
+          <span>Browse recent local games, favorites, saved PNG records, and imports.</span>
+          <small>Library</small>
+        </button>
+        <button id="startSettingsBtn" class="start-card" type="button">
+          <strong>Settings</strong>
+          <span>Change appearance, board and piece themes, accents, sound, and board behavior.</span>
+          <small>Preferences</small>
+        </button>
+      </div>
+      <p class="start-footnote">Everything stays local on this computer.</p>
+    </section>
+
+    <section id="mainWorkspace" class="workspace" hidden>
       <div class="board-column">
         <div class="board-stage" id="boardStage">
           <div class="player-row player-black">
@@ -39,6 +82,7 @@
             <div id="blackClock" class="clock">02:00.0</div>
           </div>
           <div id="blackCaptured" class="captured-row" aria-label="Pieces captured by Black"></div>
+          <div id="clockContext" class="clock-context" aria-live="polite">Live clocks</div>
           <div class="board-frame">
             <div id="board" class="board" aria-label="Chess board" aria-describedby="boardKeyboardHint"></div>
             <svg id="boardOverlay" class="board-overlay" viewBox="0 0 8 8" aria-hidden="true">
@@ -237,7 +281,7 @@
         <div id="engineTab" class="tab-panel" role="tabpanel" aria-labelledby="engineTabButton">
           <div class="review-card">
             <div class="setting-heading"><span class="label">Game review</span><span id="reviewPositionLabel" class="setting-value">Live position</span></div>
-            <p class="hint">Navigate the played main line without changing the live game. Clocks pause while reviewing; the graph uses the engine's fast static evaluation.</p>
+            <p class="hint">Navigate the played main line without changing the live game. The board shows recorded game-clock snapshots rather than running timers; the graph uses the engine's fast static evaluation.</p>
             <div class="review-nav">
               <button id="reviewFirstBtn" class="secondary compact" title="First position">|◀</button>
               <button id="reviewPrevBtn" class="secondary compact" title="Previous move">◀</button>
@@ -413,7 +457,7 @@
         <div id="displayTab" class="tab-panel" role="tabpanel" aria-labelledby="displayTabButton">
           <div class="row two display-selects">
             <div><label for="themeSelect">Board theme</label><select id="themeSelect"><option value="forest">Forest</option><option value="walnut">Walnut</option><option value="ocean">Ocean</option><option value="slate">Slate</option></select></div>
-            <div><label for="accentSelect">Accent</label><select id="accentSelect"><option value="lime">Lime</option><option value="cyan">Cyan</option><option value="violet">Violet</option><option value="amber">Amber</option></select></div>
+            <div><label for="accentSelect">Accent</label><select id="accentSelect"><option value="green">Green</option><option value="blue">Blue</option><option value="purple">Purple</option><option value="orange">Orange</option></select></div>
           </div>
           <div class="row two display-selects">
             <div><label for="appearanceSelect">App appearance</label><select id="appearanceSelect"><option value="dark">Dark</option><option value="light">Light</option></select></div>
@@ -477,6 +521,6 @@
     </div>
   </dialog>
   <div id="dropOverlay" class="drop-overlay" hidden><div><strong>Open in FunChessEngine</strong><span>Drop PGN, FEN, or saved PNG</span></div></div>
-  <script src="/app.js?v=9"></script>
+  <script src="/app.js?v=10"></script>
 </body>
 </html>

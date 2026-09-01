@@ -502,6 +502,14 @@ class GameSession:
         self.last_engine_pv: tuple[str, ...] = ()
         self.last_engine_researches = 0
         self.history: list[tuple[int, int]] = []
+        # `history` is the undo baseline (pre-increment). Keep a separate clock
+        # record for review so Analysis can show the time actually displayed
+        # after each played move without re-running a live timer.
+        self.recorded_initial_clocks: tuple[int | None, int | None] = (
+            DEFAULT_CLOCK_MS,
+            DEFAULT_CLOCK_MS,
+        )
+        self.recorded_clocks: list[tuple[int | None, int | None]] = []
         self.paused = False
         self.manual_result: str | None = None
         self.manual_termination: str | None = None
@@ -559,6 +567,8 @@ class GameSession:
             self.last_engine_pv = ()
             self.last_engine_researches = 0
             self.history.clear()
+            self.recorded_initial_clocks = (self.base_clock_ms, self.base_clock_ms)
+            self.recorded_clocks.clear()
             self.paused = False
             self.manual_result = None
             self.manual_termination = None
@@ -642,10 +652,14 @@ class GameSession:
         initial_fen = str(payload.get("initial_fen", chess.STARTING_FEN))
         moves_raw = payload.get("moves", [])
         history_raw = payload.get("clock_history", [])
+        recorded_raw = payload.get("recorded_clock_history", [])
+        recorded_initial_raw = payload.get("recorded_initial_clocks")
         if not isinstance(moves_raw, list) or len(moves_raw) > 1_000:
             raise ValueError("Saved game contains an invalid move list.")
         if not isinstance(history_raw, list) or len(history_raw) > 1_000:
             raise ValueError("Saved game contains invalid clock history.")
+        if not isinstance(recorded_raw, list) or len(recorded_raw) > 1_000:
+            raise ValueError("Saved game contains invalid recorded clock history.")
 
         board = chess.Board(initial_fen)
         if not board.is_valid():
@@ -669,6 +683,20 @@ class GameSession:
         if history and len(history) != len(moves):
             raise ValueError("Saved game clock history does not match its moves.")
 
+        def optional_clock_pair(raw: Any, label: str) -> tuple[int | None, int | None]:
+            if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+                raise ValueError(f"Saved game contains invalid {label}.")
+            result: list[int | None] = []
+            for value in raw:
+                result.append(None if value is None else max(0, int(value)))
+            return result[0], result[1]
+
+        recorded: list[tuple[int | None, int | None]] = [
+            optional_clock_pair(item, "recorded clock history") for item in recorded_raw
+        ]
+        if recorded and len(recorded) != len(moves):
+            raise ValueError("Saved game recorded clock history does not match its moves.")
+
         with self.lock:
             self._cancel_analysis_locked()
             agent.reset_game_state()
@@ -680,6 +708,13 @@ class GameSession:
                 1, int(payload.get("base_clock_ms", max(self.white_ms, self.black_ms, 1)))
             )
             self.increment_ms = max(0, int(payload.get("increment_ms", DEFAULT_INCREMENT_MS)))
+            if recorded_initial_raw is None:
+                self.recorded_initial_clocks = (self.base_clock_ms, self.base_clock_ms)
+            else:
+                self.recorded_initial_clocks = optional_clock_pair(
+                    recorded_initial_raw,
+                    "recorded initial clocks",
+                )
             self.last_move = moves[-1] if moves else None
             self.last_engine_ms = 0
             self.last_engine_nodes = 0
@@ -690,6 +725,21 @@ class GameSession:
             self.history = history if history else [
                 (self.white_ms, self.black_ms) for _ in moves
             ]
+            if recorded:
+                self.recorded_clocks = recorded
+            elif history:
+                # Older FunChessEngine saves only stored the undo clock
+                # baseline. Reconstruct the post-move display clock by adding
+                # increment to the mover, matching play_move()/engine_move().
+                self.recorded_clocks = []
+                for index, (white, black) in enumerate(history):
+                    if index % 2 == 0:
+                        white += self.increment_ms
+                    else:
+                        black += self.increment_ms
+                    self.recorded_clocks.append((white, black))
+            else:
+                self.recorded_clocks = [(None, None) for _ in moves]
             self.paused = bool(payload.get("paused", False))
             manual_result = payload.get("manual_result")
             manual_termination = payload.get("manual_termination")
@@ -814,27 +864,71 @@ class GameSession:
             raise ValueError("PGN starts from an invalid chess position.")
         initial_fen = board.fen()
         moves: list[chess.Move] = []
-        for move in game.mainline_moves():
-            if move not in board.legal_moves:
+        clock_nodes: list[tuple[chess.Color, float | None]] = []
+        replay = game.board()
+        for node in game.mainline():
+            move = node.move
+            if move is None:
+                continue
+            if move not in replay.legal_moves:
                 raise ValueError(f"PGN contains illegal move {move.uci()}.")
-            board.push(move)
+            mover = replay.turn
+            replay.push(move)
             moves.append(move)
+            clock_nodes.append((mover, node.clock()))
             if len(moves) > 1_000:
                 raise ValueError("PGN contains too many moves for the local review workspace.")
+        board = replay
 
         headers = {
             str(key): str(value)
             for key, value in game.headers.items()
             if str(value) not in {"?", ""}
         }
+        time_control = headers.get("TimeControl", "")
+        base_clock_ms: int | None = None
+        increment_ms = 0
+        if time_control:
+            fields = time_control.split("+", 1)
+            try:
+                if len(fields) == 1 and fields[0].isdigit():
+                    base_clock_ms = max(1, int(fields[0]) * 1_000)
+                elif len(fields) == 2 and fields[0].isdigit() and fields[1].isdigit():
+                    base_clock_ms = max(1, int(fields[0]) * 1_000)
+                    increment_ms = max(0, int(fields[1]) * 1_000)
+            except ValueError:
+                base_clock_ms = None
+                increment_ms = 0
+
+        recorded_initial: tuple[int | None, int | None] = (
+            base_clock_ms,
+            base_clock_ms,
+        )
+        last_known: list[int | None] = [base_clock_ms, base_clock_ms]
+        recorded_clocks: list[tuple[int | None, int | None]] = []
+        for mover, clock_seconds in clock_nodes:
+            mover_index = 0 if mover == chess.WHITE else 1
+            if clock_seconds is None:
+                # Do not invent elapsed time when an imported PGN has no clock
+                # annotation for this move. Preserve only the opponent's last
+                # known value and mark the mover's value unknown.
+                last_known[mover_index] = None
+            else:
+                last_known[mover_index] = max(0, round(clock_seconds * 1_000))
+            recorded_clocks.append((last_known[0], last_known[1]))
         result = headers.get("Result")
         with self.lock:
             self._cancel_analysis_locked()
             agent.reset_game_state()
             self.board = board
             self.initial_fen = initial_fen
+            if base_clock_ms is not None:
+                self.base_clock_ms = base_clock_ms
+                self.increment_ms = increment_ms
             self.white_ms = self.base_clock_ms
             self.black_ms = self.base_clock_ms
+            self.recorded_initial_clocks = recorded_initial
+            self.recorded_clocks = recorded_clocks
             self.last_move = moves[-1] if moves else None
             self.last_engine_ms = 0
             self.last_engine_nodes = 0
@@ -863,10 +957,15 @@ class GameSession:
 
             node: chess.pgn.GameNode = game
             replay = chess.Board(self.initial_fen)
-            for move in self.board.move_stack:
+            for index, move in enumerate(self.board.move_stack):
                 if move not in replay.legal_moves:
                     raise RuntimeError("Current game history cannot be exported as legal PGN.")
                 node = node.add_variation(move)
+                if index < len(self.recorded_clocks):
+                    pair = self.recorded_clocks[index]
+                    mover_clock = pair[0] if replay.turn == chess.WHITE else pair[1]
+                    if mover_clock is not None:
+                        node.set_clock(mover_clock / 1_000)
                 replay.push(move)
 
             state = self.state()
@@ -889,6 +988,12 @@ class GameSession:
             last_move = moves[target - 1].uci() if target else None
             captured_by_white, captured_by_black = self._captures(replay)
             opening = _opening_from_moves(self.initial_fen, [move.uci() for move in moves[:target]])
+            if target == 0:
+                recorded_white_ms, recorded_black_ms = self.recorded_initial_clocks
+            elif target <= len(self.recorded_clocks):
+                recorded_white_ms, recorded_black_ms = self.recorded_clocks[target - 1]
+            else:
+                recorded_white_ms = recorded_black_ms = None
             return {
                 "ply": target,
                 "total_plies": total,
@@ -905,6 +1010,8 @@ class GameSession:
                 "material_balance": self._material_balance(replay),
                 "phase": _phase_name(replay),
                 "opening": opening,
+                "recorded_white_ms": recorded_white_ms,
+                "recorded_black_ms": recorded_black_ms,
             }
 
     def review_series(self) -> dict[str, Any]:
@@ -1293,6 +1400,8 @@ class GameSession:
                 "initial_fen": self.initial_fen,
                 "moves_uci": self._moves_uci(),
                 "clock_history": [[white, black] for white, black in self.history],
+                "recorded_initial_clocks": list(self.recorded_initial_clocks),
+                "recorded_clock_history": [list(pair) for pair in self.recorded_clocks],
                 "paused": self.paused,
                 "manual_result": self.manual_result,
                 "manual_termination": self.manual_termination,
@@ -1353,6 +1462,7 @@ class GameSession:
                 self.white_ms += self.increment_ms
             else:
                 self.black_ms += self.increment_ms
+            self.recorded_clocks.append((self.white_ms, self.black_ms))
             self.board.push(move)
             self.last_move = move
             self.turn_started_ns = time.monotonic_ns()
@@ -1407,6 +1517,7 @@ class GameSession:
                 self.white_ms += self.increment_ms
             else:
                 self.black_ms += self.increment_ms
+            self.recorded_clocks.append((self.white_ms, self.black_ms))
             self.board.push(move)
             self.last_move = move
             return uci
@@ -1429,6 +1540,8 @@ class GameSession:
                 self.board.pop()
                 if self.history:
                     self.white_ms, self.black_ms = self.history.pop()
+                if self.recorded_clocks:
+                    self.recorded_clocks.pop()
             self.last_move = self.board.peek() if self.board.move_stack else None
             self.turn_started_ns = time.monotonic_ns()
 

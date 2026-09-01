@@ -7,6 +7,7 @@ from pathlib import Path
 APP_JS = Path(__file__).resolve().parents[1] / "gui" / "static" / "app.js"
 INDEX_HTML = Path(__file__).resolve().parents[1] / "gui" / "static" / "index.html"
 STYLE_CSS = Path(__file__).resolve().parents[1] / "gui" / "static" / "style.css"
+LOGO_SVG = Path(__file__).resolve().parents[1] / "gui" / "static" / "app-mark.svg"
 ICON_BUILD = Path(__file__).resolve().parents[1] / "desktop" / "scripts" / "build-icon.sh"
 
 
@@ -16,6 +17,7 @@ class FrontendTransitionContractTests(unittest.TestCase):
         cls.source = APP_JS.read_text(encoding="utf-8")
         cls.html = INDEX_HTML.read_text(encoding="utf-8")
         cls.css = STYLE_CSS.read_text(encoding="utf-8")
+        cls.logo_svg = LOGO_SVG.read_text(encoding="utf-8")
         cls.icon_build = ICON_BUILD.read_text(encoding="utf-8")
 
     def assert_function_contains(self, name: str, text: str, span: int = 6_000) -> None:
@@ -71,6 +73,10 @@ class FrontendTransitionContractTests(unittest.TestCase):
         self.assertIn('pieceTheme: "classic"', self.source)
         self.assertIn("const merged = { ...DISPLAY_DEFAULTS,", self.source)
         self.assertIn("delete merged.logoColor", self.source)
+        self.assertIn('lime: "green"', self.source)
+        self.assertIn('cyan: "blue"', self.source)
+        self.assertIn('violet: "purple"', self.source)
+        self.assertIn('amber: "orange"', self.source)
         self.assertIn("return merged;", self.source)
         self.assertIn('root.dataset.appearance = display.appearance', self.source)
         self.assertIn('root.dataset.pieceTheme = display.pieceTheme', self.source)
@@ -86,23 +92,50 @@ class FrontendTransitionContractTests(unittest.TestCase):
         self.assertIn(':root[data-piece-theme="soft"]', self.css)
         self.assertIn(':root[data-piece-theme="outline"]', self.css)
         self.assertIn(':root[data-piece-theme="tournament"]', self.css)
-        self.assertIn('background: var(--logo-color)', self.css)
-        self.assertIn('mask: url("/app-mark.svg")', self.css)
+        self.assertIn('background: url("/app-mark.svg")', self.css)
 
     def test_logo_is_fixed_and_not_user_configurable(self) -> None:
         self.assertNotIn('id="logoColorSelect"', self.html)
         self.assertNotIn("data-logo-color", self.css)
-        self.assertIn("--logo-color: #5667e8", self.css)
+        self.assertNotIn("--logo-color", self.css)
         self.assertNotIn("root.dataset.logoColor", self.source)
+        self.assertIn('fill="#ffffff"', self.logo_svg)
+        self.assertIn('stroke="#111111"', self.logo_svg)
+        self.assertIn('viewBox="48 48 928 928"', self.logo_svg)
+        self.assertIn('class="brand-title-row"', self.html)
+        self.assertIn("width: 42px", self.css)
 
     def test_light_mode_uses_tuned_accent_variants(self) -> None:
-        for accent in ("lime", "cyan", "violet", "amber"):
+        for accent in ("green", "blue", "purple", "orange"):
             self.assertIn(
                 f':root[data-appearance="light"][data-accent="{accent}"]',
                 self.css,
             )
+            self.assertIn(f'value="{accent}"', self.html)
         self.assertIn("--accent-contrast: #ffffff", self.css)
         self.assertIn("color: var(--accent-contrast)", self.css)
+
+    def test_launcher_precedes_board_and_analysis_uses_recorded_clocks(self) -> None:
+        self.assertIn('id="startScreen"', self.html)
+        self.assertIn('id="mainWorkspace" class="workspace" hidden', self.html)
+        for control in (
+            "startPlayBtn",
+            "startAnalysisBtn",
+            "startPgnBtn",
+            "startFenBtn",
+            "startLibraryBtn",
+            "startSettingsBtn",
+            "homeBtn",
+        ):
+            self.assertIn(f'id="{control}"', self.html)
+        self.assertNotIn('id="workspaceSelect"', self.html)
+        self.assertIn('id="clockContext"', self.html)
+        self.assert_function_contains("renderClocks", "recorded_white_ms")
+        self.assert_function_contains("renderClocks", "Recorded game clocks")
+        self.assert_function_contains("activateTab", 'nextTab === "engine"')
+        self.assert_function_contains("activateTab", "enterReviewMode")
+        self.assert_function_contains("showLauncher", 'api("/api/pause"')
+        self.assert_function_contains("enterWorkbench", "homeAutoPaused")
 
     def test_dock_icon_build_preserves_svg_transparency(self) -> None:
         self.assertIn('sips -s format png "$SOURCE"', self.icon_build)

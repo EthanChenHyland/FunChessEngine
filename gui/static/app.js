@@ -14,7 +14,7 @@ const BENCHMARK_HISTORY_KEY = "funChessEngine.benchmarks.v1";
 const VARIATIONS_KEY = "funChessEngine.variations.v1";
 const DISPLAY_DEFAULTS = {
   theme: "forest",
-  accent: "lime",
+  accent: "green",
   appearance: "dark",
   pieceTheme: "classic",
   pieceScale: 78,
@@ -36,6 +36,7 @@ let display = loadDisplaySettings();
 let previousHumanSide = "white";
 let clockAnchorMs = performance.now();
 let flagRefreshPending = false;
+let homeAutoPaused = false;
 let lastResultKey = null;
 let setupMode = false;
 let setupBoard = {};
@@ -460,8 +461,7 @@ async function openRecentGame(index) {
     syncTimeControlsFromState();
     orientForHuman();
     render();
-    document.querySelector('[data-tab="engine"]')?.click();
-    await enterReviewMode(state.moves_uci?.length || 0);
+    await activateTab(document.querySelector('[data-tab="engine"]'));
   }
 }
 
@@ -560,6 +560,11 @@ function loadDisplaySettings() {
     // Logo color used to be configurable. Keep the mark intentionally fixed
     // and independent from appearance/accent settings, including old profiles.
     delete merged.logoColor;
+    const legacyAccents = { lime: "green", cyan: "blue", violet: "purple", amber: "orange" };
+    merged.accent = legacyAccents[merged.accent] || merged.accent;
+    if (!["green", "blue", "purple", "orange"].includes(merged.accent)) {
+      merged.accent = DISPLAY_DEFAULTS.accent;
+    }
     if (!["dark", "light"].includes(merged.appearance)) merged.appearance = DISPLAY_DEFAULTS.appearance;
     if (!["classic", "clean", "bold", "soft", "outline", "tournament"].includes(merged.pieceTheme)) {
       merged.pieceTheme = DISPLAY_DEFAULTS.pieceTheme;
@@ -1812,6 +1817,8 @@ function gameSnapshot() {
     base_clock_ms: Number(state.base_clock_ms || 120000),
     increment_ms: Number(state.increment_ms || 0),
     clock_history: Array.isArray(state.clock_history) ? state.clock_history : [],
+    recorded_initial_clocks: Array.isArray(state.recorded_initial_clocks) ? state.recorded_initial_clocks : null,
+    recorded_clock_history: Array.isArray(state.recorded_clock_history) ? state.recorded_clock_history : [],
     human_side: $("humanSide").value,
     autoplay: Boolean(autoplay),
     paused: Boolean(state.paused),
@@ -2095,12 +2102,48 @@ function liveClockMs(side) {
   return Math.max(0, remaining);
 }
 
+function recordedClockText(value) {
+  return Number.isFinite(Number(value)) ? clock(Number(value)) : "—";
+}
+
 function renderClocks() {
   if (!state) return;
+  const analysisWorkspace = Boolean($("engineTab")?.classList.contains("active"));
+  if (reviewMode || variationMode || analysisWorkspace) {
+    const view = currentBoardView();
+    const hasRecordedClockFields = view
+      && Object.prototype.hasOwnProperty.call(view, "recorded_white_ms")
+      && Object.prototype.hasOwnProperty.call(view, "recorded_black_ms");
+    const white = hasRecordedClockFields ? view.recorded_white_ms : null;
+    const black = hasRecordedClockFields ? view.recorded_black_ms : null;
+    $("whiteClock").textContent = recordedClockText(white);
+    $("blackClock").textContent = recordedClockText(black);
+    $("whiteClock").classList.remove("active");
+    $("blackClock").classList.remove("active");
+    $("whiteClock").classList.toggle("recorded", hasRecordedClockFields);
+    $("blackClock").classList.toggle("recorded", hasRecordedClockFields);
+    $("whiteClock").classList.toggle("unavailable", white == null);
+    $("blackClock").classList.toggle("unavailable", black == null);
+    if (variationMode && !hasRecordedClockFields) {
+      $("clockContext").textContent = "Analysis position · no game-clock time";
+    } else if (hasRecordedClockFields) {
+      const ply = Number(view?.ply ?? reviewSnapshot?.ply ?? 0);
+      $("clockContext").textContent = `Recorded game clocks · ply ${ply}`;
+    } else {
+      $("clockContext").textContent = "Analysis workspace · clocks stopped";
+    }
+    return;
+  }
+
   const white = liveClockMs("white");
   const black = liveClockMs("black");
   $("whiteClock").textContent = clock(white);
   $("blackClock").textContent = clock(black);
+  $("whiteClock").classList.remove("recorded", "unavailable");
+  $("blackClock").classList.remove("recorded", "unavailable");
+  $("whiteClock").classList.toggle("active", !state.game_over && !state.paused && state.turn === "white");
+  $("blackClock").classList.toggle("active", !state.game_over && !state.paused && state.turn === "black");
+  $("clockContext").textContent = state.paused ? "Live game clocks · paused" : "Live game clocks";
   const active = state.turn === "white" ? white : black;
   if (!state.game_over && active <= 0 && !busy && !flagRefreshPending) {
     flagRefreshPending = true;
@@ -2118,8 +2161,6 @@ function render() {
   const view = currentBoardView() || state;
   renderBoard();
   renderClocks();
-  $("whiteClock").classList.toggle("active", !state.game_over && !state.paused && state.turn === "white");
-  $("blackClock").classList.toggle("active", !state.game_over && !state.paused && state.turn === "black");
   $("fenInput").value = state.fen;
   const rawEval = Number(view.eval_cp || 0);
   const evalCp = display.evalPerspective === "turn" && view.turn === "black"
@@ -2784,6 +2825,9 @@ async function startGameAnalysis() {
     setStatus("Exit the current board workspace before starting whole-game analysis.", "error");
     return;
   }
+  const analysisTab = document.querySelector('[data-tab="engine"]');
+  if (analysisTab && !analysisTab.classList.contains("active")) await activateTab(analysisTab);
+  if (!reviewMode) await enterReviewMode(state.moves_uci.length);
   const budgetMs = Math.max(80, Number($("analysisQuality").value) || 180);
   try {
     gameAnalysis = await api("/api/analyze-game", { budget_ms: budgetMs });
@@ -3052,8 +3096,7 @@ async function loadPgnText(pgn) {
   );
   if (!succeeded) return false;
   syncTimeControlsFromState();
-  document.querySelector('[data-tab="engine"]')?.click();
-  await enterReviewMode(state.moves_uci.length);
+  await enterWorkbench("engine", false);
   return true;
 }
 
@@ -3143,6 +3186,7 @@ async function resignGame() {
 }
 
 async function loadFenValue(fen) {
+  const fromLauncher = !$("startScreen").hidden;
   const confirmed = await confirmRestartIfNeeded(
     "Loading a FEN replaces the current game. Save or export a copy first if you want to keep it.",
   );
@@ -3154,7 +3198,10 @@ async function loadFenValue(fen) {
     "FEN loaded as a new game.",
     clearTransientUiForReplacement,
   );
-  if (succeeded) scheduleComputerReply();
+  if (succeeded) {
+    if (fromLauncher) await enterWorkbench("engine", false);
+    else scheduleComputerReply();
+  }
   return succeeded;
 }
 
@@ -3180,11 +3227,11 @@ function commandDefinitions() {
     { label: "Export PGN", hint: "Files", action: exportPgn },
     { label: "Save game PNG", hint: "Files", action: saveGamePng },
     { label: "Set up position", hint: "Board editor", action: () => { document.querySelector('[data-tab="position"]')?.click(); enterSetupMode(); } },
-    { label: "Analyze game", hint: "Post-game review", action: () => { document.querySelector('[data-tab="engine"]')?.click(); startGameAnalysis(); } },
-    { label: "Analyze candidate lines", hint: "MultiPV", action: () => { document.querySelector('[data-tab="engine"]')?.click(); runMultiPv(); } },
-    { label: "Branch from current position", hint: "Variation workspace", action: () => { document.querySelector('[data-tab="engine"]')?.click(); startVariationWorkspace(); } },
+    { label: "Analyze game", hint: "Post-game review", action: startGameAnalysis },
+    { label: "Analyze candidate lines", hint: "MultiPV", action: async () => { await activateTab(document.querySelector('[data-tab="engine"]')); await runMultiPv(); } },
+    { label: "Branch from current position", hint: "Variation workspace", action: async () => { await activateTab(document.querySelector('[data-tab="engine"]')); await startVariationWorkspace(); } },
     { label: "Start mistake trainer", hint: "Personal puzzles", action: startTrainer },
-    { label: "Run engine benchmark", hint: "Developer lab", action: () => { document.querySelector('[data-tab="engine"]')?.click(); runDeveloperBenchmark(); } },
+    { label: "Run engine benchmark", hint: "Developer lab", action: async () => { await activateTab(document.querySelector('[data-tab="engine"]')); await runDeveloperBenchmark(); } },
     { label: "Flip board", hint: "F", action: () => $("flipBtn").click() },
     { label: "Undo live move", hint: "U", action: undoLiveMove },
     { label: "Pause / resume", hint: "Space", action: togglePause },
@@ -3262,8 +3309,57 @@ async function handleDroppedFiles(files) {
 
 const tabButtons = [...document.querySelectorAll(".tab")];
 
-function activateTab(button, focus = false) {
+function setLauncherVisible(visible) {
+  $("startScreen").hidden = !visible;
+  $("mainWorkspace").hidden = visible;
+  $("homeBtn").hidden = visible;
+  $("commandOpenBtn").hidden = visible;
+  const skipLink = document.querySelector(".skip-link");
+  if (skipLink) skipLink.hidden = visible;
+}
+
+async function enterWorkbench(tabName = "game", resumeHomeClock = false) {
+  setLauncherVisible(false);
+  const target = tabButtons.find((button) => button.dataset.tab === tabName) || tabButtons[0];
+  await activateTab(target);
+  if (resumeHomeClock && homeAutoPaused && state?.paused && !state.game_over) {
+    const resumed = await act(() => api("/api/pause", { paused: false }), "Game resumed.");
+    if (resumed) scheduleComputerReply();
+  }
+  homeAutoPaused = false;
+}
+
+async function showLauncher() {
+  if (variationMode || trainerMode || setupMode || retryMode) {
+    setStatus("Exit the current board workspace before returning Home.", "error");
+    return;
+  }
+  if (reviewMode) await exitReviewMode(false);
+  if (state && !state.game_over && !state.paused) {
+    const paused = await act(() => api("/api/pause", { paused: true }), "Game paused while Home is open.");
+    homeAutoPaused = Boolean(paused);
+  } else {
+    homeAutoPaused = false;
+  }
+  setLauncherVisible(true);
+}
+
+async function activateTab(button, focus = false) {
   if (!button) return;
+  const previous = tabButtons.find((tab) => tab.classList.contains("active"));
+  const previousTab = previous?.dataset.tab;
+  const nextTab = button.dataset.tab;
+
+  if (
+    previousTab === "engine"
+    && nextTab !== "engine"
+    && reviewMode
+    && !variationMode
+    && !retryMode
+  ) {
+    await exitReviewMode(true);
+  }
+
   tabButtons.forEach((tab) => {
     const active = tab === button;
     tab.classList.toggle("active", active);
@@ -3274,13 +3370,23 @@ function activateTab(button, focus = false) {
     panel?.setAttribute("aria-hidden", active ? "false" : "true");
   });
   if (focus) button.focus();
-  if (button.dataset.tab === "engine" && state?.moves_uci?.length) {
+  if (
+    nextTab === "engine"
+    && state
+    && !reviewMode
+    && !setupMode
+    && !trainerMode
+    && !variationMode
+    && !retryMode
+  ) {
+    await enterReviewMode(state.moves_uci?.length || 0);
+  } else if (nextTab === "engine" && state?.moves_uci?.length) {
     ensureReviewSeries().then(renderReviewPanel).catch((error) => setStatus(error.message, "error"));
   }
 }
 
 tabButtons.forEach((button, index) => {
-  button.addEventListener("click", () => activateTab(button));
+  button.addEventListener("click", () => { activateTab(button); });
   button.addEventListener("keydown", (event) => {
     let target = null;
     if (event.key === "ArrowRight" || event.key === "ArrowDown") {
@@ -3297,6 +3403,14 @@ tabButtons.forEach((button, index) => {
     activateTab(target, true);
   });
 });
+
+$("homeBtn").addEventListener("click", showLauncher);
+$("startPlayBtn").addEventListener("click", () => enterWorkbench("game", true));
+$("startAnalysisBtn").addEventListener("click", () => enterWorkbench("engine", false));
+$("startPgnBtn").addEventListener("click", openPgnFile);
+$("startFenBtn").addEventListener("click", openFenFile);
+$("startLibraryBtn").addEventListener("click", () => enterWorkbench("position", false));
+$("startSettingsBtn").addEventListener("click", () => enterWorkbench("display", false));
 
 $("flipBtn").addEventListener("click", () => {
   flipped = !flipped;
@@ -3401,8 +3515,7 @@ $("rematchBtn").addEventListener("click", () => {
 });
 $("reviewGameBtn").addEventListener("click", () => {
   setTimeout(() => {
-    document.querySelector('[data-tab="engine"]')?.click();
-    enterReviewMode(state?.moves_uci?.length || 0);
+    activateTab(document.querySelector('[data-tab="engine"]'));
   }, 0);
 });
 
@@ -3551,6 +3664,7 @@ window.addEventListener("drop", (event) => {
 document.addEventListener("keydown", (event) => {
   if (event.defaultPrevented) return;
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+    if (!$("startScreen").hidden) return;
     event.preventDefault();
     openCommandPalette();
     return;
@@ -3653,18 +3767,9 @@ if (desktop) {
     else if (command === "flip") $("flipBtn").click();
     else if (command === "engine-move") $("engineBtn").click();
     else if (command === "pause") $("pauseBtn").click();
-    else if (command === "analyze-game") {
-      document.querySelector('[data-tab="engine"]')?.click();
-      startGameAnalysis();
-    }
-    else if (command === "multipv") {
-      document.querySelector('[data-tab="engine"]')?.click();
-      runMultiPv();
-    }
-    else if (command === "variation") {
-      document.querySelector('[data-tab="engine"]')?.click();
-      startVariationWorkspace();
-    }
+    else if (command === "analyze-game") startGameAnalysis();
+    else if (command === "multipv") activateTab(document.querySelector('[data-tab="engine"]')).then(runMultiPv);
+    else if (command === "variation") activateTab(document.querySelector('[data-tab="engine"]')).then(startVariationWorkspace);
     else if (command === "trainer") startTrainer();
     else if (command === "command-palette") openCommandPalette();
   });
@@ -3676,10 +3781,14 @@ async function reconnectBackend() {
   try {
     const value = await api("/api/state");
     setState(value);
+    if (!$("startScreen").hidden && state && !state.game_over && !state.paused) {
+      setState(await api("/api/pause", { paused: true }));
+      homeAutoPaused = true;
+    }
     previousHumanSide = $("humanSide").value;
     syncTimeControlsFromState();
     render();
-    scheduleComputerReply();
+    if ($("startScreen").hidden) scheduleComputerReply();
     setStatus("Engine connection restored.", "success");
     setEngineStatus("Engine ready");
   } catch (error) {
@@ -3692,12 +3801,16 @@ $("retryConnectionBtn").addEventListener("click", reconnectBackend);
 
 applyDisplaySettings(false);
 orientForHuman();
-api("/api/state").then((value) => {
+api("/api/state").then(async (value) => {
   setState(value);
+  if (!state.game_over && !state.paused) {
+    setState(await api("/api/pause", { paused: true }));
+    homeAutoPaused = true;
+  }
   previousHumanSide = $("humanSide").value;
   syncTimeControlsFromState();
   render();
-  scheduleComputerReply();
+  setLauncherVisible(true);
   setEngineStatus("Engine ready");
   if (value.analysis_status && value.analysis_status !== "idle") refreshAnalysisStatus();
 }).catch((error) => {
