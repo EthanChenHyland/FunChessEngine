@@ -15,6 +15,7 @@ import argparse
 import errno
 import io
 import json
+import subprocess
 import sys
 import threading
 import time
@@ -35,6 +36,127 @@ else:
     ROOT = Path(__file__).resolve().parent
 DEFAULT_CLOCK_MS = 120_000
 DEFAULT_INCREMENT_MS = 500
+
+
+def _analysis_time_left_ms(board: chess.Board, target_budget_ms: int) -> int:
+    """Reverse the rated time manager approximately for local fixed-budget review."""
+
+    target = max(80, min(1_500, int(target_budget_ms)))
+    if target <= 180:
+        return max(1_001, target * 18)
+    non_pawn_material = sum(
+        len(board.pieces(piece, color)) * agent.MG_VALUE[piece]
+        for color in (chess.WHITE, chess.BLACK)
+        for piece in (chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN)
+    )
+    fraction = 0.018 if non_pawn_material < 2_000 else 0.014
+    return max(5_001, int((target - 180) / fraction))
+
+
+def _analysis_score(info: agent.SearchInfo, board: chess.Board) -> int:
+    """Use completed search score, falling back to static eval on a tiny timeout."""
+
+    if info.depth > 0:
+        return int(info.score)
+    return int(agent.evaluate(board))
+
+
+def _review_classification(cpl: int, played_is_best: bool, legal_count: int) -> str:
+    if legal_count == 1:
+        return "Forced"
+    if played_is_best:
+        return "Best"
+    if cpl <= 25:
+        return "Excellent"
+    if cpl <= 60:
+        return "Good"
+    if cpl <= 120:
+        return "Inaccuracy"
+    if cpl <= 250:
+        return "Mistake"
+    return "Blunder"
+
+
+def _pv_to_san(board: chess.Board, pv: tuple[str, ...]) -> list[str]:
+    replay = board.copy(stack=False)
+    result: list[str] = []
+    for raw in pv:
+        try:
+            move = chess.Move.from_uci(raw)
+        except ValueError:
+            break
+        if move not in replay.legal_moves:
+            break
+        result.append(replay.san(move))
+        replay.push(move)
+    return result
+
+
+def _run_analysis_worker(payload: dict[str, Any]) -> None:
+    """Analyze a main line in an isolated process and stream one JSON record per ply."""
+
+    initial_fen = str(payload.get("initial_fen", chess.STARTING_FEN))
+    moves_raw = payload.get("moves", [])
+    budget_ms = max(80, min(1_500, int(payload.get("budget_ms", 100))))
+    if not isinstance(moves_raw, list) or len(moves_raw) > 1_000:
+        raise ValueError("Analysis move list is invalid.")
+    board = chess.Board(initial_fen)
+    if not board.is_valid():
+        raise ValueError("Analysis starts from an invalid position.")
+
+    for index, raw in enumerate(moves_raw, start=1):
+        move = chess.Move.from_uci(str(raw))
+        if move not in board.legal_moves:
+            raise ValueError(f"Analysis move {move.uci()} is illegal at ply {index}.")
+        mover = board.turn
+        legal_count = board.legal_moves.count()
+        played_san = board.san(move)
+
+        agent.reset_game_state()
+        best_uci = agent.get_move(board.fen(), _analysis_time_left_ms(board, budget_ms))
+        best_info = agent.LAST_SEARCH_INFO
+        best_score_mover = _analysis_score(best_info, board)
+        best_move = chess.Move.from_uci(best_uci)
+        best_san = board.san(best_move) if best_move in board.legal_moves else best_uci
+        pv_san = _pv_to_san(board, best_info.pv)
+
+        child = board.copy(stack=False)
+        child.push(move)
+        terminal = agent._terminal_score(child, 1)
+        if terminal is not None:
+            played_score_mover = -int(terminal)
+        else:
+            agent.reset_game_state()
+            agent.get_move(child.fen(), _analysis_time_left_ms(child, budget_ms))
+            child_info = agent.LAST_SEARCH_INFO
+            played_score_mover = -_analysis_score(child_info, child)
+
+        best_for_loss = max(-2_000, min(2_000, best_score_mover))
+        played_for_loss = max(-2_000, min(2_000, played_score_mover))
+        cpl = 0 if move == best_move else max(0, best_for_loss - played_for_loss)
+        classification = _review_classification(cpl, move == best_move, legal_count)
+        eval_after_white = played_score_mover if mover == chess.WHITE else -played_score_mover
+        best_eval_white = best_score_mover if mover == chess.WHITE else -best_score_mover
+        record = {
+            "type": "move",
+            "ply": index,
+            "mover": "white" if mover == chess.WHITE else "black",
+            "played_uci": move.uci(),
+            "played_san": played_san,
+            "best_uci": best_uci,
+            "best_san": best_san,
+            "classification": classification,
+            "cpl": cpl,
+            "eval_after_white": eval_after_white,
+            "best_eval_white": best_eval_white,
+            "depth": int(best_info.depth),
+            "nodes": int(best_info.nodes),
+            "pv": list(best_info.pv),
+            "pv_san": pv_san,
+        }
+        print(json.dumps(record, separators=(",", ":")), flush=True)
+        board.push(move)
+    print(json.dumps({"type": "done"}), flush=True)
 
 
 class GameSession:
@@ -60,7 +182,29 @@ class GameSession:
         self.manual_result: str | None = None
         self.manual_termination: str | None = None
         self.pgn_headers: dict[str, str] = {}
+        self.analysis_status = "idle"
+        self.analysis_completed = 0
+        self.analysis_total = 0
+        self.analysis_results: list[dict[str, Any]] = []
+        self.analysis_error: str | None = None
+        self.analysis_budget_ms = 100
+        self.analysis_generation = 0
+        self.analysis_process: subprocess.Popen[str] | None = None
         self.turn_started_ns = time.monotonic_ns()
+
+    def _cancel_analysis_locked(self) -> None:
+        """Invalidate and stop a local post-game analysis worker if one exists."""
+
+        self.analysis_generation += 1
+        process = self.analysis_process
+        self.analysis_process = None
+        if process is not None and process.poll() is None:
+            process.terminate()
+        self.analysis_status = "idle"
+        self.analysis_completed = 0
+        self.analysis_total = 0
+        self.analysis_results = []
+        self.analysis_error = None
 
     def reset(
         self,
@@ -75,6 +219,7 @@ class GameSession:
                 "ranks, kings are not adjacent, and castling/en-passant rights match the board."
             )
         with self.lock:
+            self._cancel_analysis_locked()
             agent.reset_game_state()
             self.board = board
             self.initial_fen = fen
@@ -201,6 +346,7 @@ class GameSession:
             raise ValueError("Saved game clock history does not match its moves.")
 
         with self.lock:
+            self._cancel_analysis_locked()
             agent.reset_game_state()
             self.board = board
             self.initial_fen = initial_fen
@@ -283,6 +429,7 @@ class GameSession:
         }
         result = headers.get("Result")
         with self.lock:
+            self._cancel_analysis_locked()
             agent.reset_game_state()
             self.board = board
             self.initial_fen = initial_fen
@@ -347,6 +494,7 @@ class GameSession:
                 "fen": replay.fen(),
                 "turn": "white" if replay.turn == chess.WHITE else "black",
                 "board": self._board_payload(replay),
+                "legal_moves": [move.uci() for move in replay.legal_moves],
                 "last_move": last_move,
                 "eval_cp": self._white_eval(replay),
                 "check": replay.is_check(),
@@ -369,6 +517,150 @@ class GameSession:
                 move_number = (index + 1) // 2
                 labels.append(f"{move_number}.{'..' if index % 2 == 0 else ''}{san}")
             return {"evals": values, "labels": labels, "total_plies": len(self.board.move_stack)}
+
+    def _analysis_summary_locked(self) -> dict[str, Any]:
+        by_side: dict[str, list[int]] = {"white": [], "black": []}
+        counts = {"Inaccuracy": 0, "Mistake": 0, "Blunder": 0}
+        biggest: dict[str, Any] | None = None
+        for result in self.analysis_results:
+            mover = str(result.get("mover", "white"))
+            cpl = max(0, int(result.get("cpl", 0)))
+            if mover in by_side:
+                by_side[mover].append(cpl)
+            classification = str(result.get("classification", ""))
+            if classification in counts:
+                counts[classification] += 1
+            if biggest is None or cpl > int(biggest.get("cpl", -1)):
+                biggest = result
+        return {
+            "white_avg_cpl": round(sum(by_side["white"]) / len(by_side["white"]), 1)
+            if by_side["white"]
+            else 0.0,
+            "black_avg_cpl": round(sum(by_side["black"]) / len(by_side["black"]), 1)
+            if by_side["black"]
+            else 0.0,
+            "inaccuracies": counts["Inaccuracy"],
+            "mistakes": counts["Mistake"],
+            "blunders": counts["Blunder"],
+            "biggest_turning_point": biggest,
+        }
+
+    def analysis_state(self) -> dict[str, Any]:
+        with self.lock:
+            return {
+                "status": self.analysis_status,
+                "completed": self.analysis_completed,
+                "total": self.analysis_total,
+                "budget_ms": self.analysis_budget_ms,
+                "error": self.analysis_error,
+                "results": list(self.analysis_results),
+                "summary": self._analysis_summary_locked(),
+            }
+
+    def start_analysis(self, budget_ms: int = 100) -> dict[str, Any]:
+        """Start isolated main-line analysis without touching the live agent search state."""
+
+        with self.lock:
+            moves = self._moves_uci()
+            if not moves:
+                raise ValueError("Play or import at least one move before analyzing the game.")
+            self._cancel_analysis_locked()
+            if not self.paused and self.manual_result is None and not self.board.is_game_over(
+                claim_draw=True
+            ):
+                self._commit_clock()
+                self.paused = True
+            self.analysis_budget_ms = max(80, min(1_500, int(budget_ms)))
+            self.analysis_status = "running"
+            self.analysis_total = len(moves)
+            self.analysis_completed = 0
+            self.analysis_results = []
+            self.analysis_error = None
+            generation = self.analysis_generation
+            payload = {
+                "initial_fen": self.initial_fen,
+                "moves": moves,
+                "budget_ms": self.analysis_budget_ms,
+            }
+        thread = threading.Thread(
+            target=self._analysis_thread_main,
+            args=(generation, payload),
+            daemon=True,
+            name="game-analysis",
+        )
+        thread.start()
+        return self.analysis_state()
+
+    def cancel_analysis(self) -> dict[str, Any]:
+        with self.lock:
+            self._cancel_analysis_locked()
+            return self.analysis_state()
+
+    def _analysis_thread_main(self, generation: int, payload: dict[str, Any]) -> None:
+        if getattr(sys, "frozen", False):
+            command = [sys.executable, "--analysis-worker"]
+        else:
+            command = [sys.executable, "-m", "gui.server", "--analysis-worker"]
+        process: subprocess.Popen[str] | None = None
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                cwd=str(Path(__file__).resolve().parents[1]),
+            )
+            with self.lock:
+                if generation != self.analysis_generation:
+                    process.terminate()
+                    return
+                self.analysis_process = process
+            assert process.stdin is not None
+            assert process.stdout is not None
+            process.stdin.write(json.dumps(payload))
+            process.stdin.close()
+            with process.stdout:
+                for line in process.stdout:
+                    try:
+                        message = json.loads(line)
+                    except json.JSONDecodeError as exc:
+                        if line.strip():
+                            raise RuntimeError(line.strip()) from exc
+                        continue
+                    with self.lock:
+                        if generation != self.analysis_generation:
+                            process.terminate()
+                            return
+                        if message.get("type") == "move":
+                            self.analysis_results.append(message)
+                            self.analysis_completed = len(self.analysis_results)
+                        elif message.get("type") == "done":
+                            self.analysis_status = "complete"
+                        elif message.get("type") == "error":
+                            self.analysis_status = "error"
+                            self.analysis_error = str(
+                                message.get("error", "Analysis worker failed.")
+                            )
+            return_code = process.wait()
+            with self.lock:
+                if generation != self.analysis_generation:
+                    return
+                self.analysis_process = None
+                if return_code != 0 and self.analysis_status != "complete":
+                    self.analysis_status = "error"
+                    self.analysis_error = f"Analysis worker exited with code {return_code}."
+                elif self.analysis_status == "running":
+                    self.analysis_status = "complete"
+        except Exception as exc:
+            if process is not None and process.poll() is None:
+                process.terminate()
+            with self.lock:
+                if generation != self.analysis_generation:
+                    return
+                self.analysis_process = None
+                self.analysis_status = "error"
+                self.analysis_error = str(exc)
 
     def state(self) -> dict[str, Any]:
         with self.lock:
@@ -433,6 +725,8 @@ class GameSession:
                 "last_engine_score": self.last_engine_score,
                 "last_engine_pv": self.last_engine_pv,
                 "last_engine_researches": self.last_engine_researches,
+                "analysis_status": self.analysis_status,
+                "analysis_total": self.analysis_total,
             }
 
     @staticmethod
@@ -620,6 +914,15 @@ class Handler(SimpleHTTPRequestHandler):
             elif self.path == "/api/review-series":
                 self._json(SESSION.review_series())
                 return
+            elif self.path == "/api/analyze-game":
+                self._json(SESSION.start_analysis(int(payload.get("budget_ms", 100))))
+                return
+            elif self.path == "/api/analysis-status":
+                self._json(SESSION.analysis_state())
+                return
+            elif self.path == "/api/cancel-analysis":
+                self._json(SESSION.cancel_analysis())
+                return
             elif self.path == "/api/undo":
                 SESSION.undo()
             elif self.path == "/api/pause":
@@ -660,7 +963,19 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--no-open", action="store_true", help="Do not open a browser tab.")
+    parser.add_argument("--analysis-worker", action="store_true", help=argparse.SUPPRESS)
     arguments = parser.parse_args()
+
+    if arguments.analysis_worker:
+        try:
+            payload = json.load(sys.stdin)
+            if not isinstance(payload, dict):
+                raise ValueError("Analysis worker input must be an object.")
+            _run_analysis_worker(payload)
+        except Exception as exc:
+            print(json.dumps({"type": "error", "error": str(exc)}), flush=True)
+            raise SystemExit(1) from exc
+        return
 
     port = arguments.port
     while True:

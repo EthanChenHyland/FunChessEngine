@@ -35,12 +35,18 @@ let reviewMode = false;
 let reviewSnapshot = null;
 let reviewSeries = null;
 let reviewWasPaused = false;
+let gameAnalysis = null;
+let analysisPollTimer = null;
+let retryMode = false;
+let retryTargetPly = null;
+let retryRevealBest = false;
 
 const $ = (id) => document.getElementById(id);
 
 function setState(value) {
   state = value;
   if (reviewSeries && reviewSeries.total_plies !== (value.moves_uci?.length || 0)) reviewSeries = null;
+  if (value.analysis_status === "idle") gameAnalysis = null;
   clockAnchorMs = performance.now();
   flagRefreshPending = false;
 }
@@ -106,7 +112,10 @@ function squareOrder() {
 
 function legalTargets(square) {
   if (!state || !square || !display.targets) return new Set();
-  return new Set(state.legal_moves.filter((move) => move.startsWith(square)).map((move) => move.slice(2, 4)));
+  const moves = retryMode && reviewSnapshot
+    ? (reviewSnapshot.legal_moves || [])
+    : state.legal_moves;
+  return new Set(moves.filter((move) => move.startsWith(square)).map((move) => move.slice(2, 4)));
 }
 
 function pieceName(symbol) {
@@ -119,7 +128,7 @@ function renderBoard() {
   board.innerHTML = "";
   const view = reviewMode && reviewSnapshot ? reviewSnapshot : state;
   const boardMap = setupMode ? setupBoard : view?.board || {};
-  const targets = setupMode || reviewMode ? new Set() : legalTargets(selected);
+  const targets = setupMode || (reviewMode && !retryMode) ? new Set() : legalTargets(selected);
   const lastFrom = !setupMode && display.lastMove ? view?.last_move?.slice(0, 2) : null;
   const lastTo = !setupMode && display.lastMove ? view?.last_move?.slice(2, 4) : null;
 
@@ -136,7 +145,11 @@ function renderBoard() {
     button.dataset.square = square;
     button.setAttribute("aria-label", symbol ? `${pieceName(symbol)} on ${square}` : `empty square ${square}`);
     button.setAttribute("aria-pressed", selected === square ? "true" : "false");
-    button.addEventListener("click", () => setupMode ? setupSquareClick(square) : clickSquare(square));
+    button.addEventListener("click", () => setupMode
+      ? setupSquareClick(square)
+      : retryMode
+      ? retrySquareClick(square)
+      : clickSquare(square));
 
     if (symbol) {
       const piece = document.createElement("span");
@@ -190,6 +203,7 @@ function renderBoard() {
     }
     board.appendChild(button);
   }
+  renderBestMoveArrow();
 }
 
 function canHumanMovePiece(symbol) {
@@ -199,9 +213,9 @@ function canHumanMovePiece(symbol) {
   return (state.turn === "white") === (symbol === symbol.toUpperCase());
 }
 
-function choosePromotion(candidates) {
+function choosePromotion(candidates, turn = state?.turn) {
   const dialog = $("promotionDialog");
-  const isWhite = state?.turn === "white";
+  const isWhite = turn === "white";
   $("promotionTitle").textContent = `Promote ${isWhite ? "White" : "Black"} pawn`;
   $("promotionHint").textContent = "Choose a piece or press Q, R, B, or N.";
   document.querySelectorAll("[data-promotion-icon]").forEach((icon) => {
@@ -235,6 +249,101 @@ function choosePromotion(candidates) {
     dialog.showModal();
     dialog.querySelector('[data-promotion="q"]')?.focus();
   });
+}
+
+function boardPoint(square) {
+  const file = square.charCodeAt(0) - 97;
+  const rank = Number(square[1]) - 1;
+  return flipped
+    ? { x: 7 - file + 0.5, y: rank + 0.5 }
+    : { x: file + 0.5, y: 7 - rank + 0.5 };
+}
+
+function renderBestMoveArrow() {
+  const line = $("bestMoveArrow");
+  if (!line) return;
+  line.hidden = true;
+  if (!retryMode || !retryRevealBest || !retryTargetPly) return;
+  const result = analysisResultForPly(retryTargetPly);
+  const move = String(result?.best_uci || "");
+  if (move.length < 4) return;
+  const from = boardPoint(move.slice(0, 2));
+  const to = boardPoint(move.slice(2, 4));
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const length = Math.hypot(dx, dy) || 1;
+  const shorten = 0.24;
+  line.setAttribute("x1", String(from.x + dx / length * shorten));
+  line.setAttribute("y1", String(from.y + dy / length * shorten));
+  line.setAttribute("x2", String(to.x - dx / length * shorten));
+  line.setAttribute("y2", String(to.y - dy / length * shorten));
+  line.hidden = false;
+}
+
+async function retrySquareClick(square) {
+  if (!retryMode || !reviewSnapshot || !retryTargetPly || busy) return;
+  const piece = reviewSnapshot.board?.[square];
+  const isOwn = piece && ((reviewSnapshot.turn === "white") === (piece === piece.toUpperCase()));
+  if (!selected) {
+    if (isOwn) {
+      selected = square;
+      renderBoard();
+    }
+    return;
+  }
+  if (isOwn) {
+    selected = square;
+    renderBoard();
+    return;
+  }
+  const candidates = (reviewSnapshot.legal_moves || []).filter((move) => move.startsWith(selected + square));
+  if (!candidates.length) {
+    selected = null;
+    renderBoard();
+    return;
+  }
+  let move = candidates[0];
+  if (candidates.length > 1) {
+    move = await choosePromotion(candidates, reviewSnapshot.turn);
+    if (!move) {
+      selected = null;
+      renderBoard();
+      return;
+    }
+  }
+  selected = null;
+  const result = analysisResultForPly(retryTargetPly);
+  retryRevealBest = true;
+  if (move === result?.best_uci) {
+    $("statusLine").textContent = `Correct — ${result.best_san} was the engine's top choice.`;
+  } else {
+    $("statusLine").textContent = `Not the top choice. The engine preferred ${result?.best_san || result?.best_uci || "another move"}.`;
+  }
+  renderBoard();
+}
+
+async function startRetryMove() {
+  if (!reviewMode || !reviewSnapshot) return;
+  const ply = Number(reviewSnapshot.ply || 0);
+  if (ply <= 0 || !analysisResultForPly(ply)) return;
+  retryTargetPly = ply;
+  retryRevealBest = false;
+  reviewSnapshot = await api("/api/review", { ply: ply - 1 });
+  retryMode = true;
+  selected = null;
+  render();
+  $("statusLine").textContent = `Retry move ${ply}: find the engine's preferred move.`;
+}
+
+async function exitRetryMove() {
+  if (!retryMode || !retryTargetPly) return;
+  const target = retryTargetPly;
+  retryMode = false;
+  retryTargetPly = null;
+  retryRevealBest = false;
+  selected = null;
+  reviewSnapshot = await api("/api/review", { ply: target });
+  render();
 }
 
 function confirmRestart(message) {
@@ -859,7 +968,9 @@ function render() {
   $("resignBtn").disabled = setupMode || busy || state.game_over;
   $("resignBtn").hidden = $("humanSide").value === "none";
   if (!busy) {
-    $("engineStatusText").textContent = state.game_over
+    $("engineStatusText").textContent = gameAnalysis?.status === "running"
+      ? "Analyzing game"
+      : state.game_over
       ? "Game complete"
       : state.paused
       ? "Game paused"
@@ -869,6 +980,7 @@ function render() {
   renderCapturedMaterial();
   renderMoves();
   renderReviewPanel();
+  renderAnalysisPanel();
   if (reviewMode) {
     $("statusLine").textContent = `Reviewing ply ${reviewSnapshot?.ply ?? 0} of ${reviewSnapshot?.total_plies ?? 0}.`;
   } else if (state.game_over) {
@@ -899,27 +1011,57 @@ function renderMoves() {
     const white = document.createElement("button");
     white.type = "button";
     white.className = "move-link";
-    white.textContent = state.pgn[i]?.san || "";
+    const whiteSan = document.createElement("span");
+    whiteSan.textContent = state.pgn[i]?.san || "";
+    white.appendChild(whiteSan);
     if (state.pgn[i]) {
       const ply = i + 1;
       white.dataset.ply = String(ply);
       white.classList.toggle("review-current", reviewMode && reviewSnapshot?.ply === ply);
+      appendMoveGrade(white, ply);
       white.addEventListener("click", () => enterReviewMode(ply));
     } else white.disabled = true;
     target.appendChild(white);
     const black = document.createElement("button");
     black.type = "button";
     black.className = "move-link";
-    black.textContent = state.pgn[i + 1]?.san || "";
+    const blackSan = document.createElement("span");
+    blackSan.textContent = state.pgn[i + 1]?.san || "";
+    black.appendChild(blackSan);
     if (state.pgn[i + 1]) {
       const ply = i + 2;
       black.dataset.ply = String(ply);
       black.classList.toggle("review-current", reviewMode && reviewSnapshot?.ply === ply);
+      appendMoveGrade(black, ply);
       black.addEventListener("click", () => enterReviewMode(ply));
     } else black.disabled = true;
     target.appendChild(black);
   }
   target.scrollTop = target.scrollHeight;
+}
+
+function analysisResultForPly(ply) {
+  const results = Array.isArray(gameAnalysis?.results) ? gameAnalysis.results : [];
+  return results.find((result) => Number(result.ply) === Number(ply)) || null;
+}
+
+function appendMoveGrade(button, ply) {
+  const result = analysisResultForPly(ply);
+  if (!result) return;
+  const grade = document.createElement("span");
+  grade.className = `move-grade grade-${String(result.classification || "").toLowerCase()}`;
+  const short = {
+    Best: "Best",
+    Excellent: "Excl",
+    Good: "Good",
+    Inaccuracy: "?!",
+    Mistake: "?",
+    Blunder: "??",
+    Forced: "Forced",
+  };
+  grade.textContent = short[result.classification] || result.classification || "";
+  grade.title = `${result.classification || "Move"} · ${Number(result.cpl || 0)} CPL`;
+  button.appendChild(grade);
 }
 
 async function ensureReviewSeries() {
@@ -939,6 +1081,9 @@ async function jumpReview(ply) {
 
 async function enterReviewMode(ply = null) {
   if (!state || setupMode || busy) return;
+  retryMode = false;
+  retryTargetPly = null;
+  retryRevealBest = false;
   const target = ply === null ? state.moves_uci.length : ply;
   if (!reviewMode) {
     reviewWasPaused = Boolean(state.paused || state.game_over);
@@ -960,6 +1105,9 @@ async function exitReviewMode() {
   if (!reviewMode) return;
   reviewMode = false;
   reviewSnapshot = null;
+  retryMode = false;
+  retryTargetPly = null;
+  retryRevealBest = false;
   selected = null;
   render();
   if (!reviewWasPaused && state && !state.game_over && state.paused) {
@@ -971,7 +1119,9 @@ async function exitReviewMode() {
 function renderReviewPanel() {
   const total = state?.moves_uci?.length || 0;
   const ply = reviewMode ? Number(reviewSnapshot?.ply || 0) : total;
-  $("reviewPositionLabel").textContent = reviewMode ? `Ply ${ply} / ${total}` : `${total} plies`;
+  $("reviewPositionLabel").textContent = retryMode && retryTargetPly
+    ? `Retry ply ${retryTargetPly}`
+    : reviewMode ? `Ply ${ply} / ${total}` : `${total} plies`;
   $("reviewExitBtn").hidden = !reviewMode;
   $("reviewFirstBtn").disabled = busy || total === 0 || ply <= 0;
   $("reviewPrevBtn").disabled = busy || total === 0 || ply <= 0;
@@ -986,6 +1136,100 @@ function renderReviewPanel() {
     $("reviewFen").textContent = "Select a move or graph point to review.";
   }
   renderEvalGraph();
+}
+
+function renderAnalysisPanel() {
+  if (!$("analysisStatus")) return;
+  const status = gameAnalysis?.status || "idle";
+  const totalMoves = state?.moves_uci?.length || 0;
+  const completed = Number(gameAnalysis?.completed || 0);
+  const total = Number(gameAnalysis?.total || totalMoves);
+  const running = status === "running";
+  const complete = status === "complete";
+  const failed = status === "error";
+  $("analysisStatus").textContent = running
+    ? `${completed}/${total}`
+    : complete
+    ? "Complete"
+    : failed
+    ? "Error"
+    : "Not analyzed";
+  $("analyzeGameBtn").disabled = busy || running || totalMoves === 0;
+  $("analyzeGameBtn").textContent = complete ? "Analyze again" : "Analyze game";
+  $("analysisProgressWrap").hidden = !running;
+  const percent = total > 0 ? Math.max(0, Math.min(100, completed * 100 / total)) : 0;
+  $("analysisProgress").style.width = `${percent}%`;
+  $("analysisProgressText").textContent = `${completed} / ${total}`;
+
+  const summary = gameAnalysis?.summary || {};
+  const hasResults = Array.isArray(gameAnalysis?.results) && gameAnalysis.results.length > 0;
+  $("analysisSummary").hidden = !hasResults;
+  if (hasResults) {
+    $("whiteCpl").textContent = String(summary.white_avg_cpl ?? 0);
+    $("blackCpl").textContent = String(summary.black_avg_cpl ?? 0);
+    $("mistakeCount").textContent = String(summary.mistakes ?? 0);
+    $("blunderCount").textContent = String(summary.blunders ?? 0);
+  }
+
+  const currentPly = retryMode && retryTargetPly
+    ? retryTargetPly
+    : reviewMode ? Number(reviewSnapshot?.ply || 0) : 0;
+  const insight = currentPly > 0 ? analysisResultForPly(currentPly) : null;
+  $("moveInsight").hidden = !insight;
+  if (insight) {
+    $("moveInsightClass").textContent = insight.classification || "Move";
+    $("moveInsightCpl").textContent = `${Number(insight.cpl || 0)} CPL`;
+    $("moveInsightText").textContent = insight.played_uci === insight.best_uci
+      ? `${insight.played_san} matched the engine's top choice.`
+      : `${insight.played_san} was played; the engine preferred ${insight.best_san}.`;
+    const pv = Array.isArray(insight.pv_san) ? insight.pv_san : [];
+    $("moveInsightPv").textContent = pv.length ? `Best line: ${pv.join(" ")}` : "";
+  }
+  $("retryMoveBtn").hidden = retryMode || !insight;
+  $("retryBackBtn").hidden = !retryMode;
+  if (failed && gameAnalysis?.error) $("statusLine").textContent = gameAnalysis.error;
+}
+
+function scheduleAnalysisPoll() {
+  clearTimeout(analysisPollTimer);
+  if (gameAnalysis?.status !== "running") return;
+  analysisPollTimer = setTimeout(refreshAnalysisStatus, 300);
+}
+
+async function refreshAnalysisStatus() {
+  try {
+    gameAnalysis = await api("/api/analysis-status", {});
+    render();
+    scheduleAnalysisPoll();
+  } catch (error) {
+    clearTimeout(analysisPollTimer);
+    $("statusLine").textContent = error.message;
+  }
+}
+
+async function startGameAnalysis() {
+  if (!state?.moves_uci?.length || gameAnalysis?.status === "running") return;
+  const budgetMs = Math.max(80, Number($("analysisQuality").value) || 180);
+  try {
+    gameAnalysis = await api("/api/analyze-game", { budget_ms: budgetMs });
+    setState(await api("/api/state"));
+    $("statusLine").textContent = "Analyzing the played game locally…";
+    render();
+    scheduleAnalysisPoll();
+  } catch (error) {
+    $("statusLine").textContent = error.message;
+  }
+}
+
+async function cancelGameAnalysis() {
+  clearTimeout(analysisPollTimer);
+  try {
+    gameAnalysis = await api("/api/cancel-analysis", {});
+    render();
+    $("statusLine").textContent = "Game analysis canceled.";
+  } catch (error) {
+    $("statusLine").textContent = error.message;
+  }
 }
 
 function renderEvalGraph() {
@@ -1011,7 +1255,12 @@ function renderEvalGraph() {
   context.lineTo(widthCss, heightCss / 2);
   context.stroke();
 
-  const values = Array.isArray(reviewSeries?.evals) ? reviewSeries.evals : [];
+  const staticValues = Array.isArray(reviewSeries?.evals) ? reviewSeries.evals : [];
+  const values = staticValues.map((value, index) => {
+    if (index === 0) return value;
+    const analyzed = analysisResultForPly(index);
+    return analyzed ? Number(analyzed.eval_after_white ?? value) : value;
+  });
   if (values.length < 2) {
     context.fillStyle = muted;
     context.font = "11px system-ui";
@@ -1294,6 +1543,8 @@ $("undoBtn").addEventListener("click", async () => {
   if (succeeded) scheduleComputerReply();
 });
 $("engineBtn").addEventListener("click", engineMove);
+$("analyzeGameBtn").addEventListener("click", startGameAnalysis);
+$("cancelAnalysisBtn").addEventListener("click", cancelGameAnalysis);
 $("copyFenBtn").addEventListener("click", copyFen);
 $("downloadFenBtn").addEventListener("click", downloadFen);
 $("openPgnBtn").addEventListener("click", openPgnFile);
@@ -1371,6 +1622,8 @@ $("reviewPrevBtn").addEventListener("click", () => enterReviewMode(Math.max(0, N
 $("reviewNextBtn").addEventListener("click", () => enterReviewMode(Math.min(state?.moves_uci?.length || 0, Number(reviewSnapshot?.ply ?? 0) + 1)));
 $("reviewLastBtn").addEventListener("click", () => enterReviewMode(state?.moves_uci?.length || 0));
 $("reviewExitBtn").addEventListener("click", exitReviewMode);
+$("retryMoveBtn").addEventListener("click", startRetryMove);
+$("retryBackBtn").addEventListener("click", exitRetryMove);
 $("evalGraph").addEventListener("click", (event) => {
   const total = state?.moves_uci?.length || 0;
   if (!total) return;
@@ -1467,7 +1720,8 @@ document.addEventListener("keydown", (event) => {
   if (reviewMode) {
     if (key === "escape") {
       event.preventDefault();
-      exitReviewMode();
+      if (retryMode) exitRetryMove();
+      else exitReviewMode();
     } else if (key === "arrowleft") {
       event.preventDefault();
       enterReviewMode(Math.max(0, Number(reviewSnapshot?.ply || 0) - 1));
@@ -1535,6 +1789,7 @@ api("/api/state").then((value) => {
   syncTimeControlsFromState();
   render();
   scheduleComputerReply();
+  if (value.analysis_status && value.analysis_status !== "idle") refreshAnalysisStatus();
 }).catch((error) => {
   $("statusLine").textContent = error.message;
 });

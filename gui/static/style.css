@@ -152,6 +152,7 @@ h2 { margin: 0; font-size: 19px; letter-spacing: -.025em; }
 }
 
 .board-frame {
+  position: relative;
   width: 100%;
   aspect-ratio: 1;
   border-radius: 11px;
@@ -159,6 +160,9 @@ h2 { margin: 0; font-size: 19px; letter-spacing: -.025em; }
   background: var(--panel-2);
   box-shadow: 0 24px 76px rgba(0, 0, 0, .38), 0 0 0 1px rgba(255, 255, 255, .035);
 }
+.board-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+#bestMoveArrow { stroke: var(--accent); stroke-width: .16; stroke-linecap: round; opacity: .9; }
+#bestArrowHead path { fill: var(--accent); }
 
 .board {
   width: 100%;
@@ -485,6 +489,32 @@ input[type="range"] { height: 28px; padding: 0; border: 0; background: transpare
 .review-meta span:first-child { color: var(--accent); font: 750 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .review-meta span:last-child { overflow: hidden; color: var(--muted); font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
 
+.analysis-card {
+  margin-bottom: 14px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-3);
+}
+.analysis-card .label { margin: 0; }
+.analysis-progress-wrap { margin-top: 11px; }
+.analysis-progress-track { height: 7px; overflow: hidden; border-radius: 999px; background: #080a09; }
+.analysis-progress { width: 0; height: 100%; border-radius: inherit; background: var(--accent); transition: width .18s ease; }
+.analysis-progress-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 7px; color: var(--muted); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.text-button { padding: 0; border: 0; color: var(--muted); background: transparent; font-size: 10px; text-decoration: underline; }
+.text-button:hover { color: var(--text); }
+.analysis-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 11px; }
+.analysis-summary div { min-width: 0; padding: 9px; border-radius: 8px; background: var(--panel-2); }
+.analysis-summary span { display: block; margin-bottom: 4px; color: var(--muted); font-size: 9px; }
+.analysis-summary strong { font: 750 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.move-insight { margin-top: 11px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); }
+.move-insight-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.move-insight-head strong { font-size: 11px; }
+.move-insight-head span { color: var(--muted); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.move-insight p { margin: 7px 0; color: var(--muted); font-size: 10px; line-height: 1.45; }
+.move-insight code { display: block; color: var(--text); font: 10px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: normal; overflow-wrap: anywhere; }
+.retry-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 9px; }
+
 .move-link {
   width: 100%;
   min-height: 31px;
@@ -493,11 +523,20 @@ input[type="range"] { height: 28px; padding: 0; border: 0; background: transpare
   border-bottom: 1px solid rgba(255, 255, 255, .04);
   color: var(--text);
   background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
   text-align: left;
   font: inherit;
 }
 .move-link:hover { background: rgba(255, 255, 255, .035); }
 .move-link.review-current { color: var(--accent); background: var(--accent-dark); }
+.move-grade { flex: 0 0 auto; color: var(--muted); font: 750 8px ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; letter-spacing: .04em; }
+.move-grade.grade-best, .move-grade.grade-excellent { color: var(--accent); }
+.move-grade.grade-inaccuracy { color: #e5b35c; }
+.move-grade.grade-mistake { color: #e88555; }
+.move-grade.grade-blunder { color: #f06c68; }
 .hint { margin: 7px 0 12px; color: var(--muted); font-size: 11px; line-height: 1.5; }
 
 .advanced-details { margin-top: 14px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-3); overflow: hidden; }

@@ -24,7 +24,9 @@ two-player and engine/engine modes, 17 built-in clock presets plus custom contro
 resign/draw/rematch, captured-piece/material tracking, portable PNG saves, FEN and PGN import/export,
 a full piece-by-piece setup editor, keyboard-friendly pawn promotion, non-destructive move-by-move
 review, a clickable evaluation-history graph, search telemetry/PV, themes, accent colors, piece
-sizing, orientation preferences, and display toggles. Preferences are stored locally.
+sizing, orientation preferences, and display toggles. Post-game analysis runs in an isolated local
+engine process and adds best-move comparisons, CPL, move grades, searched graph points, and a
+non-destructive Retry Move trainer. Preferences are stored locally.
 
 ## Writing an agent
 

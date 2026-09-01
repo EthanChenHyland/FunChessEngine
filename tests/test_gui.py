@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import unittest
 
 import chess
@@ -111,6 +112,28 @@ class GameSessionTests(unittest.TestCase):
         restored.load_pgn(exported)
         self.assertEqual(restored.initial_fen, fen)
         self.assertEqual(restored.board.fen(), self.game.board.fen())
+
+    def test_game_analysis_is_isolated_and_reports_move_quality(self) -> None:
+        self.game.play_move("e2e4")
+        self.game.play_move("e7e5")
+        final_fen = self.game.board.fen()
+        started = self.game.start_analysis(80)
+        self.assertEqual(started["status"], "running")
+        deadline = time.monotonic() + 10
+        result = started
+        while result["status"] == "running" and time.monotonic() < deadline:
+            time.sleep(0.05)
+            result = self.game.analysis_state()
+        self.assertEqual(result["status"], "complete", result.get("error"))
+        self.assertEqual(result["completed"], 2)
+        self.assertEqual(len(result["results"]), 2)
+        self.assertIn(result["results"][0]["classification"], {
+            "Best", "Excellent", "Good", "Inaccuracy", "Mistake", "Blunder", "Forced"
+        })
+        self.assertGreaterEqual(result["results"][0]["cpl"], 0)
+        self.assertTrue(result["results"][0]["best_uci"])
+        self.assertEqual(self.game.board.fen(), final_fen)
+        self.assertTrue(self.game.paused)
 
     def test_human_clock_consumes_time_and_applies_increment(self) -> None:
         self.game.reset(clock_ms=10_000, increment_ms=2_000)

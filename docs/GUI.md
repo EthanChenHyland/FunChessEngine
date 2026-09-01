@@ -60,10 +60,22 @@ The server binds to `127.0.0.1:8765` by default and opens the browser automatica
   replacing the live game.
 - Review mode freezes clocks and can return to the underlying live game.
 - Imported PGNs preserve common headers and open directly into a paused review workflow.
+- Post-game analysis runs in a separate local engine process so review searches do not overwrite
+  the live game's transposition/history/repetition state. Quick, Standard, and Deep presets stream
+  progress back to the UI and can be canceled.
+- Analyzed moves show the engine's preferred move, searched principal variation, centipawn loss,
+  and a local Best/Excellent/Good/Inaccuracy/Mistake/Blunder classification. These labels are
+  FunChessEngine heuristics, not a claim to reproduce another site's proprietary review model.
+- Once a move is analyzed, **Retry this move** reconstructs the position immediately before that
+  move without editing the saved game. A wrong attempt reveals the engine's preferred move with a
+  board arrow; Escape returns to the reviewed main line.
+- Evaluation-graph points upgrade from fast static values to searched post-game values as analysis
+  results arrive.
 - Keyboard shortcuts for board flip, undo, engine move, pause/resume, and clearing the current selection.
 - A shared original FunChessEngine mark is used for the in-app brand, Dock icon, and packaged macOS icon;
   icon binaries are generated from the SVG source during desktop builds rather than stored as build artifacts.
-- Desktop 0.3 adds a native **Set Up Position…** command under the Game menu.
+- Desktop 0.3 added a native **Set Up Position…** command under the Game menu; 0.4 adds PGN/review,
+  and 0.4.1 adds isolated post-game analysis and Retry Move training.
 
 The browser server and UI use only the Python standard library plus `python-chess`, and all browser
 assets are local. Nothing loads from a CDN or external service. Electron is desktop packaging only and remains separate from the portable engine package.

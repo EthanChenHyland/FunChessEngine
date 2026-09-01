@@ -30,7 +30,13 @@
             <div id="blackClock" class="clock">02:00.0</div>
           </div>
           <div id="blackCaptured" class="captured-row" aria-label="Pieces captured by Black"></div>
-          <div class="board-frame"><div id="board" class="board" aria-label="Chess board"></div></div>
+          <div class="board-frame">
+            <div id="board" class="board" aria-label="Chess board"></div>
+            <svg id="boardOverlay" class="board-overlay" viewBox="0 0 8 8" aria-hidden="true">
+              <defs><marker id="bestArrowHead" markerWidth="2.1" markerHeight="2.1" refX="1.7" refY="1.05" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L2.1,1.05 L0,2.1 z"></path></marker></defs>
+              <line id="bestMoveArrow" x1="0" y1="0" x2="0" y2="0" marker-end="url(#bestArrowHead)" hidden></line>
+            </svg>
+          </div>
           <div class="player-row player-white">
             <div class="player-identity"><strong>White</strong><span id="whiteRole">Human</span><span id="whiteMaterial" class="material-chip"></span></div>
             <div id="whiteClock" class="clock">02:00.0</div>
@@ -209,6 +215,38 @@
             <canvas id="evalGraph" class="eval-graph" height="150" aria-label="Evaluation history graph"></canvas>
             <div class="review-meta"><span id="reviewEval">—</span><span id="reviewFen">Select a move or graph point to review.</span></div>
             <p class="shortcut-hint">Review: <kbd>←</kbd>/<kbd>→</kbd> move · <kbd>Home</kbd>/<kbd>End</kbd> ends · <kbd>Esc</kbd> return</p>
+          </div>
+
+          <div class="analysis-card">
+            <div class="setting-heading"><span class="label">Post-game analysis</span><span id="analysisStatus" class="setting-value">Not analyzed</span></div>
+            <p class="hint">Search every played position in an isolated local engine process, then compare the played move with the engine's best continuation.</p>
+            <div class="row two compact-row">
+              <div>
+                <label for="analysisQuality">Quality</label>
+                <select id="analysisQuality">
+                  <option value="80">Quick</option>
+                  <option value="180" selected>Standard</option>
+                  <option value="400">Deep</option>
+                </select>
+              </div>
+              <button id="analyzeGameBtn" class="primary align-end">Analyze game</button>
+            </div>
+            <div id="analysisProgressWrap" class="analysis-progress-wrap" hidden>
+              <div class="analysis-progress-track"><div id="analysisProgress" class="analysis-progress"></div></div>
+              <div class="analysis-progress-meta"><span id="analysisProgressText">0 / 0</span><button id="cancelAnalysisBtn" class="text-button">Cancel</button></div>
+            </div>
+            <div id="analysisSummary" class="analysis-summary" hidden>
+              <div><span>White avg CPL</span><strong id="whiteCpl">—</strong></div>
+              <div><span>Black avg CPL</span><strong id="blackCpl">—</strong></div>
+              <div><span>Mistakes</span><strong id="mistakeCount">0</strong></div>
+              <div><span>Blunders</span><strong id="blunderCount">0</strong></div>
+            </div>
+            <div id="moveInsight" class="move-insight" hidden>
+              <div class="move-insight-head"><strong id="moveInsightClass">Good</strong><span id="moveInsightCpl">0 CPL</span></div>
+              <p id="moveInsightText"></p>
+              <code id="moveInsightPv"></code>
+              <div class="retry-actions"><button id="retryMoveBtn" class="secondary compact">Retry this move</button><button id="retryBackBtn" class="secondary compact" hidden>Back to review</button></div>
+            </div>
           </div>
 
           <div class="metrics">
