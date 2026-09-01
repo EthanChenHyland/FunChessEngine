@@ -85,6 +85,7 @@
               <option value="both">Two players · local</option>
               <option value="none">Engine vs Engine</option>
             </select>
+            <p class="hint">Changing game mode starts a new game. Return to the live game before switching modes.</p>
           </div>
 
           <div class="game-actions">
@@ -241,7 +242,7 @@
             </div>
             <canvas id="evalGraph" class="eval-graph" height="150" tabindex="0" role="img" aria-label="Evaluation history graph. Use left and right arrows to review moves." aria-describedby="graphKeyboardHint"></canvas>
             <div class="review-meta"><span id="reviewEval">—</span><span id="reviewFen">Select a move or graph point to review.</span></div>
-            <p id="graphKeyboardHint" class="shortcut-hint">Review: <kbd>←</kbd>/<kbd>→</kbd> move · <kbd>Home</kbd>/<kbd>End</kbd> ends · <kbd>Esc</kbd> return</p>
+            <p id="graphKeyboardHint" class="shortcut-hint">Review: <kbd>←</kbd>/<kbd>→</kbd> browse only · <kbd>Home</kbd>/<kbd>End</kbd> ends · <kbd>Esc</kbd> return. Undo changes the live game only.</p>
           </div>
 
           <div class="variation-card">

@@ -24,6 +24,48 @@ class GameSessionTests(unittest.TestCase):
         self.game.undo()
         self.assertEqual(self.game.board.fen(), chess.STARTING_FEN)
 
+    def test_undo_preserves_manual_pause(self) -> None:
+        self.game.play_move("e2e4")
+        self.game.set_paused(True)
+        paused_black = self.game.state()["black_ms"]
+
+        self.game.undo()
+
+        state = self.game.state()
+        self.assertTrue(state["paused"])
+        self.assertEqual(self.game.board.fen(), chess.STARTING_FEN)
+        time.sleep(0.01)
+        self.assertEqual(self.game.state()["black_ms"], paused_black)
+
+    def test_undo_reopens_manual_result_without_preserving_result_pause(self) -> None:
+        self.game.play_move("e2e4")
+        self.game.resign("black")
+        self.assertTrue(self.game.state()["paused"])
+
+        self.game.undo()
+
+        state = self.game.state()
+        self.assertFalse(state["paused"])
+        self.assertFalse(state["game_over"])
+        self.assertIsNone(state["result"])
+        self.assertEqual(self.game.board.fen(), chess.STARTING_FEN)
+
+    def test_undo_invalidates_running_analysis_state(self) -> None:
+        self.game.play_move("e2e4")
+        self.game.paused = True
+        self.game.analysis_status = "running"
+        self.game.analysis_results = [{"ply": 1, "cpl": 0}]
+        self.game.analysis_completed = 1
+        self.game.analysis_total = 1
+
+        self.game.undo()
+
+        analysis = self.game.analysis_state()
+        self.assertEqual(analysis["status"], "idle")
+        self.assertEqual(analysis["results"], [])
+        self.assertEqual(analysis["completed"], 0)
+        self.assertEqual(analysis["total"], 0)
+
     def test_rejects_illegal_move(self) -> None:
         with self.assertRaises(ValueError):
             self.game.play_move("e2e5")
@@ -279,6 +321,17 @@ class GameSessionTests(unittest.TestCase):
         self.game.set_paused(False)
         self.game.play_move("e2e4")
         self.assertEqual(self.game.state()["turn"], "black")
+
+    def test_running_analysis_blocks_resume_until_canceled(self) -> None:
+        self.game.set_paused(True)
+        self.game.analysis_status = "running"
+
+        with self.assertRaisesRegex(ValueError, "Cancel game analysis"):
+            self.game.set_paused(False)
+
+        self.game.cancel_analysis()
+        self.game.set_paused(False)
+        self.assertFalse(self.game.state()["paused"])
 
     def test_resignation_and_draw_are_reported(self) -> None:
         self.game.resign("white")

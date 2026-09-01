@@ -356,23 +356,26 @@ function renderRecentGames() {
 async function openRecentGame(index) {
   const snapshot = recentGames[index];
   if (!snapshot) return;
-  if (setupMode) await leaveSetupMode(false);
-  if (reviewMode) {
-    reviewMode = false;
-    reviewSnapshot = null;
-  }
+  const confirmed = await confirmRestartIfNeeded(
+    "Opening a recent game replaces the current game. Save anything you want to keep first.",
+  );
+  if (!confirmed) return;
   const mode = ["white", "black", "both", "none"].includes(snapshot.human_side)
     ? snapshot.human_side
     : "white";
-  $("humanSide").value = mode;
-  previousHumanSide = mode;
-  autoplay = false;
-  selected = null;
-  gameAnalysis = snapshot.analysis && typeof snapshot.analysis === "object" ? snapshot.analysis : null;
-  const succeeded = await act(() => api("/api/load-game", backendSnapshot(snapshot)), "Recent game opened for review.");
+  const succeeded = await act(
+    () => api("/api/load-game", backendSnapshot(snapshot)),
+    "Recent game opened for review.",
+    clearTransientUiForReplacement,
+  );
   if (succeeded) {
+    $("humanSide").value = mode;
+    previousHumanSide = mode;
+    autoplay = false;
+    gameAnalysis = snapshot.analysis && typeof snapshot.analysis === "object" ? snapshot.analysis : null;
     syncTimeControlsFromState();
     orientForHuman();
+    render();
     document.querySelector('[data-tab="engine"]')?.click();
     await enterReviewMode(state.moves_uci?.length || 0);
   }
@@ -419,20 +422,28 @@ function renderRecoveryCard() {
 async function resumeRecovery() {
   if (!startupRecovery) return;
   const snapshot = startupRecovery;
+  const confirmed = await confirmRestartIfNeeded(
+    "Restoring the recovered game replaces the game currently on the board.",
+  );
+  if (!confirmed) return;
   const mode = ["white", "black", "both", "none"].includes(snapshot.human_side)
     ? snapshot.human_side
     : "white";
-  $("humanSide").value = mode;
-  previousHumanSide = mode;
-  autoplay = mode === "none" && Boolean(snapshot.autoplay);
-  recoveryResolved = true;
-  startupRecovery = null;
-  selected = null;
-  gameAnalysis = snapshot.analysis && typeof snapshot.analysis === "object" ? snapshot.analysis : null;
-  const succeeded = await act(() => api("/api/load-game", backendSnapshot(snapshot)), "Recovered autosaved game.");
+  const succeeded = await act(
+    () => api("/api/load-game", backendSnapshot(snapshot)),
+    "Recovered autosaved game.",
+    clearTransientUiForReplacement,
+  );
   if (succeeded) {
+    $("humanSide").value = mode;
+    previousHumanSide = mode;
+    autoplay = mode === "none" && Boolean(snapshot.autoplay);
+    recoveryResolved = true;
+    startupRecovery = null;
+    gameAnalysis = snapshot.analysis && typeof snapshot.analysis === "object" ? snapshot.analysis : null;
     syncTimeControlsFromState();
     orientForHuman();
+    render();
     scheduleComputerReply();
     persistRecoverySnapshot();
   }
@@ -922,6 +933,10 @@ function newVariationNode(snapshot, parent = null, moveUci = null, moveSan = "Ro
 
 async function startVariationWorkspace() {
   if (!state || setupMode || trainerMode || busy) return;
+  if (retryMode) {
+    setStatus("Return from Retry Move before starting a variation workspace.", "error");
+    return;
+  }
   if (!reviewMode) await enterReviewMode(state.moves_uci?.length || 0);
   if (!reviewSnapshot) return;
   const originPly = Number(reviewSnapshot.ply || 0);
@@ -1173,6 +1188,10 @@ async function loadTrainerItem(index) {
 
 async function startTrainer() {
   if (!trainerItems.length || busy || setupMode || variationMode) return;
+  if (reviewMode || retryMode) {
+    setStatus("Return to the live game before starting Personal Trainer.", "error");
+    return;
+  }
   trainerWasPaused = Boolean(state?.paused || state?.game_over);
   if (state && !state.game_over && !state.paused) {
     const paused = await act(() => api("/api/pause", { paused: true }), "Game paused for training.");
@@ -1263,7 +1282,7 @@ function trainerHint() {
   renderBoard();
 }
 
-async function exitTrainer() {
+async function exitTrainer(resumeGame = true) {
   trainerMode = false;
   trainerSnapshot = null;
   trainerItemIndex = -1;
@@ -1272,7 +1291,7 @@ async function exitTrainer() {
   trainerAwaitingNext = false;
   selected = null;
   render();
-  if (!trainerWasPaused && state && !state.game_over && state.paused) {
+  if (resumeGame && !trainerWasPaused && state && !state.game_over && state.paused) {
     const resumed = await act(() => api("/api/pause", { paused: false }), "Returned to live game.");
     if (resumed) scheduleComputerReply();
   }
@@ -1377,13 +1396,57 @@ function confirmAction(title, message, confirmLabel, dangerous = false) {
   });
 }
 
-function hasUnsavedProgress() {
+function hasGameProgress() {
   if (!state) return false;
   return Boolean(state.pgn?.length) || state.initial_fen !== STARTING_FEN;
 }
 
 function confirmRestartIfNeeded(message) {
-  return hasUnsavedProgress() ? confirmRestart(message) : Promise.resolve(true);
+  const setupWarning = setupMode ? " Unapplied position-setup changes will also be discarded." : "";
+  return hasGameProgress() || setupMode
+    ? confirmRestart(`${message}${setupWarning}`)
+    : Promise.resolve(true);
+}
+
+function clearTransientUiForReplacement() {
+  // A successful reset/import replaces the live main line.  Clear every UI
+  // workspace that may hold a snapshot of the previous game in one place so
+  // Retry/Review/Trainer/Variation state can never leak across games.
+  clearTimeout(autoplayTimer);
+  autoplayTimer = null;
+  if (variationMode) saveCurrentVariationWorkspace();
+
+  setupMode = false;
+  setupBoard = {};
+  setupPiece = "";
+  $("setupControls").hidden = true;
+  $("setupModeBtn").hidden = false;
+  $("setupStatus").textContent = "Board editor";
+  $("boardStage").classList.remove("setup-active");
+
+  trainerMode = false;
+  trainerSnapshot = null;
+  trainerItemIndex = -1;
+  trainerSelected = null;
+  trainerRevealBest = false;
+  trainerAwaitingNext = false;
+
+  retryMode = false;
+  retryTargetPly = null;
+  retryRevealBest = false;
+  reviewMode = false;
+  reviewSnapshot = null;
+  reviewSeries = null;
+
+  variationMode = false;
+  variationWorkspace = null;
+  variationNodeId = null;
+
+  selected = null;
+  multiPvData = null;
+  multiPvArrowMove = null;
+  evalBreakdownData = null;
+  gameAnalysis = null;
 }
 
 function boardMapFromFen(fen) {
@@ -1488,8 +1551,12 @@ function syncSetupFieldsFromFen(fen) {
 
 async function enterSetupMode() {
   if (setupMode || !state) return;
-  if (reviewMode) await exitReviewMode();
-  setupWasPaused = Boolean(state.paused);
+  if (trainerMode || variationMode || retryMode) {
+    setStatus("Exit the current review/training workspace before entering position setup.", "error");
+    return;
+  }
+  setupWasPaused = reviewMode ? reviewWasPaused : Boolean(state.paused);
+  if (reviewMode) await exitReviewMode(false);
   if (!state.game_over && !state.paused) {
     const paused = await act(() => api("/api/pause", { paused: true }), "Game paused for position setup.");
     if (!paused) return;
@@ -1591,16 +1658,12 @@ function syncTimeControlsFromState() {
 }
 
 async function restartStandardGame(successText = "New game started.") {
-  if (setupMode) await leaveSetupMode(false);
-  reviewMode = false;
-  reviewSnapshot = null;
-  reviewSeries = null;
   const { baseMs, incrementMs } = selectedTimeControl();
   autoplay = $("humanSide").value === "none";
-  selected = null;
   const succeeded = await act(
     () => api("/api/reset", { clock_ms: baseMs, increment_ms: incrementMs }),
     successText,
+    clearTransientUiForReplacement,
   );
   if (succeeded) {
     previousHumanSide = $("humanSide").value;
@@ -1804,22 +1867,31 @@ async function saveGamePng() {
 
 async function loadGamePng(file) {
   try {
-    if (setupMode) await leaveSetupMode(false);
     const snapshot = extractPngSnapshot(new Uint8Array(await file.arrayBuffer()));
+    const confirmed = await confirmRestartIfNeeded(
+      "Opening a saved PNG replaces the current game. Save anything you want to keep first.",
+    );
+    if (!confirmed) return false;
     const mode = ["white", "black", "both", "none"].includes(snapshot.human_side) ? snapshot.human_side : "white";
-    $("humanSide").value = mode;
-    previousHumanSide = mode;
-    autoplay = mode === "none" && Boolean(snapshot.autoplay);
-    selected = null;
-    gameAnalysis = snapshot.analysis && typeof snapshot.analysis === "object" ? snapshot.analysis : null;
-    const succeeded = await act(() => api("/api/load-game", backendSnapshot(snapshot)), "Saved game restored from PNG.");
+    const succeeded = await act(
+      () => api("/api/load-game", backendSnapshot(snapshot)),
+      "Saved game restored from PNG.",
+      clearTransientUiForReplacement,
+    );
     if (succeeded) {
+      $("humanSide").value = mode;
+      previousHumanSide = mode;
+      autoplay = mode === "none" && Boolean(snapshot.autoplay);
+      gameAnalysis = snapshot.analysis && typeof snapshot.analysis === "object" ? snapshot.analysis : null;
       syncTimeControlsFromState();
       orientForHuman();
+      render();
       scheduleComputerReply();
     }
+    return succeeded;
   } catch (error) {
     $("statusLine").textContent = error.message;
+    return false;
   }
 }
 
@@ -1981,14 +2053,31 @@ function render() {
   $("pvLine").textContent = pv.length ? pv.join(" ") : "No completed search yet.";
   const researches = Number(state.last_engine_researches || 0);
   $("researches").textContent = String(researches);
-  $("engineBtn").disabled = reviewMode || setupMode || busy || state.game_over || state.paused;
-  $("undoBtn").disabled = reviewMode || setupMode || busy || state.pgn.length === 0;
-  $("pauseBtn").disabled = reviewMode || setupMode || busy || state.game_over;
+  const analysisRunning = gameAnalysis
+    ? gameAnalysis.status === "running"
+    : state.analysis_status === "running";
+  const liveControlsLocked = reviewMode || setupMode || trainerMode || variationMode || retryMode;
+  $("engineBtn").disabled = liveControlsLocked || busy || state.game_over || state.paused;
+  $("undoBtn").disabled = liveControlsLocked || busy || state.pgn.length === 0;
+  $("undoBtn").title = reviewMode
+    ? "Undo changes the live game. Return to the live game first; review arrows are non-destructive."
+    : trainerMode
+    ? "Exit Personal Trainer before undoing the live game."
+    : variationMode
+    ? "Use variation navigation inside the workspace; Undo changes only the live game."
+    : setupMode
+    ? "Finish or cancel position setup before undoing the live game."
+    : "Undo the most recent live-game move (U).";
+  $("pauseBtn").disabled = liveControlsLocked || busy || state.game_over || analysisRunning;
   $("pauseBtn").textContent = state.paused ? "Resume clocks" : "Pause clocks";
-  $("drawBtn").disabled = setupMode || busy || state.game_over;
+  $("drawBtn").disabled = liveControlsLocked || busy || state.game_over;
   $("drawBtn").hidden = $("humanSide").value !== "both";
-  $("resignBtn").disabled = setupMode || busy || state.game_over;
+  $("resignBtn").disabled = liveControlsLocked || busy || state.game_over;
   $("resignBtn").hidden = $("humanSide").value === "none";
+  $("humanSide").disabled = busy || reviewMode || setupMode || trainerMode || variationMode || retryMode;
+  $("humanSide").title = $("humanSide").disabled
+    ? "Return to the live game before changing who controls each side."
+    : "Changing control mode starts a new game when the current game has progress.";
   if (!busy) {
     $("engineStatusText").textContent = gameAnalysis?.status === "running"
       ? "Analyzing game"
@@ -2033,6 +2122,7 @@ function renderMoves() {
   const target = $("moves");
   target.innerHTML = "";
   const plies = state.pgn.length;
+  const reviewLinksLocked = busy || setupMode || trainerMode || variationMode || retryMode;
   $("moveCount").textContent = `${plies} ${plies === 1 ? "ply" : "plies"}`;
   if (!state.pgn.length) {
     const empty = document.createElement("div");
@@ -2057,6 +2147,10 @@ function renderMoves() {
       white.dataset.ply = String(ply);
       white.classList.toggle("review-current", reviewMode && reviewSnapshot?.ply === ply);
       appendMoveGrade(white, ply);
+      white.disabled = reviewLinksLocked;
+      white.title = reviewLinksLocked
+        ? "Finish the current workspace before navigating the saved main line."
+        : "Review this position without changing the live game.";
       white.addEventListener("click", () => enterReviewMode(ply));
     } else white.disabled = true;
     target.appendChild(white);
@@ -2071,6 +2165,10 @@ function renderMoves() {
       black.dataset.ply = String(ply);
       black.classList.toggle("review-current", reviewMode && reviewSnapshot?.ply === ply);
       appendMoveGrade(black, ply);
+      black.disabled = reviewLinksLocked;
+      black.title = reviewLinksLocked
+        ? "Finish the current workspace before navigating the saved main line."
+        : "Review this position without changing the live game.";
       black.addEventListener("click", () => enterReviewMode(ply));
     } else black.disabled = true;
     target.appendChild(black);
@@ -2123,6 +2221,19 @@ async function jumpReview(ply) {
 
 async function enterReviewMode(ply = null) {
   if (!state || setupMode || busy) return;
+  if (retryMode) {
+    setStatus("Finish Retry Move or return to the reviewed move before navigating elsewhere.", "error");
+    return;
+  }
+  if (trainerMode || variationMode) {
+    setStatus(
+      trainerMode
+        ? "Exit Personal Trainer before navigating the saved game."
+        : "Exit the variation workspace before navigating the saved main line.",
+      "error",
+    );
+    return;
+  }
   retryMode = false;
   retryTargetPly = null;
   retryRevealBest = false;
@@ -2143,7 +2254,7 @@ async function enterReviewMode(ply = null) {
   }
 }
 
-async function exitReviewMode() {
+async function exitReviewMode(resumeGame = true) {
   if (!reviewMode) return;
   reviewMode = false;
   reviewSnapshot = null;
@@ -2152,7 +2263,7 @@ async function exitReviewMode() {
   retryRevealBest = false;
   selected = null;
   render();
-  if (!reviewWasPaused && state && !state.game_over && state.paused) {
+  if (resumeGame && !reviewWasPaused && state && !state.game_over && state.paused) {
     const resumed = await act(() => api("/api/pause", { paused: false }), "Returned to live game.");
     if (resumed) scheduleComputerReply();
   }
@@ -2161,14 +2272,25 @@ async function exitReviewMode() {
 function renderReviewPanel() {
   const total = state?.moves_uci?.length || 0;
   const ply = reviewMode ? Number(reviewSnapshot?.ply || 0) : total;
+  const navigationLocked = busy || setupMode || trainerMode || variationMode || retryMode;
   $("reviewPositionLabel").textContent = retryMode && retryTargetPly
     ? `Retry ply ${retryTargetPly}`
     : reviewMode ? `Ply ${ply} / ${total}` : `${total} plies`;
   $("reviewExitBtn").hidden = !reviewMode;
-  $("reviewFirstBtn").disabled = busy || total === 0 || ply <= 0;
-  $("reviewPrevBtn").disabled = busy || total === 0 || ply <= 0;
-  $("reviewNextBtn").disabled = busy || total === 0 || ply >= total;
-  $("reviewLastBtn").disabled = busy || total === 0 || ply >= total;
+  $("reviewFirstBtn").disabled = navigationLocked || total === 0 || ply <= 0;
+  $("reviewPrevBtn").disabled = navigationLocked || total === 0 || ply <= 0;
+  $("reviewNextBtn").disabled = navigationLocked || total === 0 || ply >= total;
+  $("reviewLastBtn").disabled = navigationLocked || total === 0 || ply >= total;
+  const navigationTitle = retryMode
+    ? "Finish Retry Move before navigating review positions."
+    : variationMode
+    ? "Variation navigation is separate from main-line review navigation."
+    : trainerMode
+    ? "Exit Personal Trainer before navigating the saved game."
+    : "Review navigation changes only the viewed position; it never changes the live game.";
+  for (const id of ["reviewFirstBtn", "reviewPrevBtn", "reviewNextBtn", "reviewLastBtn"]) {
+    $(id).title = navigationTitle;
+  }
   if (reviewMode && reviewSnapshot) {
     const cp = Number(reviewSnapshot.eval_cp || 0) / 100;
     $("reviewEval").textContent = `${cp >= 0 ? "+" : ""}${cp.toFixed(2)}`;
@@ -2545,6 +2667,10 @@ async function refreshAnalysisStatus() {
 
 async function startGameAnalysis() {
   if (!state?.moves_uci?.length || gameAnalysis?.status === "running") return;
+  if (setupMode || trainerMode || variationMode || retryMode) {
+    setStatus("Exit the current board workspace before starting whole-game analysis.", "error");
+    return;
+  }
   const budgetMs = Math.max(80, Number($("analysisQuality").value) || 180);
   try {
     gameAnalysis = await api("/api/analyze-game", { budget_ms: budgetMs });
@@ -2658,14 +2784,16 @@ function playUiSound(kind = "move") {
   }
 }
 
-async function act(fn, successText = "Ready.") {
+async function act(fn, successText = "Ready.", beforeState = null) {
   if (busy) return false;
   busy = true;
   setStatus("Working…", "loading");
   setEngineStatus("Engine busy", "busy");
   render();
   try {
-    setState(await fn());
+    const value = await fn();
+    if (beforeState) beforeState(value);
+    setState(value);
     setStatus(successText, "success");
     setEngineStatus("Engine ready");
     return true;
@@ -2679,7 +2807,27 @@ async function act(fn, successText = "Ready.") {
   }
 }
 
+async function undoLiveMove() {
+  if (!state || busy) return false;
+  if (reviewMode || retryMode || setupMode || trainerMode || variationMode) {
+    setStatus(
+      reviewMode
+        ? "Undo changes the live game. Use the review arrows to browse without changing it, or return to the live game first."
+        : "Finish the current workspace before undoing the live game.",
+      "error",
+    );
+    return false;
+  }
+  const succeeded = await act(() => api("/api/undo", {}), "Live-game move undone.");
+  if (succeeded) scheduleComputerReply();
+  return succeeded;
+}
+
 async function engineMove() {
+  if (reviewMode || retryMode || setupMode || trainerMode || variationMode) {
+    setStatus("Return to the live game before asking the engine to play a move.", "error");
+    return false;
+  }
   const raw = $("budgetInput").value.trim();
   const succeeded = await act(() => api("/api/engine", raw ? { budget_ms: Number(raw) } : {}), "Engine move complete.");
   if (succeeded) playUiSound(state?.check ? "check" : "move");
@@ -2756,22 +2904,18 @@ async function exportPgn() {
 async function loadPgnText(pgn) {
   if (!String(pgn || "").trim()) return false;
   const confirmed = await confirmRestartIfNeeded(
-    "Opening a PGN replaces the current game. Save the current game first if you want to keep it.",
+    "Opening a PGN replaces the current game. Save or export a copy first if you want to keep it.",
   );
   if (!confirmed) return false;
-  if (setupMode) await leaveSetupMode(false);
-  if (reviewMode) {
-    reviewMode = false;
-    reviewSnapshot = null;
-  }
   autoplay = false;
   clearTimeout(autoplayTimer);
-  selected = null;
-  const succeeded = await act(() => api("/api/load-pgn", { pgn }), "PGN opened for review.");
+  const succeeded = await act(
+    () => api("/api/load-pgn", { pgn }),
+    "PGN opened for review.",
+    clearTransientUiForReplacement,
+  );
   if (!succeeded) return false;
   syncTimeControlsFromState();
-  reviewSeries = null;
-  reviewWasPaused = true;
   document.querySelector('[data-tab="engine"]')?.click();
   await enterReviewMode(state.moves_uci.length);
   return true;
@@ -2813,6 +2957,17 @@ async function openPngFile() {
 
 async function togglePause() {
   if (!state || state.game_over) return;
+  if (reviewMode || retryMode || setupMode || trainerMode || variationMode) {
+    setStatus("Return to the live game before changing the live clock state.", "error");
+    return;
+  }
+  const analysisRunning = gameAnalysis
+    ? gameAnalysis.status === "running"
+    : state.analysis_status === "running";
+  if (analysisRunning) {
+    setStatus("Cancel game analysis before resuming or changing the live clock state.", "error");
+    return;
+  }
   clearTimeout(autoplayTimer);
   const wasPaused = Boolean(state.paused);
   await act(
@@ -2853,16 +3008,15 @@ async function resignGame() {
 
 async function loadFenValue(fen) {
   const confirmed = await confirmRestartIfNeeded(
-    "Loading a FEN replaces the current game. The current game is not saved automatically and unsaved progress will be lost.",
+    "Loading a FEN replaces the current game. Save or export a copy first if you want to keep it.",
   );
   if (!confirmed) return false;
-  if (setupMode) await leaveSetupMode(false);
   const { baseMs, incrementMs } = selectedTimeControl();
   autoplay = $("humanSide").value === "none";
-  selected = null;
   const succeeded = await act(
     () => api("/api/reset", { fen: fen.trim(), clock_ms: baseMs, increment_ms: incrementMs }),
     "FEN loaded as a new game.",
+    clearTransientUiForReplacement,
   );
   if (succeeded) scheduleComputerReply();
   return succeeded;
@@ -2896,7 +3050,7 @@ function commandDefinitions() {
     { label: "Start mistake trainer", hint: "Personal puzzles", action: startTrainer },
     { label: "Run engine benchmark", hint: "Developer lab", action: () => { document.querySelector('[data-tab="engine"]')?.click(); runDeveloperBenchmark(); } },
     { label: "Flip board", hint: "F", action: () => $("flipBtn").click() },
-    { label: "Undo move", hint: "U", action: () => $("undoBtn").click() },
+    { label: "Undo live move", hint: "U", action: undoLiveMove },
     { label: "Pause / resume", hint: "Space", action: togglePause },
     { label: "Play engine move", hint: "E", action: engineMove },
     { label: "Appearance", hint: "Themes and pieces", action: () => document.querySelector('[data-tab="display"]')?.click() },
@@ -3013,10 +3167,7 @@ $("flipBtn").addEventListener("click", () => {
   selected = null;
   renderBoard();
 });
-$("undoBtn").addEventListener("click", async () => {
-  const succeeded = await act(() => api("/api/undo", {}), "Move undone.");
-  if (succeeded) scheduleComputerReply();
-});
+$("undoBtn").addEventListener("click", undoLiveMove);
 $("engineBtn").addEventListener("click", engineMove);
 $("multipvBtn").addEventListener("click", runMultiPv);
 $("analyzeGameBtn").addEventListener("click", startGameAnalysis);
@@ -3134,25 +3285,31 @@ $("evalGraph").addEventListener("click", (event) => {
 $("humanSide").addEventListener("change", async () => {
   const nextSide = $("humanSide").value;
   if (nextSide === previousHumanSide) return;
+  const priorSide = previousHumanSide;
   const confirmed = await confirmRestartIfNeeded(
-    "Changing game mode restarts from the standard position. The current game is not saved automatically and unsaved progress will be lost.",
+    "Changing game mode starts a new standard game and replaces the current one. Save or export a copy first if you want to keep it.",
   );
   if (!confirmed) {
-    $("humanSide").value = previousHumanSide;
+    $("humanSide").value = priorSide;
     render();
     return;
   }
-  previousHumanSide = nextSide;
   autoplay = nextSide === "none";
   selected = null;
   orientForHuman();
   render();
-  await restartStandardGame(`${nextSide === "both" ? "Two-player" : nextSide === "none" ? "Engine vs Engine" : `Human ${capitalize(nextSide)}`} mode started.`);
+  const succeeded = await restartStandardGame(`${nextSide === "both" ? "Two-player" : nextSide === "none" ? "Engine vs Engine" : `Human ${capitalize(nextSide)}`} mode started.`);
+  if (!succeeded) {
+    $("humanSide").value = priorSide;
+    autoplay = priorSide === "none";
+    orientForHuman();
+    render();
+  }
 });
 
 $("newGameBtn").addEventListener("click", async () => {
   const confirmed = await confirmRestartIfNeeded(
-    "Starting a new game discards the current game unless you save it first.",
+    "Starting a new game replaces the current game. Save or export a copy first if you want to keep it.",
   );
   if (!confirmed) return;
   await restartStandardGame();
@@ -3177,7 +3334,7 @@ $("incrementInput").addEventListener("input", () => {
 });
 $("applyTimeBtn").addEventListener("click", async () => {
   const confirmed = await confirmRestartIfNeeded(
-    "Applying a new time control restarts the game. The current game is not saved automatically and unsaved progress will be lost.",
+    "Applying a new time control starts a new game and replaces the current one. Save or export a copy first if you want to keep it.",
   );
   if (!confirmed) return;
   await restartStandardGame("Time control applied and game restarted.");
@@ -3298,6 +3455,9 @@ document.addEventListener("keydown", (event) => {
       event.preventDefault();
       if (retryMode) exitRetryMove();
       else exitReviewMode();
+    } else if (retryMode && ["arrowleft", "arrowright", "home", "end"].includes(key)) {
+      event.preventDefault();
+      setStatus("Finish Retry Move or return to the reviewed move before navigating elsewhere.", "error");
     } else if (key === "arrowleft") {
       event.preventDefault();
       enterReviewMode(Math.max(0, Number(reviewSnapshot?.ply || 0) - 1));
@@ -3324,9 +3484,7 @@ document.addEventListener("keydown", (event) => {
     selected = null;
     if (state) renderBoard();
   } else if (key === "u" && state?.pgn.length && !busy) {
-    act(() => api("/api/undo", {}), "Move undone.").then((succeeded) => {
-      if (succeeded) scheduleComputerReply();
-    });
+    undoLiveMove();
   } else if (key === "e" && state && !state.game_over && !busy) {
     engineMove();
   } else if (key === " " && state && !state.game_over && !busy) {
@@ -3350,7 +3508,7 @@ if (desktop) {
     else if (command === "save-fen") downloadFen();
     else if (command === "save-pgn") exportPgn();
     else if (command === "save-png") saveGamePng();
-    else if (command === "undo") $("undoBtn").click();
+    else if (command === "undo") undoLiveMove();
     else if (command === "flip") $("flipBtn").click();
     else if (command === "engine-move") $("engineBtn").click();
     else if (command === "pause") $("pauseBtn").click();

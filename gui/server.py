@@ -1310,6 +1310,7 @@ class GameSession:
                 raise ValueError("Invalid UCI move.") from exc
             if move not in self.board.legal_moves:
                 raise ValueError("That move is not legal in the current position.")
+            self._cancel_analysis_locked()
             self._commit_clock()
             mover = self.board.turn
             remaining = self.white_ms if mover == chess.WHITE else self.black_ms
@@ -1331,6 +1332,7 @@ class GameSession:
                 raise ValueError("The game is already over.")
             if self.paused:
                 raise ValueError("The game is paused.")
+            self._cancel_analysis_locked()
             color = self.board.turn
             self._commit_clock()
             available = self.white_ms if color == chess.WHITE else self.black_ms
@@ -1380,9 +1382,14 @@ class GameSession:
 
     def undo(self) -> None:
         with self.lock:
+            # Review navigation is handled entirely by review_state() and never
+            # calls this method.  Undo is a live-game mutation, so invalidate
+            # any analysis tied to the old main line before changing the board.
+            self._cancel_analysis_locked()
+            preserve_pause = self.paused and self.manual_result is None
             self.manual_result = None
             self.manual_termination = None
-            self.paused = False
+            self.paused = preserve_pause
             if not self.board.move_stack:
                 self.turn_started_ns = time.monotonic_ns()
                 return
@@ -1396,6 +1403,8 @@ class GameSession:
         with self.lock:
             if self.manual_result is not None or self.board.is_game_over(claim_draw=True):
                 raise ValueError("The game is already over.")
+            if not paused and self.analysis_status == "running":
+                raise ValueError("Cancel game analysis before resuming the live game.")
             if paused == self.paused:
                 return
             if paused:
