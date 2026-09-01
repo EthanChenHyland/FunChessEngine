@@ -26,7 +26,9 @@ a full piece-by-piece setup editor, keyboard-friendly pawn promotion, non-destru
 review, a clickable evaluation-history graph, search telemetry/PV, themes, accent colors, piece
 sizing, orientation preferences, and display toggles. Post-game analysis runs in an isolated local
 engine process and adds best-move comparisons, CPL, move grades, searched graph points, and a
-non-destructive Retry Move trainer. Preferences are stored locally.
+non-destructive Retry Move trainer. Crash recovery autosaves interrupted sessions, and a collapsed
+Recent Games library keeps the latest completed/imported games available for one-click review.
+Preferences are stored locally.
 
 ## Writing an agent
 

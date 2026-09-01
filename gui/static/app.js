@@ -5,6 +5,9 @@ const PIECES = {
 const STARTING_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
 const DISPLAY_KEY = "funChessEngine.display.v1";
+const RECOVERY_KEY = "funChessEngine.recovery.v1";
+const RECOVERY_CLEAN_EXIT_KEY = "funChessEngine.recovery.cleanExit.v1";
+const RECENTS_KEY = "funChessEngine.recents.v1";
 const DISPLAY_DEFAULTS = {
   theme: "forest",
   accent: "lime",
@@ -40,6 +43,18 @@ let analysisPollTimer = null;
 let retryMode = false;
 let retryTargetPly = null;
 let retryRevealBest = false;
+let recoverySaveTimer = null;
+let startupRecovery = loadRecoverySnapshot();
+let recoveryResolved = !startupRecovery;
+let recentGames = loadRecentGames();
+let archivedResultKey = null;
+
+try {
+  localStorage.setItem(RECOVERY_CLEAN_EXIT_KEY, "0");
+} catch (_) {
+  recoveryResolved = true;
+  startupRecovery = null;
+}
 
 const $ = (id) => document.getElementById(id);
 
@@ -49,6 +64,183 @@ function setState(value) {
   if (value.analysis_status === "idle") gameAnalysis = null;
   clockAnchorMs = performance.now();
   flagRefreshPending = false;
+  scheduleRecoverySave();
+}
+
+function loadRecoverySnapshot() {
+  try {
+    const cleanExit = localStorage.getItem(RECOVERY_CLEAN_EXIT_KEY) === "1";
+    const saved = JSON.parse(localStorage.getItem(RECOVERY_KEY) || "null");
+    if (cleanExit || !saved || saved.version !== 1 || !Array.isArray(saved.moves)) return null;
+    if (!saved.moves.length && saved.initial_fen === STARTING_FEN) return null;
+    return saved;
+  } catch (_) {
+    return null;
+  }
+}
+
+function loadRecentGames() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(RECENTS_KEY) || "[]");
+    return Array.isArray(saved) ? saved.filter((item) => item && Array.isArray(item.moves)).slice(0, 12) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function saveRecentGames() {
+  try {
+    localStorage.setItem(RECENTS_KEY, JSON.stringify(recentGames.slice(0, 12)));
+  } catch (_) {
+    // Recent games are optional local convenience data.
+  }
+}
+
+function gameSignature(snapshot) {
+  return `${snapshot.initial_fen || STARTING_FEN}|${(snapshot.moves || []).join(",")}|${snapshot.result || snapshot.manual_result || "*"}`;
+}
+
+function archiveCompletedGame() {
+  if (!state?.game_over || !state.moves_uci?.length) return;
+  const snapshot = gameSnapshot();
+  const signature = gameSignature(snapshot);
+  if (signature === archivedResultKey) return;
+  archivedResultKey = signature;
+  const existing = recentGames.findIndex((item) => gameSignature(item) === signature);
+  if (existing >= 0) recentGames.splice(existing, 1);
+  snapshot.recent_id = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+  recentGames.unshift(snapshot);
+  recentGames = recentGames.slice(0, 12);
+  saveRecentGames();
+}
+
+function renderRecentGames() {
+  const target = $("recentGamesList");
+  if (!target) return;
+  target.innerHTML = "";
+  $("recentGameCount").textContent = String(recentGames.length);
+  $("clearRecentGamesBtn").hidden = recentGames.length === 0;
+  if (!recentGames.length) {
+    const empty = document.createElement("p");
+    empty.className = "hint recent-empty";
+    empty.textContent = "Completed and imported games will appear here.";
+    target.appendChild(empty);
+    return;
+  }
+  recentGames.forEach((snapshot, index) => {
+    const row = document.createElement("div");
+    row.className = "recent-game-row";
+    const info = document.createElement("div");
+    const result = snapshot.result || snapshot.manual_result || "*";
+    const moves = snapshot.moves?.length || 0;
+    const saved = snapshot.saved_at ? new Date(snapshot.saved_at) : null;
+    const when = saved && !Number.isNaN(saved.getTime()) ? saved.toLocaleDateString() : "Saved game";
+    const title = document.createElement("strong");
+    title.textContent = `${result} · ${Math.ceil(moves / 2)} moves`;
+    const meta = document.createElement("span");
+    meta.textContent = when;
+    info.append(title, meta);
+    const open = document.createElement("button");
+    open.className = "secondary compact";
+    open.textContent = "Review";
+    open.addEventListener("click", () => openRecentGame(index));
+    row.append(info, open);
+    target.appendChild(row);
+  });
+}
+
+async function openRecentGame(index) {
+  const snapshot = recentGames[index];
+  if (!snapshot) return;
+  if (setupMode) await leaveSetupMode(false);
+  if (reviewMode) {
+    reviewMode = false;
+    reviewSnapshot = null;
+  }
+  const mode = ["white", "black", "both", "none"].includes(snapshot.human_side)
+    ? snapshot.human_side
+    : "white";
+  $("humanSide").value = mode;
+  previousHumanSide = mode;
+  autoplay = false;
+  selected = null;
+  const succeeded = await act(() => api("/api/load-game", snapshot), "Recent game opened for review.");
+  if (succeeded) {
+    syncTimeControlsFromState();
+    orientForHuman();
+    document.querySelector('[data-tab="engine"]')?.click();
+    await enterReviewMode(state.moves_uci?.length || 0);
+  }
+}
+
+function clearRecentGames() {
+  recentGames = [];
+  archivedResultKey = null;
+  saveRecentGames();
+  renderRecentGames();
+}
+
+function scheduleRecoverySave() {
+  if (!state || !recoveryResolved) return;
+  clearTimeout(recoverySaveTimer);
+  recoverySaveTimer = setTimeout(persistRecoverySnapshot, 120);
+}
+
+function persistRecoverySnapshot() {
+  if (!state || !recoveryResolved) return;
+  try {
+    const hasProgress = Boolean(state.moves_uci?.length) || state.initial_fen !== STARTING_FEN;
+    if (!hasProgress) {
+      localStorage.removeItem(RECOVERY_KEY);
+      return;
+    }
+    localStorage.setItem(RECOVERY_KEY, JSON.stringify(gameSnapshot()));
+  } catch (_) {
+    // Recovery is best-effort and must never interfere with play.
+  }
+}
+
+function renderRecoveryCard() {
+  const card = $("recoveryCard");
+  if (!card) return;
+  card.hidden = recoveryResolved || !startupRecovery;
+  if (card.hidden) return;
+  const moves = startupRecovery.moves?.length || 0;
+  const saved = startupRecovery.saved_at ? new Date(startupRecovery.saved_at) : null;
+  const when = saved && !Number.isNaN(saved.getTime()) ? saved.toLocaleString() : "an earlier session";
+  $("recoveryText").textContent = `Recovered ${moves} ${moves === 1 ? "ply" : "plies"} from ${when}.`;
+}
+
+async function resumeRecovery() {
+  if (!startupRecovery) return;
+  const snapshot = startupRecovery;
+  const mode = ["white", "black", "both", "none"].includes(snapshot.human_side)
+    ? snapshot.human_side
+    : "white";
+  $("humanSide").value = mode;
+  previousHumanSide = mode;
+  autoplay = mode === "none" && Boolean(snapshot.autoplay);
+  recoveryResolved = true;
+  startupRecovery = null;
+  selected = null;
+  const succeeded = await act(() => api("/api/load-game", snapshot), "Recovered autosaved game.");
+  if (succeeded) {
+    syncTimeControlsFromState();
+    orientForHuman();
+    scheduleComputerReply();
+    persistRecoverySnapshot();
+  }
+}
+
+function discardRecovery() {
+  recoveryResolved = true;
+  startupRecovery = null;
+  try {
+    localStorage.removeItem(RECOVERY_KEY);
+  } catch (_) {
+    // Nothing else to do if browser storage is unavailable.
+  }
+  render();
 }
 
 function loadDisplaySettings() {
@@ -642,6 +834,8 @@ function gameSnapshot() {
     paused: Boolean(state.paused),
     manual_result: state.manual_result || null,
     manual_termination: state.manual_termination || null,
+    result: state.result || null,
+    termination: state.termination || null,
     pgn_headers: state.pgn_headers || {},
   };
 }
@@ -978,6 +1172,9 @@ function render() {
   }
   updatePlayerRoles();
   renderCapturedMaterial();
+  renderRecoveryCard();
+  archiveCompletedGame();
+  renderRecentGames();
   renderMoves();
   renderReviewPanel();
   renderAnalysisPanel();
@@ -1545,6 +1742,9 @@ $("undoBtn").addEventListener("click", async () => {
 $("engineBtn").addEventListener("click", engineMove);
 $("analyzeGameBtn").addEventListener("click", startGameAnalysis);
 $("cancelAnalysisBtn").addEventListener("click", cancelGameAnalysis);
+$("resumeRecoveryBtn").addEventListener("click", resumeRecovery);
+$("discardRecoveryBtn").addEventListener("click", discardRecovery);
+$("clearRecentGamesBtn").addEventListener("click", clearRecentGames);
 $("copyFenBtn").addEventListener("click", copyFen);
 $("downloadFenBtn").addEventListener("click", downloadFen);
 $("openPgnBtn").addEventListener("click", openPgnFile);
@@ -1794,3 +1994,14 @@ api("/api/state").then((value) => {
   $("statusLine").textContent = error.message;
 });
 setInterval(renderClocks, 100);
+setInterval(() => {
+  if (recoveryResolved && state && !state.paused && !state.game_over) persistRecoverySnapshot();
+}, 2_000);
+window.addEventListener("beforeunload", () => {
+  if (recoveryResolved) persistRecoverySnapshot();
+  try {
+    localStorage.setItem(RECOVERY_CLEAN_EXIT_KEY, "1");
+  } catch (_) {
+    // Browser storage is optional.
+  }
+});

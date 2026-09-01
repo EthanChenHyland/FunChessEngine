@@ -125,6 +125,21 @@
         </div>
 
         <div id="positionTab" class="tab-panel">
+          <div id="recoveryCard" class="file-card recovery-card" hidden>
+            <div class="setting-heading"><span class="label">Crash recovery</span><span class="setting-value">Autosaved</span></div>
+            <p id="recoveryText" class="hint">An interrupted game can be restored.</p>
+            <div class="row two save-actions">
+              <button id="resumeRecoveryBtn" class="primary">Resume game</button>
+              <button id="discardRecoveryBtn" class="secondary">Discard</button>
+            </div>
+          </div>
+
+          <details class="file-card recent-games-card">
+            <summary><span>Recent games</span><span id="recentGameCount" class="setting-value">0</span></summary>
+            <div id="recentGamesList" class="recent-games-list"></div>
+            <button id="clearRecentGamesBtn" class="text-button recent-clear" hidden>Clear recent games</button>
+          </details>
+
           <div class="file-card">
             <div class="setting-heading"><span class="label">Portable game record</span><span class="setting-value">PGN</span></div>
             <p class="hint">Open a standard PGN for review or export the current main line for other chess software.</p>

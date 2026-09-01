@@ -71,11 +71,17 @@ The server binds to `127.0.0.1:8765` by default and opens the browser automatica
   board arrow; Escape returns to the reviewed main line.
 - Evaluation-graph points upgrade from fast static values to searched post-game values as analysis
   results arrive.
+- Crash recovery continuously stores the current game in local app/browser storage and records a
+  clean-exit marker. A normal quit does not prompt on relaunch; an interrupted session offers a
+  contextual **Resume game** card under Files.
+- The latest 12 completed or imported games are retained locally in a collapsed **Recent games**
+  section. Reopening one restores the game and jumps directly into the existing review workflow.
 - Keyboard shortcuts for board flip, undo, engine move, pause/resume, and clearing the current selection.
 - A shared original FunChessEngine mark is used for the in-app brand, Dock icon, and packaged macOS icon;
   icon binaries are generated from the SVG source during desktop builds rather than stored as build artifacts.
 - Desktop 0.3 added a native **Set Up Position…** command under the Game menu; 0.4 adds PGN/review,
-  and 0.4.1 adds isolated post-game analysis and Retry Move training.
+  0.4.1 adds isolated post-game analysis and Retry Move training, and 0.4.2 adds crash recovery and
+  the local Recent Games library.
 
 The browser server and UI use only the Python standard library plus `python-chess`, and all browser
 assets are local. Nothing loads from a CDN or external service. Electron is desktop packaging only and remains separate from the portable engine package.

@@ -408,6 +408,14 @@ input[type="range"] { height: 28px; padding: 0; border: 0; background: transpare
 .full { width: 100%; margin-top: 12px; }
 .inline-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; margin-top: 8px; }
 .time-card .label, .file-card .label { margin: 0; }
+.recent-games-card summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; color: var(--text); font-size: 11px; font-weight: 780; }
+.recent-games-card[open] summary { margin-bottom: 10px; }
+.recent-games-list { display: grid; gap: 6px; }
+.recent-game-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 8px; border-radius: 8px; background: var(--panel-2); }
+.recent-game-row strong { display: block; overflow: hidden; color: var(--text); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.recent-game-row span { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; }
+.recent-empty { margin: 0; padding: 5px 2px; }
+.recent-clear { margin-top: 9px; }
 .compact-row { margin-top: 10px !important; }
 .save-actions { margin-top: 8px !important; }
 .setup-card { margin-top: 14px; }
