@@ -14,4 +14,4 @@ backend from the project environment, and opens it inside a native window. A pro
 a standalone backend executable with PyInstaller, cleans stale desktop artifacts, and packages Electron
 as a native Apple Silicon macOS app/DMG.
 
-The renderer has no Node.js access. Native file dialogs and menu commands are exposed through the narrow `preload.js` IPC bridge. Version 0.3 adds the board setup editor, polished promotion flow, and a native **Set Up Position…** Game-menu action.
+The renderer has no Node.js access. Native file dialogs and menu commands are exposed through the narrow `preload.js` IPC bridge. Version 0.4 adds native PGN open/export dialogs plus the non-destructive review/evaluation-graph workflow on top of the 0.3 board setup and promotion work.

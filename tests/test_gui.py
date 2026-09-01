@@ -60,6 +60,58 @@ class GameSessionTests(unittest.TestCase):
         self.game.play_move("a7a8n")
         self.assertEqual(self.game.board.piece_at(chess.A8), chess.Piece(chess.KNIGHT, chess.WHITE))
 
+    def test_pgn_round_trip_and_review_are_non_destructive(self) -> None:
+        self.game.play_move("e2e4")
+        self.game.play_move("e7e5")
+        self.game.play_move("g1f3")
+        final_fen = self.game.board.fen()
+
+        exported = self.game.export_pgn()
+        self.assertIn("1. e4 e5 2. Nf3", exported)
+
+        review = self.game.review_state(1)
+        self.assertEqual(review["ply"], 1)
+        self.assertEqual(review["last_move"], "e2e4")
+        self.assertEqual(self.game.board.fen(), final_fen)
+
+        series = self.game.review_series()
+        self.assertEqual(series["total_plies"], 3)
+        self.assertEqual(len(series["evals"]), 4)
+        self.assertEqual(len(series["labels"]), 4)
+
+        restored = GameSession()
+        restored.load_pgn(exported)
+        self.assertEqual(restored.board.fen(), final_fen)
+        self.assertTrue(restored.paused)
+
+    def test_load_pgn_preserves_headers_and_result(self) -> None:
+        pgn = """[Event \"Review Test\"]
+[White \"Alpha\"]
+[Black \"Beta\"]
+[Result \"1-0\"]
+
+1. e4 e5 2. Nf3 Nc6 1-0
+"""
+        self.game.load_pgn(pgn)
+        state = self.game.state()
+        self.assertEqual(state["pgn_headers"]["Event"], "Review Test")
+        self.assertEqual(state["result"], "1-0")
+        self.assertEqual(state["termination"], "pgn_import")
+        self.assertEqual(state["moves_uci"], ["e2e4", "e7e5", "g1f3", "b8c6"])
+
+    def test_pgn_round_trip_preserves_custom_start_position(self) -> None:
+        fen = "8/8/8/8/8/4k3/8/4K2R w K - 0 1"
+        self.game.reset(fen, 30_000)
+        self.game.play_move("h1h3")
+        exported = self.game.export_pgn()
+        self.assertIn('[SetUp "1"]', exported)
+        self.assertIn(f'[FEN "{fen}"]', exported)
+
+        restored = GameSession()
+        restored.load_pgn(exported)
+        self.assertEqual(restored.initial_fen, fen)
+        self.assertEqual(restored.board.fen(), self.game.board.fen())
+
     def test_human_clock_consumes_time_and_applies_increment(self) -> None:
         self.game.reset(clock_ms=10_000, increment_ms=2_000)
         self.game.turn_started_ns -= 1_000_000_000

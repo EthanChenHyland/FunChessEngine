@@ -6,7 +6,7 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:">
   <title>FunChessEngine · Default Lab</title>
   <link rel="icon" href="/app-mark.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/style.css?v=7">
+  <link rel="stylesheet" href="/style.css?v=8">
 </head>
 <body>
   <main class="app-shell">
@@ -120,6 +120,16 @@
 
         <div id="positionTab" class="tab-panel">
           <div class="file-card">
+            <div class="setting-heading"><span class="label">Portable game record</span><span class="setting-value">PGN</span></div>
+            <p class="hint">Open a standard PGN for review or export the current main line for other chess software.</p>
+            <div class="row two save-actions">
+              <button id="openPgnBtn" class="secondary">Open PGN…</button>
+              <button id="exportPgnBtn" class="secondary">Export PGN…</button>
+            </div>
+            <input id="loadPgnInput" type="file" accept=".pgn,application/x-chess-pgn,text/plain" hidden>
+          </div>
+
+          <div class="file-card">
             <div class="setting-heading"><span class="label">Saved game</span><span class="setting-value">Portable PNG</span></div>
             <p class="hint">Save a board image that also contains the full game, clocks, and mode.</p>
             <div class="row two save-actions">
@@ -186,6 +196,21 @@
         </div>
 
         <div id="engineTab" class="tab-panel">
+          <div class="review-card">
+            <div class="setting-heading"><span class="label">Game review</span><span id="reviewPositionLabel" class="setting-value">Live position</span></div>
+            <p class="hint">Navigate the played main line without changing the live game. Clocks pause while reviewing; the graph uses the engine's fast static evaluation.</p>
+            <div class="review-nav">
+              <button id="reviewFirstBtn" class="secondary compact" title="First position">|◀</button>
+              <button id="reviewPrevBtn" class="secondary compact" title="Previous move">◀</button>
+              <button id="reviewNextBtn" class="secondary compact" title="Next move">▶</button>
+              <button id="reviewLastBtn" class="secondary compact" title="Last position">▶|</button>
+              <button id="reviewExitBtn" class="secondary compact" hidden>Return to game</button>
+            </div>
+            <canvas id="evalGraph" class="eval-graph" height="150" aria-label="Evaluation history graph"></canvas>
+            <div class="review-meta"><span id="reviewEval">—</span><span id="reviewFen">Select a move or graph point to review.</span></div>
+            <p class="shortcut-hint">Review: <kbd>←</kbd>/<kbd>→</kbd> move · <kbd>Home</kbd>/<kbd>End</kbd> ends · <kbd>Esc</kbd> return</p>
+          </div>
+
           <div class="metrics">
             <div><span>Depth</span><strong id="depth">—</strong></div>
             <div><span>Nodes</span><strong id="nodes">—</strong></div>
@@ -255,7 +280,7 @@
     <form method="dialog">
       <div class="dialog-head"><div><p class="eyebrow">GAME COMPLETE</p><h2 id="resultTitle">Game over</h2></div><button class="dialog-close" value="close" aria-label="Close">×</button></div>
       <p id="resultMessage" class="dialog-copy">Result</p>
-      <div class="dialog-actions"><button class="secondary" value="close">Review game</button><button id="rematchBtn" class="primary" value="rematch">Rematch</button></div>
+      <div class="dialog-actions"><button id="reviewGameBtn" class="secondary" value="close">Review game</button><button id="rematchBtn" class="primary" value="rematch">Rematch</button></div>
     </form>
   </dialog>
 
@@ -266,6 +291,6 @@
       <div class="dialog-actions"><button class="secondary" value="cancel">Cancel</button><button id="actionConfirmBtn" class="primary" value="confirm">Continue</button></div>
     </form>
   </dialog>
-  <script src="/app.js?v=7"></script>
+  <script src="/app.js?v=8"></script>
 </body>
 </html>

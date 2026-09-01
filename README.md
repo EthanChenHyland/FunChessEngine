@@ -21,9 +21,10 @@ package, so they are never included in `engine-package.zip`.
 
 The Engine Lab includes a responsive board, click-to-move or drag-and-drop play, human/engine,
 two-player and engine/engine modes, 17 built-in clock presets plus custom controls, pause/resume,
-resign/draw/rematch, captured-piece/material tracking, portable PNG saves, FEN loading, a full
-piece-by-piece setup editor, keyboard-friendly pawn promotion, search telemetry/PV, themes, accent
-colors, piece sizing, orientation preferences, and display toggles. Preferences are stored locally.
+resign/draw/rematch, captured-piece/material tracking, portable PNG saves, FEN and PGN import/export,
+a full piece-by-piece setup editor, keyboard-friendly pawn promotion, non-destructive move-by-move
+review, a clickable evaluation-history graph, search telemetry/PV, themes, accent colors, piece
+sizing, orientation preferences, and display toggles. Preferences are stored locally.
 
 ## Writing an agent
 

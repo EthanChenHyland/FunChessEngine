@@ -31,11 +31,16 @@ let setupMode = false;
 let setupBoard = {};
 let setupPiece = "";
 let setupWasPaused = false;
+let reviewMode = false;
+let reviewSnapshot = null;
+let reviewSeries = null;
+let reviewWasPaused = false;
 
 const $ = (id) => document.getElementById(id);
 
 function setState(value) {
   state = value;
+  if (reviewSeries && reviewSeries.total_plies !== (value.moves_uci?.length || 0)) reviewSeries = null;
   clockAnchorMs = performance.now();
   flagRefreshPending = false;
 }
@@ -112,10 +117,11 @@ function pieceName(symbol) {
 function renderBoard() {
   const board = $("board");
   board.innerHTML = "";
-  const boardMap = setupMode ? setupBoard : state?.board || {};
-  const targets = setupMode ? new Set() : legalTargets(selected);
-  const lastFrom = !setupMode && display.lastMove ? state?.last_move?.slice(0, 2) : null;
-  const lastTo = !setupMode && display.lastMove ? state?.last_move?.slice(2, 4) : null;
+  const view = reviewMode && reviewSnapshot ? reviewSnapshot : state;
+  const boardMap = setupMode ? setupBoard : view?.board || {};
+  const targets = setupMode || reviewMode ? new Set() : legalTargets(selected);
+  const lastFrom = !setupMode && display.lastMove ? view?.last_move?.slice(0, 2) : null;
+  const lastTo = !setupMode && display.lastMove ? view?.last_move?.slice(2, 4) : null;
 
   for (const square of squareOrder()) {
     const file = square.charCodeAt(0) - 97;
@@ -187,7 +193,7 @@ function renderBoard() {
 }
 
 function canHumanMovePiece(symbol) {
-  if (busy || !state || state.game_over || state.paused) return false;
+  if (reviewMode || busy || !state || state.game_over || state.paused) return false;
   const humanSide = $("humanSide").value;
   if (humanSide === "none" || (humanSide !== "both" && humanSide !== state.turn)) return false;
   return (state.turn === "white") === (symbol === symbol.toUpperCase());
@@ -366,6 +372,7 @@ function syncSetupFieldsFromFen(fen) {
 
 async function enterSetupMode() {
   if (setupMode || !state) return;
+  if (reviewMode) await exitReviewMode();
   setupWasPaused = Boolean(state.paused);
   if (!state.game_over && !state.paused) {
     const paused = await act(() => api("/api/pause", { paused: true }), "Game paused for position setup.");
@@ -469,6 +476,9 @@ function syncTimeControlsFromState() {
 
 async function restartStandardGame(successText = "New game started.") {
   if (setupMode) await leaveSetupMode(false);
+  reviewMode = false;
+  reviewSnapshot = null;
+  reviewSeries = null;
   const { baseMs, incrementMs } = selectedTimeControl();
   autoplay = $("humanSide").value === "none";
   selected = null;
@@ -523,6 +533,7 @@ function gameSnapshot() {
     paused: Boolean(state.paused),
     manual_result: state.manual_result || null,
     manual_termination: state.manual_termination || null,
+    pgn_headers: state.pgn_headers || {},
   };
 }
 
@@ -693,7 +704,7 @@ async function loadGamePng(file) {
 }
 
 async function clickSquare(square) {
-  if (busy || !state || state.game_over || state.paused) return;
+  if (reviewMode || busy || !state || state.game_over || state.paused) return;
   const humanSide = $("humanSide").value;
   if (humanSide === "none" || (humanSide !== "both" && humanSide !== state.turn)) return;
   const piece = state.board[square];
@@ -744,14 +755,15 @@ function updatePlayerRoles() {
 
 function renderCapturedMaterial() {
   if (!state) return;
+  const source = reviewMode && reviewSnapshot ? reviewSnapshot : state;
   const renderCaptured = (id, pieces) => {
     $(id).textContent = (Array.isArray(pieces) ? pieces : [])
       .map((symbol) => PIECES[symbol] || "")
       .join("");
   };
-  renderCaptured("whiteCaptured", state.captured_by_white);
-  renderCaptured("blackCaptured", state.captured_by_black);
-  const balance = Number(state.material_balance || 0);
+  renderCaptured("whiteCaptured", source.captured_by_white);
+  renderCaptured("blackCaptured", source.captured_by_black);
+  const balance = Number(source.material_balance || 0);
   $("whiteMaterial").textContent = balance > 0 ? `+${balance}` : "";
   $("blackMaterial").textContent = balance < 0 ? `+${Math.abs(balance)}` : "";
 }
@@ -802,22 +814,26 @@ function renderClocks() {
 
 function render() {
   if (!state) return;
+  const view = reviewMode && reviewSnapshot ? reviewSnapshot : state;
   renderBoard();
   renderClocks();
   $("whiteClock").classList.toggle("active", !state.game_over && !state.paused && state.turn === "white");
   $("blackClock").classList.toggle("active", !state.game_over && !state.paused && state.turn === "black");
   $("fenInput").value = state.fen;
-  const evalCp = display.evalPerspective === "turn" && state.turn === "black"
-    ? -state.eval_cp
-    : state.eval_cp;
+  const rawEval = Number(view.eval_cp || 0);
+  const evalCp = display.evalPerspective === "turn" && view.turn === "black"
+    ? -rawEval
+    : rawEval;
   const cp = evalCp / 100;
   $("evalLabel").textContent = display.evalPerspective === "turn"
-    ? `${capitalize(state.turn)} perspective`
+    ? `${capitalize(view.turn)} perspective`
     : "White perspective";
   $("evalText").textContent = `${cp >= 0 ? "+" : ""}${cp.toFixed(2)}`;
   const pct = Math.max(5, Math.min(95, 50 + 45 * Math.tanh(cp / 4)));
   $("evalBar").style.width = `${pct}%`;
-  $("turnPill").textContent = state.game_over ? (state.result || "Game over") : `${capitalize(state.turn)} to move`;
+  $("turnPill").textContent = reviewMode
+    ? `Review · ${reviewSnapshot?.ply ?? 0}/${reviewSnapshot?.total_plies ?? 0}`
+    : state.game_over ? (state.result || "Game over") : `${capitalize(state.turn)} to move`;
   $("searchTime").textContent = state.last_engine_ms ? `${state.last_engine_ms} ms` : "—";
   $("nodes").textContent = state.last_engine_nodes ? state.last_engine_nodes.toLocaleString() : "—";
   $("depth").textContent = state.last_engine_depth ?? "—";
@@ -834,9 +850,9 @@ function render() {
   $("pvLine").textContent = pv.length ? pv.join(" ") : "No completed search yet.";
   const researches = Number(state.last_engine_researches || 0);
   $("researches").textContent = String(researches);
-  $("engineBtn").disabled = setupMode || busy || state.game_over || state.paused;
-  $("undoBtn").disabled = setupMode || busy || state.pgn.length === 0;
-  $("pauseBtn").disabled = setupMode || busy || state.game_over;
+  $("engineBtn").disabled = reviewMode || setupMode || busy || state.game_over || state.paused;
+  $("undoBtn").disabled = reviewMode || setupMode || busy || state.pgn.length === 0;
+  $("pauseBtn").disabled = reviewMode || setupMode || busy || state.game_over;
   $("pauseBtn").textContent = state.paused ? "Resume clocks" : "Pause clocks";
   $("drawBtn").disabled = setupMode || busy || state.game_over;
   $("drawBtn").hidden = $("humanSide").value !== "both";
@@ -852,7 +868,10 @@ function render() {
   updatePlayerRoles();
   renderCapturedMaterial();
   renderMoves();
-  if (state.game_over) {
+  renderReviewPanel();
+  if (reviewMode) {
+    $("statusLine").textContent = `Reviewing ply ${reviewSnapshot?.ply ?? 0} of ${reviewSnapshot?.total_plies ?? 0}.`;
+  } else if (state.game_over) {
     $("statusLine").textContent = `Game over · ${state.result} · ${state.termination}`;
     maybeShowResult();
   }
@@ -877,14 +896,145 @@ function renderMoves() {
     number.className = "move-num";
     number.textContent = `${i / 2 + 1}.`;
     target.appendChild(number);
-    const white = document.createElement("div");
+    const white = document.createElement("button");
+    white.type = "button";
+    white.className = "move-link";
     white.textContent = state.pgn[i]?.san || "";
+    if (state.pgn[i]) {
+      const ply = i + 1;
+      white.dataset.ply = String(ply);
+      white.classList.toggle("review-current", reviewMode && reviewSnapshot?.ply === ply);
+      white.addEventListener("click", () => enterReviewMode(ply));
+    } else white.disabled = true;
     target.appendChild(white);
-    const black = document.createElement("div");
+    const black = document.createElement("button");
+    black.type = "button";
+    black.className = "move-link";
     black.textContent = state.pgn[i + 1]?.san || "";
+    if (state.pgn[i + 1]) {
+      const ply = i + 2;
+      black.dataset.ply = String(ply);
+      black.classList.toggle("review-current", reviewMode && reviewSnapshot?.ply === ply);
+      black.addEventListener("click", () => enterReviewMode(ply));
+    } else black.disabled = true;
     target.appendChild(black);
   }
   target.scrollTop = target.scrollHeight;
+}
+
+async function ensureReviewSeries() {
+  const total = state?.moves_uci?.length || 0;
+  if (reviewSeries?.total_plies === total) return reviewSeries;
+  reviewSeries = await api("/api/review-series", {});
+  return reviewSeries;
+}
+
+async function jumpReview(ply) {
+  if (!state) return;
+  reviewSnapshot = await api("/api/review", { ply });
+  reviewMode = true;
+  selected = null;
+  render();
+}
+
+async function enterReviewMode(ply = null) {
+  if (!state || setupMode || busy) return;
+  const target = ply === null ? state.moves_uci.length : ply;
+  if (!reviewMode) {
+    reviewWasPaused = Boolean(state.paused || state.game_over);
+    clearTimeout(autoplayTimer);
+    if (!state.game_over && !state.paused) {
+      const paused = await act(() => api("/api/pause", { paused: true }), "Game paused for review.");
+      if (!paused) return;
+    }
+  }
+  try {
+    await ensureReviewSeries();
+    await jumpReview(target);
+  } catch (error) {
+    $("statusLine").textContent = error.message;
+  }
+}
+
+async function exitReviewMode() {
+  if (!reviewMode) return;
+  reviewMode = false;
+  reviewSnapshot = null;
+  selected = null;
+  render();
+  if (!reviewWasPaused && state && !state.game_over && state.paused) {
+    const resumed = await act(() => api("/api/pause", { paused: false }), "Returned to live game.");
+    if (resumed) scheduleComputerReply();
+  }
+}
+
+function renderReviewPanel() {
+  const total = state?.moves_uci?.length || 0;
+  const ply = reviewMode ? Number(reviewSnapshot?.ply || 0) : total;
+  $("reviewPositionLabel").textContent = reviewMode ? `Ply ${ply} / ${total}` : `${total} plies`;
+  $("reviewExitBtn").hidden = !reviewMode;
+  $("reviewFirstBtn").disabled = busy || total === 0 || ply <= 0;
+  $("reviewPrevBtn").disabled = busy || total === 0 || ply <= 0;
+  $("reviewNextBtn").disabled = busy || total === 0 || ply >= total;
+  $("reviewLastBtn").disabled = busy || total === 0 || ply >= total;
+  if (reviewMode && reviewSnapshot) {
+    const cp = Number(reviewSnapshot.eval_cp || 0) / 100;
+    $("reviewEval").textContent = `${cp >= 0 ? "+" : ""}${cp.toFixed(2)}`;
+    $("reviewFen").textContent = reviewSnapshot.fen;
+  } else {
+    $("reviewEval").textContent = "—";
+    $("reviewFen").textContent = "Select a move or graph point to review.";
+  }
+  renderEvalGraph();
+}
+
+function renderEvalGraph() {
+  const canvas = $("evalGraph");
+  if (!canvas) return;
+  const widthCss = Math.max(220, canvas.clientWidth || 320);
+  const heightCss = 150;
+  const scale = Math.max(1, window.devicePixelRatio || 1);
+  canvas.width = Math.round(widthCss * scale);
+  canvas.height = Math.round(heightCss * scale);
+  const context = canvas.getContext("2d");
+  if (!context) return;
+  context.scale(scale, scale);
+  context.clearRect(0, 0, widthCss, heightCss);
+  const styles = getComputedStyle(document.documentElement);
+  const line = styles.getPropertyValue("--line").trim() || "#303730";
+  const accent = styles.getPropertyValue("--accent").trim() || "#b7f268";
+  const muted = styles.getPropertyValue("--muted").trim() || "#9da69c";
+  context.strokeStyle = line;
+  context.lineWidth = 1;
+  context.beginPath();
+  context.moveTo(0, heightCss / 2);
+  context.lineTo(widthCss, heightCss / 2);
+  context.stroke();
+
+  const values = Array.isArray(reviewSeries?.evals) ? reviewSeries.evals : [];
+  if (values.length < 2) {
+    context.fillStyle = muted;
+    context.font = "11px system-ui";
+    context.fillText("Evaluation history appears after moves are played or a PGN is opened.", 10, 22);
+    return;
+  }
+  const xFor = (index) => index * (widthCss - 12) / Math.max(1, values.length - 1) + 6;
+  const yFor = (cp) => heightCss / 2 - Math.tanh(Number(cp) / 500) * (heightCss / 2 - 10);
+  context.strokeStyle = accent;
+  context.lineWidth = 2;
+  context.beginPath();
+  values.forEach((cp, index) => {
+    const x = xFor(index);
+    const y = yFor(cp);
+    if (index === 0) context.moveTo(x, y);
+    else context.lineTo(x, y);
+  });
+  context.stroke();
+  const active = reviewMode ? Number(reviewSnapshot?.ply || 0) : values.length - 1;
+  context.fillStyle = accent;
+  context.beginPath();
+  context.arc(xFor(active), yFor(values[active]), 4, 0, Math.PI * 2);
+  context.fill();
 }
 
 function clock(ms) {
@@ -972,6 +1122,58 @@ async function downloadFen() {
     await downloadBlob(new Blob([`${fen}\n`], { type: "text/plain;charset=utf-8" }), "funchess-position.fen");
   }
   $("statusLine").textContent = "FEN downloaded.";
+}
+
+async function exportPgn() {
+  try {
+    const result = await api("/api/export-pgn", {});
+    const pgn = String(result.pgn || "");
+    if (!pgn.trim()) throw new Error("The current game could not be exported as PGN.");
+    const desktop = desktopApi();
+    if (desktop?.savePgn) {
+      const saved = await desktop.savePgn("funchess-game.pgn", pgn);
+      if (!saved) return;
+    } else {
+      await downloadBlob(new Blob([`${pgn.trim()}\n`], { type: "application/x-chess-pgn;charset=utf-8" }), "funchess-game.pgn");
+    }
+    $("statusLine").textContent = "PGN exported.";
+  } catch (error) {
+    $("statusLine").textContent = error.message;
+  }
+}
+
+async function loadPgnText(pgn) {
+  if (!String(pgn || "").trim()) return false;
+  const confirmed = await confirmRestartIfNeeded(
+    "Opening a PGN replaces the current game. Save the current game first if you want to keep it.",
+  );
+  if (!confirmed) return false;
+  if (setupMode) await leaveSetupMode(false);
+  if (reviewMode) {
+    reviewMode = false;
+    reviewSnapshot = null;
+  }
+  autoplay = false;
+  clearTimeout(autoplayTimer);
+  selected = null;
+  const succeeded = await act(() => api("/api/load-pgn", { pgn }), "PGN opened for review.");
+  if (!succeeded) return false;
+  syncTimeControlsFromState();
+  reviewSeries = null;
+  reviewWasPaused = true;
+  document.querySelector('[data-tab="engine"]')?.click();
+  await enterReviewMode(state.moves_uci.length);
+  return true;
+}
+
+async function openPgnFile() {
+  const desktop = desktopApi();
+  if (!desktop?.openPgn) {
+    $("loadPgnInput").click();
+    return;
+  }
+  const pgn = await desktop.openPgn();
+  if (pgn) await loadPgnText(pgn);
 }
 
 async function openFenFile() {
@@ -1074,6 +1276,11 @@ document.querySelectorAll(".tab").forEach((button) => {
     document.querySelectorAll(".tab-panel").forEach((panel) => panel.classList.remove("active"));
     button.classList.add("active");
     $(`${button.dataset.tab}Tab`).classList.add("active");
+    if (button.dataset.tab === "engine" && state?.moves_uci?.length) {
+      ensureReviewSeries().then(renderReviewPanel).catch((error) => {
+        $("statusLine").textContent = error.message;
+      });
+    }
   });
 });
 
@@ -1089,6 +1296,18 @@ $("undoBtn").addEventListener("click", async () => {
 $("engineBtn").addEventListener("click", engineMove);
 $("copyFenBtn").addEventListener("click", copyFen);
 $("downloadFenBtn").addEventListener("click", downloadFen);
+$("openPgnBtn").addEventListener("click", openPgnFile);
+$("exportPgnBtn").addEventListener("click", exportPgn);
+$("loadPgnInput").addEventListener("change", async (event) => {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (!file) return;
+  try {
+    await loadPgnText(await file.text());
+  } catch (error) {
+    $("statusLine").textContent = error.message;
+  }
+});
 $("savePngBtn").addEventListener("click", saveGamePng);
 $("loadPngBtn").addEventListener("click", openPngFile);
 $("loadPngInput").addEventListener("change", async (event) => {
@@ -1139,6 +1358,25 @@ $("drawBtn").addEventListener("click", agreeDraw);
 $("resignBtn").addEventListener("click", resignGame);
 $("rematchBtn").addEventListener("click", () => {
   setTimeout(() => restartStandardGame("Rematch started."), 0);
+});
+$("reviewGameBtn").addEventListener("click", () => {
+  setTimeout(() => {
+    document.querySelector('[data-tab="engine"]')?.click();
+    enterReviewMode(state?.moves_uci?.length || 0);
+  }, 0);
+});
+
+$("reviewFirstBtn").addEventListener("click", () => enterReviewMode(0));
+$("reviewPrevBtn").addEventListener("click", () => enterReviewMode(Math.max(0, Number(reviewSnapshot?.ply ?? state?.moves_uci?.length ?? 0) - 1)));
+$("reviewNextBtn").addEventListener("click", () => enterReviewMode(Math.min(state?.moves_uci?.length || 0, Number(reviewSnapshot?.ply ?? 0) + 1)));
+$("reviewLastBtn").addEventListener("click", () => enterReviewMode(state?.moves_uci?.length || 0));
+$("reviewExitBtn").addEventListener("click", exitReviewMode);
+$("evalGraph").addEventListener("click", (event) => {
+  const total = state?.moves_uci?.length || 0;
+  if (!total) return;
+  const rect = $("evalGraph").getBoundingClientRect();
+  const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width)));
+  enterReviewMode(Math.round(ratio * total));
 });
 
 $("humanSide").addEventListener("change", async () => {
@@ -1226,6 +1464,28 @@ document.addEventListener("keydown", (event) => {
     }
     return;
   }
+  if (reviewMode) {
+    if (key === "escape") {
+      event.preventDefault();
+      exitReviewMode();
+    } else if (key === "arrowleft") {
+      event.preventDefault();
+      enterReviewMode(Math.max(0, Number(reviewSnapshot?.ply || 0) - 1));
+    } else if (key === "arrowright") {
+      event.preventDefault();
+      enterReviewMode(Math.min(state?.moves_uci?.length || 0, Number(reviewSnapshot?.ply || 0) + 1));
+    } else if (key === "home") {
+      event.preventDefault();
+      enterReviewMode(0);
+    } else if (key === "end") {
+      event.preventDefault();
+      enterReviewMode(state?.moves_uci?.length || 0);
+    } else if (key === "f") {
+      flipped = !flipped;
+      renderBoard();
+    }
+    return;
+  }
   if (key === "escape") {
     selected = null;
     if (state) renderBoard();
@@ -1255,8 +1515,10 @@ if (desktop) {
       enterSetupMode();
     }
     else if (command === "open-fen") openFenFile();
+    else if (command === "open-pgn") openPgnFile();
     else if (command === "open-png") openPngFile();
     else if (command === "save-fen") downloadFen();
+    else if (command === "save-pgn") exportPgn();
     else if (command === "save-png") saveGamePng();
     else if (command === "undo") $("undoBtn").click();
     else if (command === "flip") $("flipBtn").click();

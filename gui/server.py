@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import io
 import json
 import sys
 import threading
@@ -24,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 import chess
+import chess.pgn
 
 import agent
 
@@ -57,6 +59,7 @@ class GameSession:
         self.paused = False
         self.manual_result: str | None = None
         self.manual_termination: str | None = None
+        self.pgn_headers: dict[str, str] = {}
         self.turn_started_ns = time.monotonic_ns()
 
     def reset(
@@ -90,6 +93,7 @@ class GameSession:
             self.paused = False
             self.manual_result = None
             self.manual_termination = None
+            self.pgn_headers = {}
             self.turn_started_ns = time.monotonic_ns()
 
     def _current_clocks(self, now_ns: int | None = None) -> tuple[int, int]:
@@ -227,7 +231,144 @@ class GameSession:
             self.manual_termination = (
                 str(manual_termination) if self.manual_result is not None else None
             )
+            headers_raw = payload.get("pgn_headers", {})
+            self.pgn_headers = (
+                {
+                    str(key): str(value)
+                    for key, value in headers_raw.items()
+                    if isinstance(key, str) and isinstance(value, str)
+                }
+                if isinstance(headers_raw, dict)
+                else {}
+            )
             self.turn_started_ns = time.monotonic_ns()
+
+    @staticmethod
+    def _white_eval(board: chess.Board) -> int:
+        score = agent.evaluate(board)
+        return score if board.turn == chess.WHITE else -score
+
+    def load_pgn(self, text: str) -> None:
+        """Load the main line of one PGN as a paused/reviewable game."""
+
+        if not text.strip():
+            raise ValueError("PGN file is empty.")
+        if len(text.encode("utf-8")) > 2 * 1024 * 1024:
+            raise ValueError("PGN file is too large for the local review workspace.")
+
+        try:
+            game = chess.pgn.read_game(io.StringIO(text))
+        except (ValueError, UnicodeError) as exc:
+            raise ValueError("Could not parse this PGN.") from exc
+        if game is None:
+            raise ValueError("No chess game was found in this PGN.")
+
+        board = game.board()
+        if not board.is_valid():
+            raise ValueError("PGN starts from an invalid chess position.")
+        initial_fen = board.fen()
+        moves: list[chess.Move] = []
+        for move in game.mainline_moves():
+            if move not in board.legal_moves:
+                raise ValueError(f"PGN contains illegal move {move.uci()}.")
+            board.push(move)
+            moves.append(move)
+            if len(moves) > 1_000:
+                raise ValueError("PGN contains too many moves for the local review workspace.")
+
+        headers = {
+            str(key): str(value)
+            for key, value in game.headers.items()
+            if str(value) not in {"?", ""}
+        }
+        result = headers.get("Result")
+        with self.lock:
+            agent.reset_game_state()
+            self.board = board
+            self.initial_fen = initial_fen
+            self.white_ms = self.base_clock_ms
+            self.black_ms = self.base_clock_ms
+            self.last_move = moves[-1] if moves else None
+            self.last_engine_ms = 0
+            self.last_engine_nodes = 0
+            self.last_engine_depth = None
+            self.last_engine_score = None
+            self.last_engine_pv = ()
+            self.last_engine_researches = 0
+            self.history = [(self.base_clock_ms, self.base_clock_ms) for _ in moves]
+            self.paused = True
+            self.manual_result = result if result in {"1-0", "0-1", "1/2-1/2"} else None
+            self.manual_termination = (
+                headers.get("Termination", "pgn_import") if self.manual_result is not None else None
+            )
+            self.pgn_headers = headers
+            self.turn_started_ns = time.monotonic_ns()
+
+    def export_pgn(self) -> str:
+        """Return the current main line as a standards-compatible PGN string."""
+
+        with self.lock:
+            game = chess.pgn.Game()
+            for key, value in self.pgn_headers.items():
+                game.headers[key] = value
+            if self.initial_fen != chess.STARTING_FEN:
+                game.setup(chess.Board(self.initial_fen))
+
+            node: chess.pgn.GameNode = game
+            replay = chess.Board(self.initial_fen)
+            for move in self.board.move_stack:
+                if move not in replay.legal_moves:
+                    raise RuntimeError("Current game history cannot be exported as legal PGN.")
+                node = node.add_variation(move)
+                replay.push(move)
+
+            state = self.state()
+            result = state["result"] or "*"
+            game.headers["Result"] = str(result)
+            if state["termination"]:
+                game.headers["Termination"] = str(state["termination"]).replace("_", " ")
+            return str(game)
+
+    def review_state(self, ply: int) -> dict[str, Any]:
+        """Return a board snapshot at a main-line ply without mutating the live game."""
+
+        with self.lock:
+            total = len(self.board.move_stack)
+            target = max(0, min(int(ply), total))
+            replay = chess.Board(self.initial_fen)
+            moves = list(self.board.move_stack)
+            for move in moves[:target]:
+                replay.push(move)
+            last_move = moves[target - 1].uci() if target else None
+            captured_by_white, captured_by_black = self._captures(replay)
+            return {
+                "ply": target,
+                "total_plies": total,
+                "fen": replay.fen(),
+                "turn": "white" if replay.turn == chess.WHITE else "black",
+                "board": self._board_payload(replay),
+                "last_move": last_move,
+                "eval_cp": self._white_eval(replay),
+                "check": replay.is_check(),
+                "captured_by_white": captured_by_white,
+                "captured_by_black": captured_by_black,
+                "material_balance": self._material_balance(replay),
+            }
+
+    def review_series(self) -> dict[str, Any]:
+        """Return static white-perspective evaluations for each main-line ply."""
+
+        with self.lock:
+            replay = chess.Board(self.initial_fen)
+            values = [self._white_eval(replay)]
+            labels = ["Start"]
+            for index, move in enumerate(self.board.move_stack, start=1):
+                san = replay.san(move)
+                replay.push(move)
+                values.append(self._white_eval(replay))
+                move_number = (index + 1) // 2
+                labels.append(f"{move_number}.{'..' if index % 2 == 0 else ''}{san}")
+            return {"evals": values, "labels": labels, "total_plies": len(self.board.move_stack)}
 
     def state(self) -> dict[str, Any]:
         with self.lock:
@@ -237,9 +378,7 @@ class GameSession:
             flagged = self._clock_flag(white_ms, black_ms)
             captured_by_white, captured_by_black = self._captures(board)
             legal_moves = [move.uci() for move in board.legal_moves]
-            eval_cp = agent.evaluate(board)
-            if board.turn == chess.BLACK:
-                eval_cp = -eval_cp
+            eval_cp = self._white_eval(board)
             return {
                 "fen": board.fen(),
                 "turn": "white" if board.turn == chess.WHITE else "black",
@@ -284,6 +423,7 @@ class GameSession:
                 "paused": self.paused,
                 "manual_result": self.manual_result,
                 "manual_termination": self.manual_termination,
+                "pgn_headers": self.pgn_headers,
                 "captured_by_white": captured_by_white,
                 "captured_by_black": captured_by_black,
                 "material_balance": self._material_balance(board),
@@ -469,6 +609,17 @@ class Handler(SimpleHTTPRequestHandler):
                 )
             elif self.path == "/api/load-game":
                 SESSION.load_snapshot(payload)
+            elif self.path == "/api/load-pgn":
+                SESSION.load_pgn(str(payload.get("pgn", "")))
+            elif self.path == "/api/export-pgn":
+                self._json({"pgn": SESSION.export_pgn()})
+                return
+            elif self.path == "/api/review":
+                self._json(SESSION.review_state(int(payload.get("ply", 0))))
+                return
+            elif self.path == "/api/review-series":
+                self._json(SESSION.review_series())
+                return
             elif self.path == "/api/undo":
                 SESSION.undo()
             elif self.path == "/api/pause":

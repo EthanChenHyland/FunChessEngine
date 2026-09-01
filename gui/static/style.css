@@ -461,6 +461,43 @@ input[type="range"] { height: 28px; padding: 0; border: 0; background: transpare
 .pv-card { margin-bottom: 18px; padding: 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-3); }
 .pv-card .label { margin: 0; }
 .pv-card code { display: block; margin-top: 9px; color: var(--text); font: 11px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: normal; overflow-wrap: anywhere; }
+
+.review-card {
+  margin-bottom: 14px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-3);
+}
+.review-card .label { margin: 0; }
+.review-nav { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin: 10px 0; }
+.review-nav #reviewExitBtn { grid-column: 1 / -1; }
+.eval-graph {
+  width: 100%;
+  height: 150px;
+  display: block;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0b0e0c;
+  cursor: crosshair;
+}
+.review-meta { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: baseline; margin-top: 9px; }
+.review-meta span:first-child { color: var(--accent); font: 750 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.review-meta span:last-child { overflow: hidden; color: var(--muted); font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+
+.move-link {
+  width: 100%;
+  min-height: 31px;
+  padding: 7px 6px;
+  border: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, .04);
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+  font: inherit;
+}
+.move-link:hover { background: rgba(255, 255, 255, .035); }
+.move-link.review-current { color: var(--accent); background: var(--accent-dark); }
 .hint { margin: 7px 0 12px; color: var(--muted); font-size: 11px; line-height: 1.5; }
 
 .advanced-details { margin-top: 14px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-3); overflow: hidden; }

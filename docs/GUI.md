@@ -54,6 +54,12 @@ The server binds to `127.0.0.1:8765` by default and opens the browser automatica
 - Last engine search time, searched node count, NPS, completed iterative-deepening depth, search score,
   aspiration re-search count, and principal variation. Low-level controls live under Advanced diagnostics.
 - Optional development search cap while retaining the production time manager by default.
+- Standard PGN import/export in both browser and Electron builds.
+- Non-destructive game review: first/previous/next/last navigation and clickable move history.
+- Clickable static evaluation-history graph; selecting a point jumps to that ply without
+  replacing the live game.
+- Review mode freezes clocks and can return to the underlying live game.
+- Imported PGNs preserve common headers and open directly into a paused review workflow.
 - Keyboard shortcuts for board flip, undo, engine move, pause/resume, and clearing the current selection.
 - A shared original FunChessEngine mark is used for the in-app brand, Dock icon, and packaged macOS icon;
   icon binaries are generated from the SVG source during desktop builds rather than stored as build artifacts.

@@ -159,9 +159,11 @@ function installMenu() {
         { label: "Set Up Position…", accelerator: "CmdOrCtrl+Shift+P", click: () => sendCommand("setup-position") },
         { type: "separator" },
         { label: "Open FEN…", accelerator: "CmdOrCtrl+O", click: () => sendCommand("open-fen") },
+        { label: "Open PGN…", accelerator: "CmdOrCtrl+Alt+O", click: () => sendCommand("open-pgn") },
         { label: "Open Saved Game PNG…", accelerator: "CmdOrCtrl+Shift+O", click: () => sendCommand("open-png") },
         { type: "separator" },
         { label: "Save Game PNG…", accelerator: "CmdOrCtrl+S", click: () => sendCommand("save-png") },
+        { label: "Export PGN…", accelerator: "CmdOrCtrl+Alt+S", click: () => sendCommand("save-pgn") },
         { label: "Export FEN…", accelerator: "CmdOrCtrl+Shift+S", click: () => sendCommand("save-fen") },
         { type: "separator" },
         { label: "Pause / Resume", accelerator: "Space", click: () => sendCommand("pause") },
@@ -210,6 +212,16 @@ function registerFileHandlers() {
     return fs.readFileSync(result.filePaths[0], "utf8");
   });
 
+  ipcMain.handle("file:open-pgn", async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: "Open PGN Game",
+      properties: ["openFile"],
+      filters: [{ name: "Portable Game Notation", extensions: ["pgn"] }],
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+    return fs.readFileSync(result.filePaths[0], "utf8");
+  });
+
   ipcMain.handle("file:open-png", async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
       title: "Open FunChessEngine Saved Game",
@@ -227,6 +239,18 @@ function registerFileHandlers() {
       title: "Export FEN",
       defaultPath: payload.filename || "funchess-position.fen",
       filters: [{ name: "FEN position", extensions: ["fen"] }],
+    });
+    if (result.canceled || !result.filePath) return false;
+    fs.writeFileSync(result.filePath, payload.text, "utf8");
+    return true;
+  });
+
+  ipcMain.handle("file:save-pgn", async (_event, payload) => {
+    if (!payload || typeof payload.text !== "string") return false;
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: "Export PGN Game",
+      defaultPath: payload.filename || "funchess-game.pgn",
+      filters: [{ name: "Portable Game Notation", extensions: ["pgn"] }],
     });
     if (result.canceled || !result.filePath) return false;
     fs.writeFileSync(result.filePath, payload.text, "utf8");
