@@ -67,15 +67,14 @@ class FrontendTransitionContractTests(unittest.TestCase):
     def test_appearance_settings_are_backward_compatible_and_independent(self) -> None:
         self.assertIn('appearance: "dark"', self.source)
         self.assertIn('pieceTheme: "classic"', self.source)
-        self.assertIn('logoColor: "coral"', self.source)
         self.assertIn("const merged = { ...DISPLAY_DEFAULTS,", self.source)
+        self.assertIn("delete merged.logoColor", self.source)
         self.assertIn("return merged;", self.source)
         self.assertIn('root.dataset.appearance = display.appearance', self.source)
         self.assertIn('root.dataset.pieceTheme = display.pieceTheme', self.source)
-        self.assertIn('root.dataset.logoColor = display.logoColor', self.source)
 
-    def test_light_mode_piece_themes_and_logo_controls_exist(self) -> None:
-        for control in ("appearanceSelect", "pieceThemeSelect", "logoColorSelect"):
+    def test_light_mode_and_piece_theme_controls_exist(self) -> None:
+        for control in ("appearanceSelect", "pieceThemeSelect"):
             self.assertIn(f'id="{control}"', self.html)
         for theme in ("classic", "clean", "bold", "soft", "outline", "tournament"):
             self.assertIn(f'value="{theme}"', self.html)
@@ -88,17 +87,11 @@ class FrontendTransitionContractTests(unittest.TestCase):
         self.assertIn('background: var(--logo-color)', self.css)
         self.assertIn('mask: url("/app-mark.svg")', self.css)
 
-    def test_logo_palette_is_distinct_from_accent_palette(self) -> None:
-        logo_match = re.search(r'<select id="logoColorSelect">(.*?)</select>', self.html)
-        accent_match = re.search(r'<select id="accentSelect">(.*?)</select>', self.html)
-        self.assertIsNotNone(logo_match)
-        self.assertIsNotNone(accent_match)
-        logo_values = set(re.findall(r'value="([^"]+)"', logo_match.group(1) if logo_match else ""))
-        accent_values = set(
-            re.findall(r'value="([^"]+)"', accent_match.group(1) if accent_match else "")
-        )
-        self.assertEqual(logo_values, {"coral", "rose", "cobalt", "silver", "graphite"})
-        self.assertTrue(logo_values.isdisjoint(accent_values))
+    def test_logo_is_fixed_and_not_user_configurable(self) -> None:
+        self.assertNotIn('id="logoColorSelect"', self.html)
+        self.assertNotIn("data-logo-color", self.css)
+        self.assertIn("--logo-color: #e85d4a", self.css)
+        self.assertNotIn("root.dataset.logoColor", self.source)
 
 
 if __name__ == "__main__":

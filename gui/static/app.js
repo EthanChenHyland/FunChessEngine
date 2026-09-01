@@ -17,7 +17,6 @@ const DISPLAY_DEFAULTS = {
   accent: "lime",
   appearance: "dark",
   pieceTheme: "classic",
-  logoColor: "coral",
   pieceScale: 78,
   coords: true,
   targets: true,
@@ -558,12 +557,12 @@ function loadDisplaySettings() {
   try {
     const saved = JSON.parse(localStorage.getItem(DISPLAY_KEY) || "null");
     const merged = { ...DISPLAY_DEFAULTS, ...(saved && typeof saved === "object" ? saved : {}) };
+    // Logo color used to be configurable. Keep the mark intentionally fixed
+    // and independent from appearance/accent settings, including old profiles.
+    delete merged.logoColor;
     if (!["dark", "light"].includes(merged.appearance)) merged.appearance = DISPLAY_DEFAULTS.appearance;
     if (!["classic", "clean", "bold", "soft", "outline", "tournament"].includes(merged.pieceTheme)) {
       merged.pieceTheme = DISPLAY_DEFAULTS.pieceTheme;
-    }
-    if (!["coral", "rose", "cobalt", "silver", "graphite"].includes(merged.logoColor)) {
-      merged.logoColor = DISPLAY_DEFAULTS.logoColor;
     }
     return merged;
   } catch (_) {
@@ -585,14 +584,12 @@ function applyDisplaySettings(renderAfter = true) {
   root.dataset.accent = display.accent;
   root.dataset.appearance = display.appearance;
   root.dataset.pieceTheme = display.pieceTheme;
-  root.dataset.logoColor = display.logoColor;
   root.style.setProperty("--piece-size", `${display.pieceScale / 8}cqw`);
 
   $("themeSelect").value = display.theme;
   $("accentSelect").value = display.accent;
   $("appearanceSelect").value = display.appearance;
   $("pieceThemeSelect").value = display.pieceTheme;
-  $("logoColorSelect").value = display.logoColor;
   $("evalPerspectiveSelect").value = display.evalPerspective;
   $("pieceSizeInput").value = String(display.pieceScale);
   $("pieceSizeValue").textContent = `${display.pieceScale}%`;
@@ -3486,7 +3483,6 @@ $("themeSelect").addEventListener("change", (event) => updateDisplay({ theme: ev
 $("accentSelect").addEventListener("change", (event) => updateDisplay({ accent: event.target.value }));
 $("appearanceSelect").addEventListener("change", (event) => updateDisplay({ appearance: event.target.value }));
 $("pieceThemeSelect").addEventListener("change", (event) => updateDisplay({ pieceTheme: event.target.value }));
-$("logoColorSelect").addEventListener("change", (event) => updateDisplay({ logoColor: event.target.value }));
 $("evalPerspectiveSelect").addEventListener("change", (event) => updateDisplay({ evalPerspective: event.target.value }));
 $("pieceSizeInput").addEventListener("input", (event) => updateDisplay({ pieceScale: Number(event.target.value) }));
 $("coordsToggle").addEventListener("change", (event) => updateDisplay({ coords: event.target.checked }));

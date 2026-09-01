@@ -17,7 +17,7 @@
   --coord-on-dark: rgba(235, 240, 226, .7);
   --board-max: 720px;
   --piece-size: 9.75cqw;
-  --logo-color: #ff7a6f;
+  --logo-color: #e85d4a;
   --piece-font: "Arial Unicode MS", "Apple Symbols", "Symbol", serif;
   --piece-weight: 400;
   --piece-shadow: drop-shadow(0 2px 1px rgba(0, 0, 0, .22));
@@ -70,12 +70,6 @@
   --accent-dark: #382b13;
   --select: #f4cf73;
 }
-
-:root[data-logo-color="coral"] { --logo-color: #ff7a6f; }
-:root[data-logo-color="rose"] { --logo-color: #f08cab; }
-:root[data-logo-color="cobalt"] { --logo-color: #527dff; }
-:root[data-logo-color="silver"] { --logo-color: #b8c0c8; }
-:root[data-logo-color="graphite"] { --logo-color: #747d76; }
 
 :root[data-piece-theme="clean"] {
   --piece-font: "Apple Symbols", "Arial Unicode MS", "Symbol", serif;
