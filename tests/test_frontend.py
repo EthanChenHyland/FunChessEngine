@@ -17,6 +17,7 @@ DESKTOP_VERIFY_BUILD = (
     Path(__file__).resolve().parents[1] / "desktop" / "scripts" / "verify-build.js"
 )
 DESKTOP_NOTARIZE = Path(__file__).resolve().parents[1] / "desktop" / "scripts" / "notarize.js"
+CI_WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml"
 
 
 class FrontendTransitionContractTests(unittest.TestCase):
@@ -33,6 +34,7 @@ class FrontendTransitionContractTests(unittest.TestCase):
         cls.desktop_ui_smoke = DESKTOP_UI_SMOKE.read_text(encoding="utf-8")
         cls.desktop_verify_build = DESKTOP_VERIFY_BUILD.read_text(encoding="utf-8")
         cls.desktop_notarize = DESKTOP_NOTARIZE.read_text(encoding="utf-8")
+        cls.ci = CI_WORKFLOW.read_text(encoding="utf-8")
 
     def assert_function_contains(self, name: str, text: str, span: int = 6_000) -> None:
         match = re.search(rf"(?:async\s+)?function\s+{re.escape(name)}\b", self.source)
@@ -171,7 +173,7 @@ class FrontendTransitionContractTests(unittest.TestCase):
         self.assert_function_contains("jumpAnalysisError", "analysisErrorPlies")
         self.assert_function_contains("scheduleAutoPositionAnalysis", "analysisAutoToggle")
         self.assert_function_contains("runMultiPv", "positionAnalysisQuality")
-        self.assertIn('.workspace[data-active-tab="engine"]', self.css)
+        self.assertNotIn('.workspace[data-active-tab="engine"]', self.css)
 
     def test_launcher_blocks_hidden_board_shortcuts_and_routes_desktop_commands(self) -> None:
         self.assertIn("if (launcherVisible()) return;", self.source)
@@ -254,6 +256,12 @@ class FrontendTransitionContractTests(unittest.TestCase):
         self.assert_function_contains("extractPngSnapshot", 'type === "tEXt"')
         self.assert_function_contains("extractPngSnapshot", 'type === "iTXt"')
         self.assert_function_contains("saveGamePng", 'setStatus("Save canceled.")')
+
+    def test_linux_ci_configures_electron_suid_sandbox(self) -> None:
+        self.assertIn("chrome-sandbox", self.ci)
+        self.assertIn("sudo chown root:root", self.ci)
+        self.assertIn("sudo chmod 4755", self.ci)
+        self.assertNotIn("--no-sandbox", self.ci)
 
     def test_desktop_release_has_behavioral_and_packaged_smokes(self) -> None:
         self.assertIn('"smoke:ui": "electron scripts/ui-smoke.js"', self.desktop_package)

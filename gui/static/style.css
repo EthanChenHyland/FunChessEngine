@@ -183,18 +183,11 @@ button { cursor: pointer; }
 }
 
 .topbar {
-  position: sticky;
-  top: 0;
-  z-index: 100;
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 20px;
   margin-bottom: 18px;
-  background: color-mix(in srgb, var(--bg) 92%, transparent);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  box-shadow: 0 10px 24px color-mix(in srgb, var(--bg) 46%, transparent);
 }
 .brand-lockup { min-width: 0; }
 .brand-title-row { display: flex; align-items: center; gap: 12px; min-width: 0; }
@@ -352,11 +345,10 @@ h2 { margin: 0; font-size: 19px; letter-spacing: -.025em; }
 
 .workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(330px, 390px);
+  grid-template-columns: minmax(0, 1fr) minmax(430px, 510px);
   gap: clamp(18px, 2.4vw, 32px);
   align-items: start;
 }
-.workspace[data-active-tab="engine"] { grid-template-columns: minmax(0, 1fr) minmax(430px, 510px); }
 
 .board-column {
   min-width: 0;
@@ -1015,12 +1007,12 @@ kbd { padding: 2px 5px; border: 1px solid var(--line-strong); border-bottom-widt
 .drop-overlay span { margin-top: 6px; color: var(--muted); font-size: 11px; }
 
 @media (max-width: 980px) {
-  .workspace, .workspace[data-active-tab="engine"] { grid-template-columns: minmax(0, 1fr) 330px; gap: 18px; }
+  .workspace { grid-template-columns: minmax(0, 1fr) 330px; gap: 18px; }
 }
 
 @media (max-width: 860px) {
   .app-shell { width: min(100% - 28px, 760px); }
-  .workspace, .workspace[data-active-tab="engine"] { grid-template-columns: 1fr; }
+  .workspace { grid-template-columns: 1fr; }
   .board-stage { width: min(100%, var(--board-max)); }
   .side-panel { position: static; max-height: none; overflow: visible; }
   .tabs { position: static; }
@@ -1063,7 +1055,6 @@ kbd { padding: 2px 5px; border: 1px solid var(--line-strong); border-bottom-widt
 }
 
 html[data-desktop="true"] .app-shell { padding-top: 28px; }
-html[data-desktop="true"] .topbar { top: 28px; }
 html[data-desktop="true"] .board-stage {
   width: min(100%, var(--board-max), calc(100dvh - 292px));
 }

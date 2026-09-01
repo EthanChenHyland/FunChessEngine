@@ -23,5 +23,10 @@ jobs:
         working-directory: desktop
       - run: npm audit
         working-directory: desktop
+      - name: Configure Electron SUID sandbox
+        run: |
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+        working-directory: desktop
       - run: xvfb-run -a npm run smoke:ui
         working-directory: desktop
