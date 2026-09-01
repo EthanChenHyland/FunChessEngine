@@ -2,7 +2,7 @@ SHELL := /bin/bash
 
 UV := $(shell command -v uv 2>/dev/null || printf '%s' '/Users/ethius/AI-Workspace/runtimes/uv/bin/uv')
 
-.PHONY: setup play arena ab benchmark gui desktop desktop-dev desktop-build test zip verify-zip gate release-gate
+.PHONY: setup play arena ab benchmark gui desktop desktop-dev desktop-build test zip verify-zip gate release-gate release-build
 
 setup:
 	$(UV) sync
@@ -50,4 +50,6 @@ gate:
 release-gate: gate verify-zip
 	node --check gui/static/app.js
 	cd desktop && npm run check
-	cd desktop && npm audit --omit=dev
+	cd desktop && npm audit
+
+release-build: release-gate desktop-build

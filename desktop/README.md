@@ -4,7 +4,7 @@ Electron wraps the local Engine Lab while keeping desktop code separate from the
 
 ```bash
 cd /Users/ethius/VSCode/FunChessEngine
-cd desktop && npm install
+cd desktop && npm ci
 make desktop-dev
 make desktop-build
 ```
@@ -14,4 +14,4 @@ backend from the project environment, and opens it inside a native window. A pro
 a standalone backend executable with PyInstaller, cleans stale desktop artifacts, and packages Electron
 as a native Apple Silicon macOS app/DMG.
 
-The renderer has no Node.js access. Native file dialogs and menu commands are exposed through the narrow `preload.js` IPC bridge. Version 0.4 adds native PGN open/export dialogs plus the non-destructive review/evaluation-graph workflow on top of the 0.3 board setup and promotion work. Version 0.4.1 adds an isolated post-game analysis worker, move quality/CPL summaries, and non-destructive Retry Move training. Version 0.4.2 adds clean-exit-aware crash recovery and a small persistent Recent Games library. Version 0.4.3 adds isolated MultiPV candidate-line analysis with board arrows. Version 0.5 adds variation trees/annotations, a local mistake trainer, opening and evaluation insights, drag/drop, a command palette, and native Analyze-menu actions.
+The renderer has no Node.js access. Native file dialogs and menu commands are exposed through the narrow `preload.js` IPC bridge. FunChessEngine 1.0 includes PGN/FEN/portable-game dialogs, setup and promotion workflows, non-destructive review and persisted variation studies, isolated analysis/MultiPV, personal training, crash recovery, local opening/evaluation insights, drag/drop, a command palette, and native Analyze actions. The shell also constrains navigation/permissions, bounds native file I/O, owns the loopback backend lifecycle, and can restart that backend after a crash.

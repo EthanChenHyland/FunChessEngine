@@ -19,7 +19,7 @@ Engine Lab in an Electron desktop shell, and `make desktop-build` produces an Ap
 app/DMG with a bundled standalone Python backend. Desktop and GUI code stay outside the engine
 package, so they are never included in `engine-package.zip`.
 
-The Engine Lab includes a responsive board, click-to-move or drag-and-drop play, human/engine,
+FunChessEngine 1.0's Engine Lab includes a responsive board, click-to-move or drag-and-drop play, human/engine,
 two-player and engine/engine modes, 17 built-in clock presets plus custom controls, pause/resume,
 resign/draw/rematch, captured-piece/material tracking, portable PNG saves, FEN and PGN import/export,
 a full piece-by-piece setup editor, keyboard-friendly pawn promotion, non-destructive move-by-move
@@ -29,8 +29,8 @@ engine process and adds best-move comparisons, CPL, move grades, searched graph 
 non-destructive Retry Move trainer. Crash recovery autosaves interrupted sessions, and a collapsed
 Recent Games library keeps the latest completed/imported games available for one-click review.
 Analyze also supports isolated MultiPV ranking for the top 1, 3, or 5 candidate lines at the live
-or reviewed position. Version 0.5 adds a non-destructive variation-tree workspace with comments and
-NAGs, persistent square highlights/arrows, local opening/ECO recognition, personal opening statistics,
+or reviewed position. The non-destructive variation-tree workspace supports comments and NAGs,
+persistent local studies, square highlights/arrows, local opening/ECO recognition, personal opening statistics,
 FunChess Accuracy and phase-by-phase CPL, deterministic move explanations, an inspectable evaluation
 breakdown, a spaced-repetition mistake trainer built from analyzed games, local move sounds, drag/drop
 for PGN/FEN/saved PNG files, and a Cmd/Ctrl+K command palette. Advanced diagnostics also expose an
@@ -50,11 +50,14 @@ The project includes a legal random baseline, so the loop works before you write
 ```
 make play                                          # one game, real time control
 make arena                                         # 20 fast games, prints a score
+make ab COMPARE=../old-engine GAMES=12             # paired-opening A/B match + uncertainty
 make benchmark                                     # varied-position depth/node benchmark
 make benchmark COMPARE=../old-engine               # side-by-side search comparison
 make gui                                           # local browser Engine Lab
 make desktop-dev                                   # Electron desktop Engine Lab
 make desktop-build                                 # build macOS app + DMG (Apple Silicon)
+make release-gate                                  # full Python/GUI/Electron/engine package validation
+make release-build                                 # release gate, then native desktop build
 make play FEN="<fen>"                              # start from a given position
 uv run python -m harness.play --black baselines/minimax --pgn game.pgn
 uv run python -m harness.arena --opponent ../my-old-version --games 200
@@ -94,7 +97,8 @@ harness/referee.py   the clock, legality, draw and adjudication rules
 harness/rules.py     local match defaults enforced by the harness
 harness/sandbox.py   isolated engine-process protocol used by the harness
 harness/play.py      one game between two agent directories
-harness/arena.py     many games, with a score
+harness/arena.py     many games, paired openings, JSON + score/Elo uncertainty
+harness/openings.fen original paired A/B opening suite
 harness/package.py   builds engine-package.zip with agent.py at the root
 docs/IDEAS.md        where the strength actually comes from
 ```

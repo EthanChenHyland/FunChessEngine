@@ -79,8 +79,9 @@ The server binds to `127.0.0.1:8765` by default and opens the browser automatica
 - MultiPV position analysis ranks the top 1, 3, or 5 legal root moves in another isolated worker,
   reporting comparable scores, SAN principal variations, depth, nodes, and elapsed time. Clicking a
   candidate line draws its move on the current board.
-- Version 0.5 adds an analysis workspace that branches from any live/reviewed position without
-  changing the saved game. Variations can carry comments and standard annotation glyphs.
+- The 1.0 analysis workspace branches from any live/reviewed position without changing the saved
+  game. Variations can carry comments and standard annotation glyphs, persist locally by root
+  position, and restore automatically when that study is reopened.
 - Right-click square highlights and right-drag arrows are stored locally by position and support
   multiple colors.
 - A compact local opening recognizer exposes ECO/opening family and phase; a personal explorer uses
@@ -97,17 +98,15 @@ The server binds to `127.0.0.1:8765` by default and opens the browser automatica
 - Keyboard shortcuts for board flip, undo, engine move, pause/resume, and clearing the current selection.
 - A shared original FunChessEngine mark is used for the in-app brand, Dock icon, and packaged macOS icon;
   icon binaries are generated from the SVG source during desktop builds rather than stored as build artifacts.
-- Desktop 0.3 added a native **Set Up Position…** command under the Game menu; 0.4 adds PGN/review,
-  0.4.1 adds isolated post-game analysis and Retry Move training, and 0.4.2 adds crash recovery and
-  the local Recent Games library. Version 0.4.3 adds isolated MultiPV candidate-line analysis. Version
-  0.5 adds the variation/annotation workspace, personal trainer, opening/evaluation insights, command
-  palette, document drop, and the native Analyze menu.
+- The 1.0 desktop application combines setup/promotion, PGN review, isolated post-game analysis,
+  Retry Move training, crash recovery, Recent Games, MultiPV, persisted studies/annotations, personal
+  training, opening/evaluation insights, a command palette, document drop, and native Analyze actions.
 
 The browser server and UI use only the Python standard library plus `python-chess`, and all browser
 assets are local. Nothing loads from a CDN or external service. Electron is desktop packaging only and remains separate from the portable engine package.
 
 ## Engine package isolation
 
-`harness/package.py` includes root-level Python files and optional weights. The GUI lives under
-`gui/`, so `make zip` continues to produce a engine package containing only `agent.py` unless weights
-are intentionally added later.
+`harness/package.py` includes only `agent.py` by default, plus files/weights that are explicitly
+requested. The GUI, desktop shell, harness, tests, and development tools therefore stay outside the
+engine archive. `make verify-zip` asserts that isolation before release.
