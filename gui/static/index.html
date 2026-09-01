@@ -6,9 +6,10 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:">
   <title>FunChessEngine · Default Lab</title>
   <link rel="icon" href="/app-mark.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/style.css?v=8">
+  <link rel="stylesheet" href="/style.css?v=9">
 </head>
 <body>
+  <a class="skip-link" href="#board">Skip to chessboard</a>
   <main class="app-shell">
     <header class="topbar">
       <div class="brand-lockup">
@@ -19,8 +20,16 @@
           <p class="brand-subtitle">Local play, analysis, and engine development</p>
         </div>
       </div>
-      <div class="engine-badge"><span class="pulse"></span><span id="engineStatusText">Engine ready</span></div>
+      <div class="topbar-actions">
+        <button id="commandOpenBtn" class="command-trigger" type="button" aria-haspopup="dialog" aria-controls="commandDialog"><kbd>⌘K</kbd><span>Commands</span></button>
+        <div id="engineBadge" class="engine-badge" role="status" aria-live="polite"><span class="pulse"></span><span id="engineStatusText">Engine ready</span></div>
+      </div>
     </header>
+
+    <div id="connectionBanner" class="connection-banner" role="alert" hidden>
+      <div><strong>Engine connection unavailable</strong><span id="connectionMessage">The local backend could not be reached.</span></div>
+      <button id="retryConnectionBtn" class="secondary compact" type="button">Retry connection</button>
+    </div>
 
     <section class="workspace">
       <div class="board-column">
@@ -31,7 +40,7 @@
           </div>
           <div id="blackCaptured" class="captured-row" aria-label="Pieces captured by Black"></div>
           <div class="board-frame">
-            <div id="board" class="board" aria-label="Chess board"></div>
+            <div id="board" class="board" aria-label="Chess board" aria-describedby="boardKeyboardHint"></div>
             <svg id="boardOverlay" class="board-overlay" viewBox="0 0 8 8" aria-hidden="true">
               <defs><marker id="bestArrowHead" markerWidth="2.1" markerHeight="2.1" refX="1.7" refY="1.05" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L2.1,1.05 L0,2.1 z"></path></marker></defs>
               <line id="bestMoveArrow" x1="0" y1="0" x2="0" y2="0" marker-end="url(#bestArrowHead)" hidden></line>
@@ -46,25 +55,26 @@
             <button id="flipBtn" class="secondary" title="Flip board (F)">Flip board</button>
             <button id="undoBtn" class="secondary" title="Undo move (U)">Undo</button>
           </div>
+          <p id="boardKeyboardHint" class="board-keyboard-hint">Keyboard: Tab to the board, use arrow keys between squares, then Enter or Space to select and move.</p>
         </div>
       </div>
 
-      <aside class="side-panel">
-        <nav class="tabs">
-          <button class="tab active" data-tab="game">Play</button>
-          <button class="tab" data-tab="position">Files</button>
-          <button class="tab" data-tab="engine">Analyze</button>
-          <button class="tab" data-tab="train">Train</button>
-          <button class="tab" data-tab="display">Appearance</button>
+      <aside class="side-panel" aria-label="Chess workspace controls">
+        <nav class="tabs" role="tablist" aria-label="Workspace sections">
+          <button id="gameTabButton" class="tab active" data-tab="game" role="tab" aria-controls="gameTab" aria-selected="true" tabindex="0">Play</button>
+          <button id="positionTabButton" class="tab" data-tab="position" role="tab" aria-controls="positionTab" aria-selected="false" tabindex="-1">Library</button>
+          <button id="engineTabButton" class="tab" data-tab="engine" role="tab" aria-controls="engineTab" aria-selected="false" tabindex="-1">Analysis</button>
+          <button id="trainTabButton" class="tab" data-tab="train" role="tab" aria-controls="trainTab" aria-selected="false" tabindex="-1">Training</button>
+          <button id="displayTabButton" class="tab" data-tab="display" role="tab" aria-controls="displayTab" aria-selected="false" tabindex="-1">Settings</button>
         </nav>
 
-        <div id="gameTab" class="tab-panel active">
+        <div id="gameTab" class="tab-panel active" role="tabpanel" aria-labelledby="gameTabButton">
           <div class="status-card">
             <div><span id="evalLabel" class="label">White perspective</span><strong id="evalText">+0.00</strong></div>
             <div id="turnPill" class="turn-pill">White to move</div>
           </div>
           <div class="eval-track"><div id="evalBar" class="eval-bar"></div></div>
-          <div id="statusLine" class="status-line">Ready.</div>
+          <div id="statusLine" class="status-line" role="status" aria-live="polite" aria-atomic="true">Ready.</div>
           <div id="openingLine" class="opening-line"><span id="openingEco">—</span><strong id="openingName">Opening not identified</strong><span id="phaseLabel">Opening</span></div>
 
           <div class="section-card play-controls">
@@ -126,7 +136,7 @@
           <div id="moves" class="moves"></div>
         </div>
 
-        <div id="positionTab" class="tab-panel">
+        <div id="positionTab" class="tab-panel" role="tabpanel" aria-labelledby="positionTabButton">
           <div id="recoveryCard" class="file-card recovery-card" hidden>
             <div class="setting-heading"><span class="label">Crash recovery</span><span class="setting-value">Autosaved</span></div>
             <p id="recoveryText" class="hint">An interrupted game can be restored.</p>
@@ -218,7 +228,7 @@
           <input id="loadFenFileInput" type="file" accept=".fen,text/plain" hidden>
         </div>
 
-        <div id="engineTab" class="tab-panel">
+        <div id="engineTab" class="tab-panel" role="tabpanel" aria-labelledby="engineTabButton">
           <div class="review-card">
             <div class="setting-heading"><span class="label">Game review</span><span id="reviewPositionLabel" class="setting-value">Live position</span></div>
             <p class="hint">Navigate the played main line without changing the live game. Clocks pause while reviewing; the graph uses the engine's fast static evaluation.</p>
@@ -229,9 +239,9 @@
               <button id="reviewLastBtn" class="secondary compact" title="Last position">▶|</button>
               <button id="reviewExitBtn" class="secondary compact" hidden>Return to game</button>
             </div>
-            <canvas id="evalGraph" class="eval-graph" height="150" aria-label="Evaluation history graph"></canvas>
+            <canvas id="evalGraph" class="eval-graph" height="150" tabindex="0" role="img" aria-label="Evaluation history graph. Use left and right arrows to review moves." aria-describedby="graphKeyboardHint"></canvas>
             <div class="review-meta"><span id="reviewEval">—</span><span id="reviewFen">Select a move or graph point to review.</span></div>
-            <p class="shortcut-hint">Review: <kbd>←</kbd>/<kbd>→</kbd> move · <kbd>Home</kbd>/<kbd>End</kbd> ends · <kbd>Esc</kbd> return</p>
+            <p id="graphKeyboardHint" class="shortcut-hint">Review: <kbd>←</kbd>/<kbd>→</kbd> move · <kbd>Home</kbd>/<kbd>End</kbd> ends · <kbd>Esc</kbd> return</p>
           </div>
 
           <div class="variation-card">
@@ -245,6 +255,7 @@
               <div class="variation-toolbar">
                 <button id="variationBackBtn" class="secondary compact">← Parent</button>
                 <button id="variationDeleteBtn" class="text-button">Delete branch</button>
+                <button id="variationResetBtn" class="text-button">Reset study</button>
               </div>
               <div id="variationBreadcrumb" class="variation-breadcrumb"></div>
               <div id="variationChildren" class="variation-children"></div>
@@ -276,7 +287,7 @@
               <button id="analyzeGameBtn" class="primary align-end">Analyze game</button>
             </div>
             <div id="analysisProgressWrap" class="analysis-progress-wrap" hidden>
-              <div class="analysis-progress-track"><div id="analysisProgress" class="analysis-progress"></div></div>
+              <div id="analysisProgressTrack" class="analysis-progress-track" role="progressbar" aria-label="Game analysis progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="analysisProgress" class="analysis-progress"></div></div>
               <div class="analysis-progress-meta"><span id="analysisProgressText">0 / 0</span><button id="cancelAnalysisBtn" class="text-button">Cancel</button></div>
             </div>
             <div id="analysisSummary" class="analysis-summary" hidden>
@@ -363,7 +374,7 @@
           </details>
         </div>
 
-        <div id="trainTab" class="tab-panel">
+        <div id="trainTab" class="tab-panel" role="tabpanel" aria-labelledby="trainTabButton">
           <div class="trainer-card">
             <div class="setting-heading"><span class="label">Personal mistake trainer</span><span id="trainerCount" class="setting-value">0 positions</span></div>
             <p class="hint">Analyzed inaccuracies, mistakes, and blunders become local puzzles. They never alter the saved game.</p>
@@ -380,6 +391,7 @@
                 <button id="trainerHintBtn" class="secondary">Hint</button>
                 <button id="trainerExitBtn" class="secondary">End session</button>
               </div>
+              <button id="trainerNextBtn" class="primary full" hidden>Next position</button>
             </div>
           </div>
           <div class="trainer-card">
@@ -392,7 +404,7 @@
           </div>
         </div>
 
-        <div id="displayTab" class="tab-panel">
+        <div id="displayTab" class="tab-panel" role="tabpanel" aria-labelledby="displayTabButton">
           <div class="row two display-selects">
             <div><label for="themeSelect">Board theme</label><select id="themeSelect"><option value="forest">Forest</option><option value="walnut">Walnut</option><option value="ocean">Ocean</option><option value="slate">Slate</option></select></div>
             <div><label for="accentSelect">Accent</label><select id="accentSelect"><option value="lime">Lime</option><option value="cyan">Cyan</option><option value="violet">Violet</option><option value="amber">Amber</option></select></div>
@@ -455,6 +467,6 @@
     </div>
   </dialog>
   <div id="dropOverlay" class="drop-overlay" hidden><div><strong>Open in FunChessEngine</strong><span>Drop PGN, FEN, or saved PNG</span></div></div>
-  <script src="/app.js?v=8"></script>
+  <script src="/app.js?v=9"></script>
 </body>
 </html>

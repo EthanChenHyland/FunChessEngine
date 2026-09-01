@@ -374,7 +374,13 @@ async function createWindow() {
   if (saved.maximized) mainWindow.maximize();
   mainWindow.once("ready-to-show", () => mainWindow.show());
   mainWindow.on("close", saveWindowState);
-  mainWindow.on("closed", () => { mainWindow = null; });
+  mainWindow.on("closed", () => {
+    mainWindow = null;
+    // On macOS closing the last window does not quit the app. Stop its local
+    // backend here so Activate can create one fresh backend/window instead of
+    // orphaning the old child and accumulating loopback servers.
+    if (!quitting) stopBackend();
+  });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("https://")) shell.openExternal(url);
     return { action: "deny" };

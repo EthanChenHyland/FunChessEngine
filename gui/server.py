@@ -26,6 +26,7 @@ from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import chess
 import chess.pgn
@@ -1353,13 +1354,6 @@ class GameSession:
                 self.white_ms = max(0, self.white_ms - elapsed_ms)
             else:
                 self.black_ms = max(0, self.black_ms - elapsed_ms)
-            self.history.append((self.white_ms, self.black_ms))
-            if color == chess.WHITE:
-                self.white_ms += self.increment_ms
-            else:
-                self.black_ms += self.increment_ms
-            self.board.push(move)
-            self.last_move = move
             self.last_engine_ms = int(elapsed_ms)
             info = agent.LAST_SEARCH_INFO
             self.last_engine_nodes = int(info.nodes)
@@ -1368,6 +1362,20 @@ class GameSession:
             self.last_engine_pv = tuple(info.pv)
             self.last_engine_researches = int(info.aspiration_researches)
             self.turn_started_ns = time.monotonic_ns()
+            remaining = self.white_ms if color == chess.WHITE else self.black_ms
+            if remaining <= 0:
+                # A move completed after the clock expired is a time forfeit.
+                # Do not push the late move or award increment: state() will
+                # report the flag while the board remains at the pre-search
+                # position, matching the referee's wall-clock semantics.
+                return ""
+            self.history.append((self.white_ms, self.black_ms))
+            if color == chess.WHITE:
+                self.white_ms += self.increment_ms
+            else:
+                self.black_ms += self.increment_ms
+            self.board.push(move)
+            self.last_move = move
             return uci
 
     def undo(self) -> None:
@@ -1432,13 +1440,73 @@ class Handler(SimpleHTTPRequestHandler):
         if args and str(args[1]).startswith(("4", "5")):
             super().log_message(fmt, *args)
 
+    def end_headers(self) -> None:
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; connect-src 'self'; img-src 'self' blob: data:; "
+            "style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:",
+        )
+        super().end_headers()
+
+    @staticmethod
+    def _loopback_hostname(hostname: str | None) -> bool:
+        return hostname in {"127.0.0.1", "localhost", "::1"}
+
+    def _request_is_local(self) -> bool:
+        host_header = self.headers.get("Host", "")
+        try:
+            host = urlsplit(f"//{host_header}")
+            if not self._loopback_hostname(host.hostname):
+                return False
+            if host.port != self.server.server_port:
+                return False
+        except ValueError:
+            return False
+
+        origin_header = self.headers.get("Origin")
+        if not origin_header:
+            return True
+        try:
+            origin = urlsplit(origin_header)
+            return (
+                origin.scheme == "http"
+                and self._loopback_hostname(origin.hostname)
+                and origin.port == self.server.server_port
+            )
+        except ValueError:
+            return False
+
+    def _deny_nonlocal_request(self) -> bool:
+        if self._request_is_local():
+            return False
+        self._json(
+            {"error": "Requests must originate from this local FunChessEngine instance."},
+            status=HTTPStatus.FORBIDDEN,
+        )
+        return True
+
     def do_GET(self) -> None:
+        if self._deny_nonlocal_request():
+            return
         if self.path == "/api/state":
             self._json(SESSION.state())
             return
         super().do_GET()
 
     def do_POST(self) -> None:
+        if self._deny_nonlocal_request():
+            return
+        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if content_type != "application/json":
+            self._json(
+                {"error": "POST requests require application/json."},
+                status=HTTPStatus.FORBIDDEN,
+            )
+            return
         try:
             payload = self._body()
             if self.path == "/api/move":

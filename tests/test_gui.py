@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import http.client
+import json
+import threading
 import time
 import unittest
+from http.server import ThreadingHTTPServer
+from unittest.mock import patch
 
 import chess
 
-from gui.server import GameSession
+from gui.server import SESSION, GameSession, Handler
 
 
 class GameSessionTests(unittest.TestCase):
@@ -211,6 +216,26 @@ class GameSessionTests(unittest.TestCase):
         self.assertEqual(state["result"], "0-1")
         self.assertEqual(state["termination"], "time_forfeit")
 
+    def test_engine_move_finishing_after_flag_is_not_played_or_incremented(self) -> None:
+        self.game.reset(clock_ms=10, increment_ms=100)
+        before = self.game.board.fen()
+
+        def slow_move(fen: str, _time_left_ms: int) -> str:
+            time.sleep(0.03)
+            return next(iter(chess.Board(fen).legal_moves)).uci()
+
+        with patch("gui.server.agent.get_move", side_effect=slow_move):
+            self.assertEqual(self.game.engine_move(), "")
+
+        state = self.game.state()
+        self.assertEqual(self.game.board.fen(), before)
+        self.assertEqual(state["white_ms"], 0)
+        self.assertEqual(state["black_ms"], 10)
+        self.assertEqual(state["moves_uci"], [])
+        self.assertTrue(state["game_over"])
+        self.assertEqual(state["result"], "0-1")
+        self.assertEqual(state["termination"], "time_forfeit")
+
     def test_saved_snapshot_round_trip_preserves_game_and_clocks(self) -> None:
         self.game.reset(clock_ms=60_000, increment_ms=1_000)
         self.game.play_move("e2e4")
@@ -276,6 +301,80 @@ class GameSessionTests(unittest.TestCase):
         self.assertEqual(state["captured_by_white"], ["p"])
         self.assertEqual(state["captured_by_black"], [])
         self.assertEqual(state["material_balance"], 1)
+
+
+class HandlerSecurityTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        cls.port = cls.server.server_port
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=2)
+
+    def setUp(self) -> None:
+        SESSION.reset()
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: str | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> tuple[int, dict[str, object], dict[str, str]]:
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+        connection.request(method, path, body=body, headers=headers or {})
+        response = connection.getresponse()
+        raw = response.read()
+        response_headers = {name.lower(): value for name, value in response.getheaders()}
+        connection.close()
+        payload = json.loads(raw) if raw else {}
+        return response.status, payload, response_headers
+
+    def test_rejects_cross_origin_post(self) -> None:
+        status, payload, _headers = self.request(
+            "POST",
+            "/api/reset",
+            body="{}",
+            headers={"Content-Type": "application/json", "Origin": "https://evil.example"},
+        )
+        self.assertEqual(status, 403)
+        self.assertIn("local FunChessEngine", str(payload.get("error")))
+
+    def test_rejects_non_json_post(self) -> None:
+        status, payload, _headers = self.request(
+            "POST",
+            "/api/reset",
+            body="{}",
+            headers={"Content-Type": "text/plain"},
+        )
+        self.assertEqual(status, 403)
+        self.assertIn("application/json", str(payload.get("error")))
+
+    def test_rejects_non_loopback_host(self) -> None:
+        status, _payload, _headers = self.request(
+            "GET", "/api/state", headers={"Host": f"evil.example:{self.port}"}
+        )
+        self.assertEqual(status, 403)
+
+    def test_accepts_same_origin_json_and_sends_security_headers(self) -> None:
+        origin = f"http://127.0.0.1:{self.port}"
+        status, payload, headers = self.request(
+            "POST",
+            "/api/reset",
+            body="{}",
+            headers={"Content-Type": "application/json", "Origin": origin},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["fen"], chess.STARTING_FEN)
+        self.assertEqual(headers.get("x-content-type-options"), "nosniff")
+        self.assertEqual(headers.get("cross-origin-resource-policy"), "same-origin")
 
 
 if __name__ == "__main__":
