@@ -11,6 +11,8 @@ const TRAINER_KEY = "funChessEngine.trainer.v1";
 const ANNOTATIONS_KEY = "funChessEngine.annotations.v1";
 const BENCHMARK_HISTORY_KEY = "funChessEngine.benchmarks.v1";
 const VARIATIONS_KEY = "funChessEngine.variations.v1";
+const BOOKMARKS_KEY = "funChessEngine.bookmarks.v1";
+const ONBOARDING_KEY = "funChessEngine.onboarding.v1";
 const DURABLE_DB_NAME = "FunChessEngine.LocalData";
 const DURABLE_DB_VERSION = 1;
 const DURABLE_STORE = "metadata";
@@ -19,6 +21,8 @@ const MAX_PGN_BYTES = 2 * 1024 * 1024;
 const MAX_SAVE_BYTES = 50 * 1024 * 1024;
 const MAX_RECOVERY_BYTES = 512 * 1024;
 const MAX_RESTART_SNAPSHOT_BYTES = 512 * 1024;
+const MAX_STUDY_BYTES = 2 * 1024 * 1024;
+const MAX_BACKUP_BYTES = 8 * 1024 * 1024;
 const DISPLAY_DEFAULTS = {
   theme: "forest",
   accent: "green",
@@ -31,6 +35,11 @@ const DISPLAY_DEFAULTS = {
   autoOrient: true,
   evalPerspective: "white",
   sound: true,
+  sidebarWidth: 460,
+  zen: false,
+  highContrast: false,
+  largeText: false,
+  analysisPreset: "balanced",
 };
 
 let state = null;
@@ -73,6 +82,7 @@ let variationMode = false;
 let variationWorkspace = null;
 let variationNodeId = null;
 let savedVariationWorkspaces = loadVariationWorkspaces();
+let positionBookmarks = loadPositionBookmarks();
 let annotationDragFrom = null;
 let annotations = loadAnnotations();
 let trainerItems = loadTrainerItems();
@@ -97,6 +107,10 @@ let durableMetadataHydrated = false;
 const durableMetadataDirty = new Set();
 const durableWriteChains = new Map();
 let persistenceErrorShown = false;
+let trainerFocusMode = "due";
+let applyingAnalysisPreset = false;
+let manualPositionAnalysisQueued = false;
+const positionAnalysisCache = new Map();
 
 const $ = (id) => document.getElementById(id);
 
@@ -216,6 +230,11 @@ function durableMetadataSpecs() {
       set: (value) => { savedVariationWorkspaces = value && typeof value === "object" && !Array.isArray(value) ? value : {}; },
     },
     {
+      key: BOOKMARKS_KEY,
+      get: () => positionBookmarks,
+      set: (value) => { positionBookmarks = Array.isArray(value) ? value.filter((item) => item?.fen).slice(0, 100) : []; },
+    },
+    {
       key: ANNOTATIONS_KEY,
       get: () => annotations,
       set: (value) => { annotations = value && typeof value === "object" && !Array.isArray(value) ? value : {}; },
@@ -262,6 +281,9 @@ async function hydrateDurableMetadata() {
       renderTrainerPanel();
       renderDeveloperHistory();
       renderVariationWorkspace();
+      renderStudyLibrary();
+      renderBookmarks();
+      renderLauncher();
       renderBoard();
     }
   } catch (error) {
@@ -383,6 +405,20 @@ function loadVariationWorkspaces() {
   }
 }
 
+function loadPositionBookmarks() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(BOOKMARKS_KEY) || "[]");
+    return Array.isArray(saved) ? saved.filter((item) => item?.fen).slice(0, 100) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function savePositionBookmarks() {
+  positionBookmarks = positionBookmarks.slice(0, 100);
+  persistDurableValue(BOOKMARKS_KEY, positionBookmarks);
+}
+
 function persistVariationWorkspaces() {
   const entries = Object.entries(savedVariationWorkspaces)
     .sort(([, left], [, right]) => String(right?.updated_at || "").localeCompare(String(left?.updated_at || "")))
@@ -399,10 +435,17 @@ function variationStorageKey(originPly) {
 
 function saveCurrentVariationWorkspace() {
   if (!variationWorkspace?.storage_key || !variationWorkspace.root) return;
+  variationWorkspace.name = String(variationWorkspace.name || defaultStudyName(variationWorkspace.origin_ply)).slice(0, 80);
+  variationWorkspace.kind = variationWorkspace.kind === "repertoire" ? "repertoire" : "study";
   variationWorkspace.last_node = variationNodeId;
   variationWorkspace.updated_at = new Date().toISOString();
   savedVariationWorkspaces[variationWorkspace.storage_key] = variationWorkspace;
   persistVariationWorkspaces();
+}
+
+function defaultStudyName(originPly = 0) {
+  const opening = state?.opening?.name || (state?.initial_fen === STARTING_FEN ? "Starting position" : "Custom position");
+  return `${opening} · ply ${Number(originPly || 0)}`.slice(0, 80);
 }
 
 function cacheCurrentAnalysis() {
@@ -531,10 +574,32 @@ function renderRecentGames() {
   target.innerHTML = "";
   const query = $("recentGamesSearch")?.value.trim().toLowerCase() || "";
   const favoritesOnly = Boolean($("recentFavoritesOnly")?.checked);
+  const analyzedOnly = Boolean($("recentAnalyzedOnly")?.checked);
+  const resultFilter = $("recentResultFilter")?.value || "all";
+  const sortMode = $("recentSort")?.value || "recent";
+  const analyzedCount = recentGames.filter((snapshot) => Array.isArray(snapshot.analysis?.results) && snapshot.analysis.results.length).length;
+  const favoriteCount = recentGames.filter((snapshot) => snapshot.favorite).length;
+  const decisiveCount = recentGames.filter((snapshot) => ["1-0", "0-1"].includes(snapshot.result || snapshot.manual_result)).length;
+  const stats = $("libraryStats");
+  if (stats) {
+    stats.innerHTML = "";
+    [["Games", recentGames.length], ["Analyzed", analyzedCount], ["Favorites", favoriteCount], ["Decisive", decisiveCount]].forEach(([label, value]) => {
+      const cell = document.createElement("div");
+      cell.className = "library-stat";
+      const caption = document.createElement("span");
+      caption.textContent = label;
+      const number = document.createElement("strong");
+      number.textContent = String(value);
+      cell.append(caption, number);
+      stats.appendChild(cell);
+    });
+  }
   const entries = recentGames
     .map((snapshot, index) => ({ snapshot, index }))
     .filter(({ snapshot }) => {
       if (favoritesOnly && !snapshot.favorite) return false;
+      if (analyzedOnly && !(Array.isArray(snapshot.analysis?.results) && snapshot.analysis.results.length)) return false;
+      if (resultFilter !== "all" && (snapshot.result || snapshot.manual_result || "*") !== resultFilter) return false;
       if (!query) return true;
       const saved = snapshot.saved_at ? new Date(snapshot.saved_at) : null;
       const when = saved && !Number.isNaN(saved.getTime())
@@ -549,7 +614,14 @@ function renderRecentGames() {
         .toLowerCase()
         .includes(query);
     })
-    .sort((left, right) => Number(Boolean(right.snapshot.favorite)) - Number(Boolean(left.snapshot.favorite)));
+    .sort((left, right) => {
+      if (sortMode === "favorite") {
+        return Number(Boolean(right.snapshot.favorite)) - Number(Boolean(left.snapshot.favorite))
+          || String(right.snapshot.saved_at || "").localeCompare(String(left.snapshot.saved_at || ""));
+      }
+      if (sortMode === "moves") return (right.snapshot.moves?.length || 0) - (left.snapshot.moves?.length || 0);
+      return String(right.snapshot.saved_at || "").localeCompare(String(left.snapshot.saved_at || ""));
+    });
   $("recentGameCount").textContent = query || favoritesOnly
     ? `${entries.length}/${recentGames.length}`
     : String(recentGames.length);
@@ -602,6 +674,7 @@ function renderRecentGames() {
     row.append(info, actions);
     target.appendChild(row);
   });
+  renderLauncherRecents();
 }
 
 function toggleRecentFavorite(index) {
@@ -644,7 +717,8 @@ async function openRecentGame(index) {
     syncTimeControlsFromState();
     orientForHuman();
     render();
-    await activateTab(document.querySelector('[data-tab="engine"]'));
+    if (launcherVisible()) await enterWorkbench("engine", false);
+    else await activateTab(document.querySelector('[data-tab="engine"]'));
   }
 }
 
@@ -662,6 +736,322 @@ async function clearRecentGames() {
   saveRecentGames();
   renderRecentGames();
   renderOpeningExplorer();
+}
+
+function studyEntries() {
+  return Object.entries(savedVariationWorkspaces)
+    .filter(([, workspace]) => workspace?.root && workspace?.nodes?.[workspace.root]);
+}
+
+function studyNodeCount(workspace) {
+  return workspace?.nodes ? Object.keys(workspace.nodes).length : 0;
+}
+
+function renderStudyLibrary() {
+  const target = $("studyLibraryList");
+  if (!target) return;
+  const query = $("studyLibrarySearch")?.value.trim().toLowerCase() || "";
+  const kind = $("studyKindFilter")?.value || "all";
+  const sort = $("studySort")?.value || "updated";
+  let entries = studyEntries().filter(([, workspace]) => {
+    const workspaceKind = workspace.kind === "repertoire" ? "repertoire" : "study";
+    if (kind !== "all" && workspaceKind !== kind) return false;
+    if (!query) return true;
+    return `${workspace.name || "Untitled study"} ${workspaceKind}`.toLowerCase().includes(query);
+  });
+  entries.sort((left, right) => {
+    if (sort === "name") return String(left[1].name || "").localeCompare(String(right[1].name || ""));
+    if (sort === "size") return studyNodeCount(right[1]) - studyNodeCount(left[1]);
+    return Number(Boolean(right[1].favorite)) - Number(Boolean(left[1].favorite))
+      || String(right[1].updated_at || "").localeCompare(String(left[1].updated_at || ""));
+  });
+  $("studyLibraryCount").textContent = query || kind !== "all" ? `${entries.length}/${studyEntries().length}` : String(entries.length);
+  target.innerHTML = "";
+  if (!entries.length) {
+    const empty = document.createElement("p");
+    empty.className = "hint recent-empty";
+    empty.textContent = studyEntries().length ? "No studies match this filter." : "Branch from an analysis position to create your first named study.";
+    target.appendChild(empty);
+    renderLauncherRecents();
+    return;
+  }
+  entries.forEach(([key, workspace]) => {
+    const row = document.createElement("div");
+    row.className = "study-library-row";
+    row.classList.toggle("favorite", Boolean(workspace.favorite));
+    const info = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = workspace.name || "Untitled study";
+    const meta = document.createElement("span");
+    const updated = workspace.updated_at ? new Date(workspace.updated_at) : null;
+    const when = updated && !Number.isNaN(updated.getTime()) ? updated.toLocaleDateString() : "Local";
+    meta.textContent = `${workspace.kind === "repertoire" ? "Repertoire" : "Study"} · ${studyNodeCount(workspace)} positions · ${when}`;
+    info.append(title, meta);
+    const actions = document.createElement("div");
+    actions.className = "study-library-actions";
+    const favorite = document.createElement("button");
+    favorite.className = "secondary compact";
+    favorite.textContent = workspace.favorite ? "★" : "☆";
+    favorite.setAttribute("aria-label", workspace.favorite ? "Remove study bookmark" : "Bookmark study");
+    favorite.addEventListener("click", () => toggleStudyFavorite(key));
+    const open = document.createElement("button");
+    open.className = "secondary compact";
+    open.textContent = "Open";
+    open.addEventListener("click", () => openSavedStudy(key));
+    const exportButton = document.createElement("button");
+    exportButton.className = "secondary compact";
+    exportButton.textContent = "Export";
+    exportButton.addEventListener("click", () => exportStudyWorkspace(key));
+    const remove = document.createElement("button");
+    remove.className = "text-button compact";
+    remove.textContent = "Delete";
+    remove.disabled = variationMode && variationWorkspace?.storage_key === key;
+    remove.title = remove.disabled ? "Close the active study before deleting it." : "Delete study";
+    remove.addEventListener("click", () => deleteStudyWorkspace(key));
+    actions.append(favorite, open, exportButton, remove);
+    row.append(info, actions);
+    target.appendChild(row);
+  });
+  renderLauncherRecents();
+}
+
+function toggleStudyFavorite(key) {
+  const workspace = savedVariationWorkspaces[key];
+  if (!workspace) return;
+  workspace.favorite = !workspace.favorite;
+  workspace.updated_at = new Date().toISOString();
+  persistVariationWorkspaces();
+  if (variationWorkspace?.storage_key === key) variationWorkspace.favorite = workspace.favorite;
+  renderStudyLibrary();
+  renderVariationWorkspace();
+}
+
+async function deleteStudyWorkspace(key) {
+  const workspace = savedVariationWorkspaces[key];
+  if (!workspace || variationWorkspace?.storage_key === key) return;
+  const confirmed = await confirmAction(
+    "Delete study?",
+    `Delete “${workspace.name || "Untitled study"}” and its ${studyNodeCount(workspace)} saved positions?`,
+    "Delete study",
+    true,
+  );
+  if (!confirmed) return;
+  delete savedVariationWorkspaces[key];
+  persistVariationWorkspaces();
+  renderStudyLibrary();
+}
+
+async function openSavedStudy(key) {
+  const stored = savedVariationWorkspaces[key];
+  if (!stored?.root || !stored.nodes?.[stored.root]) return;
+  if (setupMode || trainerMode || retryMode || busy) {
+    setStatus("Finish the current board task before opening a saved study.", "error");
+    return;
+  }
+  if (launcherVisible()) await enterWorkbench("engine", false);
+  else await activateTab(document.querySelector('[data-tab="engine"]'));
+  if (reviewMode) await exitReviewMode(false);
+  variationWorkspace = stored;
+  variationWorkspace.storage_key = key;
+  variationNodeId = stored.nodes[stored.last_node] ? stored.last_node : stored.root;
+  variationMode = true;
+  selected = null;
+  saveCurrentVariationWorkspace();
+  render();
+  scheduleAutoPositionAnalysis(true);
+  setStatus(`Opened ${stored.name || "saved study"}.`, "success");
+}
+
+async function exportStudyWorkspace(key = variationWorkspace?.storage_key) {
+  const workspace = key ? savedVariationWorkspaces[key] || (variationWorkspace?.storage_key === key ? variationWorkspace : null) : variationWorkspace;
+  if (!workspace) return;
+  const payload = {
+    format: "FunChessEngine.Study",
+    version: 1,
+    exported_at: new Date().toISOString(),
+    workspace,
+  };
+  const text = `${JSON.stringify(payload, null, 2)}\n`;
+  if (new TextEncoder().encode(text).byteLength > MAX_STUDY_BYTES) {
+    setStatus("This study is too large to export safely.", "error");
+    return;
+  }
+  const slug = String(workspace.name || "funchess-study").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 50) || "funchess-study";
+  await downloadBlob(new Blob([text], { type: "application/json;charset=utf-8" }), `${slug}.fce-study.json`);
+  setStatus("Study exported.", "success");
+}
+
+async function importStudyFile(file) {
+  if (!file) return;
+  assertBrowserFileSize(file, MAX_STUDY_BYTES, "Study");
+  const payload = JSON.parse(await file.text());
+  const workspace = payload?.format === "FunChessEngine.Study" && payload?.version === 1 ? payload.workspace : null;
+  if (!workspace?.root || !workspace.nodes?.[workspace.root] || studyNodeCount(workspace) > 500) {
+    throw new Error("This is not a valid FunChessEngine study file.");
+  }
+  for (const node of Object.values(workspace.nodes)) {
+    if (!node?.id || !node?.snapshot?.fen || !Array.isArray(node.children)) throw new Error("Study contains an invalid position node.");
+  }
+  const key = `import:${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`}`;
+  workspace.storage_key = key;
+  workspace.name = String(workspace.name || "Imported study").slice(0, 80);
+  workspace.kind = workspace.kind === "repertoire" ? "repertoire" : "study";
+  workspace.updated_at = new Date().toISOString();
+  savedVariationWorkspaces[key] = workspace;
+  persistVariationWorkspaces();
+  renderStudyLibrary();
+  setStatus(`Imported “${workspace.name}”.`, "success");
+}
+
+async function bookmarkCurrentPosition() {
+  const view = currentBoardView() || state;
+  if (!view?.fen) return;
+  const existing = positionBookmarks.findIndex((item) => item.fen === view.fen);
+  if (existing >= 0) {
+    positionBookmarks[existing].updated_at = new Date().toISOString();
+    positionBookmarks.unshift(positionBookmarks.splice(existing, 1)[0]);
+    setStatus("Position bookmark refreshed.", "success");
+  } else {
+    const ply = Number(view.ply ?? reviewSnapshot?.ply ?? state?.moves_uci?.length ?? 0);
+    const opening = view.opening?.name || state?.opening?.name || "Position";
+    positionBookmarks.unshift({
+      id: globalThis.crypto?.randomUUID?.() || `bookmark-${Date.now()}-${Math.random()}`,
+      fen: view.fen,
+      name: `${opening} · ply ${ply}`.slice(0, 80),
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    setStatus("Position bookmarked for later analysis.", "success");
+  }
+  savePositionBookmarks();
+  renderBookmarks();
+}
+
+function renderBookmarks() {
+  const target = $("bookmarkList");
+  if (!target) return;
+  $("bookmarkCount").textContent = String(positionBookmarks.length);
+  target.innerHTML = "";
+  positionBookmarks.slice(0, 20).forEach((bookmark, index) => {
+    const row = document.createElement("div");
+    row.className = "bookmark-row";
+    const info = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = bookmark.name || "Bookmarked position";
+    const meta = document.createElement("span");
+    meta.textContent = bookmark.fen;
+    info.append(title, meta);
+    const actions = document.createElement("div");
+    actions.className = "bookmark-actions";
+    const open = document.createElement("button");
+    open.className = "secondary compact";
+    open.textContent = "Analyze";
+    open.addEventListener("click", () => openBookmarkedPosition(index));
+    const remove = document.createElement("button");
+    remove.className = "text-button compact";
+    remove.textContent = "Delete";
+    remove.addEventListener("click", () => {
+      positionBookmarks.splice(index, 1);
+      savePositionBookmarks();
+      renderBookmarks();
+    });
+    actions.append(open, remove);
+    row.append(info, actions);
+    target.appendChild(row);
+  });
+  if (!positionBookmarks.length) {
+    const empty = document.createElement("p");
+    empty.className = "hint recent-empty";
+    empty.textContent = "Bookmark useful review positions from the Analysis tab.";
+    target.appendChild(empty);
+  }
+}
+
+async function openBookmarkedPosition(index) {
+  const bookmark = positionBookmarks[index];
+  if (!bookmark || busy || setupMode || trainerMode || retryMode) return;
+  if (launcherVisible()) await enterWorkbench("engine", false);
+  else await activateTab(document.querySelector('[data-tab="engine"]'));
+  if (reviewMode) await exitReviewMode(false);
+  const snapshot = await api("/api/position", { fen: bookmark.fen });
+  const root = newVariationNode(snapshot);
+  const key = `bookmark-study:${bookmark.id}`;
+  variationWorkspace = savedVariationWorkspaces[key] || {
+    root: root.id,
+    origin_ply: 0,
+    storage_key: key,
+    name: bookmark.name || "Bookmarked position",
+    kind: "study",
+    nodes: { [root.id]: root },
+  };
+  variationNodeId = variationWorkspace.nodes[variationWorkspace.last_node] ? variationWorkspace.last_node : variationWorkspace.root;
+  variationMode = true;
+  saveCurrentVariationWorkspace();
+  render();
+  scheduleAutoPositionAnalysis(true);
+}
+
+function renderLauncherRecents() {
+  const target = $("startRecents");
+  if (!target) return;
+  target.innerHTML = "";
+  const groups = [
+    {
+      title: "Recent games",
+      empty: "No saved games yet",
+      entries: recentGames.slice(0, 3).map((snapshot, index) => ({
+        title: snapshot.opening?.name || `${snapshot.result || snapshot.manual_result || "*"} game`,
+        meta: `${Math.ceil((snapshot.moves?.length || 0) / 2)} moves${snapshot.favorite ? " · ★" : ""}`,
+        action: () => openRecentGame(index),
+      })),
+    },
+    {
+      title: "Recent studies",
+      empty: "No studies yet",
+      entries: studyEntries()
+        .sort((left, right) => Number(Boolean(right[1].favorite)) - Number(Boolean(left[1].favorite)) || String(right[1].updated_at || "").localeCompare(String(left[1].updated_at || "")))
+        .slice(0, 3)
+        .map(([key, workspace]) => ({
+          title: workspace.name || "Untitled study",
+          meta: `${workspace.kind === "repertoire" ? "Repertoire" : "Study"} · ${studyNodeCount(workspace)} positions${workspace.favorite ? " · ★" : ""}`,
+          action: () => openSavedStudy(key),
+        })),
+    },
+  ];
+  groups.forEach((group) => {
+    const section = document.createElement("div");
+    section.className = "start-recent-group";
+    const head = document.createElement("div");
+    head.className = "start-recent-head";
+    const title = document.createElement("strong");
+    title.textContent = group.title;
+    const count = document.createElement("span");
+    count.textContent = group.entries.length ? `${group.entries.length} shown` : "Local";
+    head.append(title, count);
+    const list = document.createElement("div");
+    list.className = "start-recent-list";
+    if (!group.entries.length) {
+      const empty = document.createElement("span");
+      empty.className = "hint recent-empty";
+      empty.textContent = group.empty;
+      list.appendChild(empty);
+    } else {
+      group.entries.forEach((entry) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "start-recent-item";
+        const label = document.createElement("strong");
+        label.textContent = entry.title;
+        const meta = document.createElement("span");
+        meta.textContent = entry.meta;
+        button.append(label, meta);
+        button.addEventListener("click", entry.action);
+        list.appendChild(button);
+      });
+    }
+    section.append(head, list);
+    target.appendChild(section);
+  });
 }
 
 function scheduleRecoverySave() {
@@ -760,11 +1150,14 @@ function loadDisplaySettings() {
       merged.pieceTheme = DISPLAY_DEFAULTS.pieceTheme;
     }
     if (!["white", "turn"].includes(merged.evalPerspective)) merged.evalPerspective = DISPLAY_DEFAULTS.evalPerspective;
+    if (!["quick", "balanced", "deep", "study", "custom"].includes(merged.analysisPreset)) merged.analysisPreset = DISPLAY_DEFAULTS.analysisPreset;
     const pieceScale = Number(merged.pieceScale);
     merged.pieceScale = Number.isFinite(pieceScale)
       ? Math.max(66, Math.min(90, pieceScale))
       : DISPLAY_DEFAULTS.pieceScale;
-    for (const key of ["coords", "targets", "lastMove", "autoOrient", "sound"]) {
+    const sidebarWidth = Number(merged.sidebarWidth);
+    merged.sidebarWidth = Number.isFinite(sidebarWidth) ? Math.max(330, Math.min(520, sidebarWidth)) : DISPLAY_DEFAULTS.sidebarWidth;
+    for (const key of ["coords", "targets", "lastMove", "autoOrient", "sound", "zen", "highContrast", "largeText"]) {
       if (typeof merged[key] !== "boolean") merged[key] = DISPLAY_DEFAULTS[key];
     }
     return merged;
@@ -787,7 +1180,11 @@ function applyDisplaySettings(renderAfter = true) {
   root.dataset.accent = display.accent;
   root.dataset.appearance = display.appearance;
   root.dataset.pieceTheme = display.pieceTheme;
+  root.dataset.zen = display.zen ? "true" : "false";
+  root.dataset.highContrast = display.highContrast ? "true" : "false";
+  root.dataset.largeText = display.largeText ? "true" : "false";
   root.style.setProperty("--piece-size", `${display.pieceScale / 8}cqw`);
+  root.style.setProperty("--sidebar-width", `${display.sidebarWidth}px`);
 
   $("themeSelect").value = display.theme;
   $("accentSelect").value = display.accent;
@@ -796,11 +1193,17 @@ function applyDisplaySettings(renderAfter = true) {
   $("evalPerspectiveSelect").value = display.evalPerspective;
   $("pieceSizeInput").value = String(display.pieceScale);
   $("pieceSizeValue").textContent = `${display.pieceScale}%`;
+  $("sidebarWidthInput").value = String(display.sidebarWidth);
+  $("sidebarWidthValue").textContent = `${display.sidebarWidth} px`;
   $("coordsToggle").checked = Boolean(display.coords);
   $("targetsToggle").checked = Boolean(display.targets);
   $("lastMoveToggle").checked = Boolean(display.lastMove);
   $("autoOrientToggle").checked = Boolean(display.autoOrient);
   $("soundToggle").checked = Boolean(display.sound);
+  $("zenToggle").checked = Boolean(display.zen);
+  $("highContrastToggle").checked = Boolean(display.highContrast);
+  $("largeTextToggle").checked = Boolean(display.largeText);
+  applyAnalysisPreset(display.analysisPreset || "balanced", false);
 
   if (renderAfter && state) render();
 }
@@ -1278,6 +1681,9 @@ async function startVariationWorkspace() {
     root: root.id,
     origin_ply: originPly,
     storage_key: storageKey,
+    name: defaultStudyName(originPly),
+    kind: "study",
+    favorite: false,
     nodes: { [root.id]: root },
   };
   variationNodeId = root.id;
@@ -1415,6 +1821,23 @@ function saveVariationMetadata() {
   saveCurrentVariationWorkspace();
 }
 
+function saveStudyIdentity() {
+  if (!variationWorkspace) return;
+  variationWorkspace.name = String($("studyNameInput")?.value || defaultStudyName(variationWorkspace.origin_ply)).trim().slice(0, 80) || defaultStudyName(variationWorkspace.origin_ply);
+  variationWorkspace.kind = $("studyKindSelect")?.value === "repertoire" ? "repertoire" : "study";
+  saveCurrentVariationWorkspace();
+  renderStudyLibrary();
+  renderVariationWorkspace();
+}
+
+function toggleCurrentStudyFavorite() {
+  if (!variationWorkspace) return;
+  variationWorkspace.favorite = !variationWorkspace.favorite;
+  saveCurrentVariationWorkspace();
+  renderVariationWorkspace();
+  renderStudyLibrary();
+}
+
 function resetVariationWorkspace() {
   if (!variationWorkspace) return;
   const oldRoot = variationWorkspace.nodes[variationWorkspace.root];
@@ -1426,6 +1849,9 @@ function resetVariationWorkspace() {
     root: root.id,
     origin_ply: variationWorkspace.origin_ply,
     storage_key: storageKey,
+    name: variationWorkspace.name,
+    kind: variationWorkspace.kind,
+    favorite: variationWorkspace.favorite,
     nodes: { [root.id]: root },
   };
   variationNodeId = root.id;
@@ -1459,7 +1885,10 @@ function renderVariationWorkspace() {
   }
   const node = variationNode();
   const path = variationPath();
-  $("variationStatus").textContent = `${Math.max(0, path.length - 1)} ply branch`;
+  $("variationStatus").textContent = `${variationWorkspace?.kind === "repertoire" ? "Repertoire" : "Study"} · ${Math.max(0, path.length - 1)} ply branch`;
+  if ($("studyNameInput") && document.activeElement !== $("studyNameInput")) $("studyNameInput").value = variationWorkspace?.name || defaultStudyName(variationWorkspace?.origin_ply);
+  if ($("studyKindSelect")) $("studyKindSelect").value = variationWorkspace?.kind === "repertoire" ? "repertoire" : "study";
+  if ($("studyFavoriteBtn")) $("studyFavoriteBtn").textContent = variationWorkspace?.favorite ? "★ Bookmarked study" : "☆ Bookmark study";
   $("variationBackBtn").disabled = !node?.parent;
   $("variationDeleteBtn").disabled = !node?.parent;
   $("variationNag").value = node?.nag || "";
@@ -1501,6 +1930,22 @@ function trainerDueItems() {
     .sort((a, b) => Number(b.item.cpl || 0) - Number(a.item.cpl || 0));
 }
 
+function trainerFocusedItems(mode = trainerFocusMode) {
+  const due = trainerDueItems();
+  if (mode === "due") return due;
+  const source = trainerItems.map((item, index) => ({ item, index }));
+  let filtered;
+  if (mode === "unsolved") filtered = source.filter(({ item }) => Number(item.solved || 0) === 0);
+  else if (mode === "blunder") filtered = source.filter(({ item }) => String(item.classification || "").toLowerCase() === "blunder");
+  else if (["opening", "middlegame", "endgame"].includes(mode)) filtered = source.filter(({ item }) => item.phase === mode);
+  else filtered = due;
+  return filtered.sort((a, b) => {
+    const aDue = Number(a.item.due_at || 0) <= Date.now() ? 1 : 0;
+    const bDue = Number(b.item.due_at || 0) <= Date.now() ? 1 : 0;
+    return bDue - aDue || Number(b.item.cpl || 0) - Number(a.item.cpl || 0);
+  });
+}
+
 async function loadTrainerItem(index) {
   const item = trainerItems[index];
   if (!item) return false;
@@ -1514,7 +1959,7 @@ async function loadTrainerItem(index) {
   return true;
 }
 
-async function startTrainer() {
+async function startTrainer(focus = "due") {
   if (!trainerItems.length || busy || setupMode || variationMode) return;
   if (reviewMode || retryMode) {
     setStatus("Return to the live game before starting Personal Trainer.", "error");
@@ -1525,8 +1970,10 @@ async function startTrainer() {
     const paused = await act(() => api("/api/pause", { paused: true }), "Game paused for training.");
     if (!paused) return;
   }
-  const due = trainerDueItems();
-  const target = due[0]?.index ?? 0;
+  trainerFocusMode = focus;
+  if ($("trainerFocusSelect")) $("trainerFocusSelect").value = focus;
+  const focused = trainerFocusedItems(focus);
+  const target = focused[0]?.index ?? 0;
   trainerSessionSolved = 0;
   trainerSessionStreak = 0;
   await loadTrainerItem(target);
@@ -1593,13 +2040,13 @@ async function trainerSquareClick(square) {
 async function nextTrainerItem() {
   if (!trainerMode) return;
   trainerAwaitingNext = false;
-  const due = trainerDueItems().filter(({ index }) => index !== trainerItemIndex);
-  if (!due.length) {
+  const focused = trainerFocusedItems(trainerFocusMode).filter(({ index }) => index !== trainerItemIndex);
+  if (!focused.length) {
     $("trainerPrompt").textContent = "Training queue complete for now.";
     renderTrainerPanel();
     return;
   }
-  await loadTrainerItem(due[0].index);
+  await loadTrainerItem(focused[0].index);
 }
 
 function trainerHint() {
@@ -1641,6 +2088,7 @@ function renderTrainerPanel() {
   $("trainerSolved").textContent = String(solved);
   $("trainerStreak").textContent = String(trainerSessionStreak);
   $("trainerStartBtn").disabled = trainerItems.length === 0 || trainerMode;
+  $("trainerFocusBtn").disabled = trainerItems.length === 0 || trainerMode;
   $("trainerSession").hidden = !trainerMode;
   $("trainerNextBtn").hidden = !trainerMode || !trainerAwaitingNext;
   if (trainerMode) {
@@ -1649,9 +2097,27 @@ function renderTrainerPanel() {
     $("trainerProgress").textContent = `${trainerSessionSolved} solved`;
     if (!trainerRevealBest) $("trainerPrompt").textContent = `You played ${item?.played_san || "a weaker move"}. Find a better move.`;
   }
+  const attempts = trainerItems.reduce((sum, item) => sum + Number(item.attempts || 0), 0);
+  const correct = trainerItems.reduce((sum, item) => sum + Number(item.solved || 0), 0);
+  const mastered = trainerItems.filter((item) => Number(item.solved || 0) >= 3).length;
+  const endgames = trainerItems.filter((item) => item.phase === "endgame").length;
+  const dashboard = $("trainerDashboard");
+  if (dashboard) {
+    dashboard.innerHTML = "";
+    [["Accuracy", attempts ? `${Math.min(100, Math.round(correct * 100 / attempts))}%` : "—"], ["Mastered", mastered], ["Endgames", endgames]].forEach(([label, value]) => {
+      const cell = document.createElement("div");
+      const caption = document.createElement("span");
+      caption.textContent = label;
+      const number = document.createElement("strong");
+      number.textContent = String(value);
+      cell.append(caption, number);
+      dashboard.appendChild(cell);
+    });
+  }
   const queue = $("trainerQueue");
   queue.innerHTML = "";
-  trainerItems.slice(0, 12).forEach((item, index) => {
+  const visibleItems = trainerFocusedItems($("trainerFocusSelect")?.value || trainerFocusMode).slice(0, 12);
+  visibleItems.forEach(({ item, index }) => {
     const row = document.createElement("div");
     row.className = "trainer-item";
     const info = document.createElement("div");
@@ -1677,6 +2143,7 @@ function renderTrainerPanel() {
     queue.appendChild(empty);
   }
   renderWeaknessProfile();
+  renderTrainingVisualization();
 }
 
 function renderWeaknessProfile() {
@@ -1698,6 +2165,30 @@ function renderWeaknessProfile() {
     row.innerHTML = `<strong>${capitalize(phase)}</strong><span class="weakness-bar"><i style="width:${averages[phase] * 100 / max}%"></i></span><span>${averages[phase] ? averages[phase].toFixed(0) : "—"}</span>`;
     target.appendChild(row);
   }
+}
+
+function renderTrainingVisualization() {
+  const target = $("trainingVisualization");
+  if (!target) return;
+  target.innerHTML = "";
+  const groups = ["Blunder", "Mistake", "Inaccuracy"];
+  const counts = Object.fromEntries(groups.map((name) => [name, trainerItems.filter((item) => item.classification === name).length]));
+  const max = Math.max(1, ...Object.values(counts));
+  groups.forEach((name) => {
+    const row = document.createElement("div");
+    row.className = "training-viz-row";
+    const label = document.createElement("span");
+    label.textContent = name;
+    const track = document.createElement("span");
+    track.className = "training-viz-track";
+    const fill = document.createElement("i");
+    fill.style.width = `${counts[name] * 100 / max}%`;
+    track.appendChild(fill);
+    const value = document.createElement("span");
+    value.textContent = String(counts[name]);
+    row.append(label, track, value);
+    target.appendChild(row);
+  });
 }
 
 function confirmRestart(message) {
@@ -2986,19 +3477,70 @@ function renderAnalysisPanel() {
   if (failed && gameAnalysis?.error) $("statusLine").textContent = gameAnalysis.error;
 }
 
+function applyAnalysisPreset(name, trigger = true) {
+  const presets = {
+    quick: { lines: "1", budget: "150", auto: false },
+    balanced: { lines: "3", budget: "350", auto: true },
+    deep: { lines: "3", budget: "750", auto: true },
+    study: { lines: "5", budget: "1500", auto: true },
+  };
+  const selected = presets[name] ? name : "custom";
+  applyingAnalysisPreset = true;
+  if ($("analysisPresetSelect")) $("analysisPresetSelect").value = selected;
+  if (presets[selected]) {
+    $("multipvCount").value = presets[selected].lines;
+    $("positionAnalysisQuality").value = presets[selected].budget;
+    $("analysisAutoToggle").checked = presets[selected].auto;
+  }
+  applyingAnalysisPreset = false;
+  display.analysisPreset = selected;
+  if (trigger) {
+    saveDisplaySettings();
+    autoPositionAnalysisFen = null;
+    scheduleAutoPositionAnalysis(true);
+  }
+}
+
+function markAnalysisPresetCustom() {
+  if (applyingAnalysisPreset) return;
+  display.analysisPreset = "custom";
+  if ($("analysisPresetSelect")) $("analysisPresetSelect").value = "custom";
+  saveDisplaySettings();
+}
+
+function analysisCacheKey(fen, lines, budgetMs) {
+  return `${fen}|${lines}|${budgetMs}`;
+}
+
+function rememberPositionAnalysis(key, value) {
+  if (positionAnalysisCache.has(key)) positionAnalysisCache.delete(key);
+  positionAnalysisCache.set(key, value);
+  while (positionAnalysisCache.size > 30) positionAnalysisCache.delete(positionAnalysisCache.keys().next().value);
+}
+
+async function addMoveToStudy(move) {
+  if (!move) return false;
+  if (!variationMode) await startVariationWorkspace();
+  if (!variationMode) return false;
+  const succeeded = await playVariationMove(move);
+  if (succeeded) setStatus("Candidate added to the active study.", "success");
+  return succeeded;
+}
+
 function renderMultiPvPanel() {
   if (!$("multipvLines")) return;
   const target = $("multipvLines");
   const currentPly = reviewMode ? Number(reviewSnapshot?.ply || 0) : (state?.moves_uci?.length || 0);
   const currentFen = currentBoardView()?.fen || state?.fen || "";
   const relevant = multiPvData && String(multiPvData.fen || "") === String(currentFen);
-  $("multipvBtn").disabled = multiPvBusy || gameAnalysis?.status === "running" || !state || state.game_over && !reviewMode;
-  $("multipvBtn").textContent = multiPvBusy ? "Searching…" : "Analyze position";
+  $("multipvBtn").disabled = gameAnalysis?.status === "running" || !state || state.game_over && !reviewMode;
+  $("multipvBtn").textContent = multiPvBusy ? (manualPositionAnalysisQueued ? "Refresh queued" : "Queue refresh") : "Analyze position";
   $("multipvMeta").textContent = multiPvBusy
     ? "Searching"
     : relevant
     ? `Depth ${multiPvData.depth} · ${Number(multiPvData.nodes || 0).toLocaleString()} nodes · ${multiPvData.elapsed_ms} ms`
     : `Ply ${currentPly}`;
+  $("analysisCacheMeta").textContent = `${positionAnalysisCache.size} cached position${positionAnalysisCache.size === 1 ? "" : "s"}${manualPositionAnalysisQueued ? " · refresh queued" : ""}`;
   target.innerHTML = "";
   if (!relevant || !Array.isArray(multiPvData.lines) || !multiPvData.lines.length) {
     const hint = document.createElement("p");
@@ -3010,6 +3552,8 @@ function renderMultiPvPanel() {
     return;
   }
   multiPvData.lines.forEach((line) => {
+    const row = document.createElement("div");
+    row.className = "multipv-line-row";
     const button = document.createElement("button");
     button.type = "button";
     button.className = "multipv-line";
@@ -3027,7 +3571,14 @@ function renderMultiPvPanel() {
       renderMultiPvPanel();
       renderBoard();
     });
-    target.appendChild(button);
+    const study = document.createElement("button");
+    study.type = "button";
+    study.className = "secondary compact multipv-study";
+    study.textContent = "+ Study";
+    study.title = "Add this candidate as a branch in the analysis workspace";
+    study.addEventListener("click", () => addMoveToStudy(line.move));
+    row.append(button, study);
+    target.appendChild(row);
   });
 }
 
@@ -3119,7 +3670,15 @@ function renderOpeningExplorer() {
     const count = document.createElement("span");
     count.className = "explorer-score";
     count.textContent = `${row.games}×`;
-    item.append(move, outcomes, count);
+    const study = document.createElement("button");
+    study.type = "button";
+    study.className = "secondary compact";
+    study.textContent = "Study";
+    const legal = (view.legal_moves || []).includes(row.move);
+    study.disabled = !legal || setupMode || trainerMode || busy;
+    study.title = legal ? "Add this repertoire move to the analysis workspace" : "Move is not legal in the current board view";
+    study.addEventListener("click", () => addMoveToStudy(row.move));
+    item.append(move, outcomes, count, study);
     target.appendChild(item);
   });
 }
@@ -3295,17 +3854,34 @@ async function runDeveloperArena() {
 }
 
 async function runMultiPv(options = {}) {
-  if (!state || multiPvBusy || gameAnalysis?.status === "running") return;
+  if (!state || gameAnalysis?.status === "running") return;
   const quiet = Boolean(options?.quiet);
   const ply = reviewMode ? Number(reviewSnapshot?.ply || 0) : (state.moves_uci?.length || 0);
   const fen = currentBoardView()?.fen || state.fen;
   const lines = Math.max(1, Math.min(5, Number($("multipvCount").value) || 3));
   const budgetMs = Math.max(100, Math.min(2000, Number($("positionAnalysisQuality")?.value || 350)));
+  if (multiPvBusy) {
+    manualPositionAnalysisQueued = true;
+    renderMultiPvPanel();
+    if (!quiet) setStatus("Position analysis refresh queued.");
+    return;
+  }
+  const cacheKey = analysisCacheKey(fen, lines, budgetMs);
+  const cached = positionAnalysisCache.get(cacheKey);
+  if (cached && !options?.force) {
+    multiPvData = cached;
+    autoPositionAnalysisFen = fen;
+    renderMultiPvPanel();
+    renderBoard();
+    if (!quiet) setStatus("Loaded candidate lines from the session cache.", "success");
+    return;
+  }
   multiPvBusy = true;
   multiPvArrowMove = null;
   renderMultiPvPanel();
   try {
     multiPvData = await api("/api/multipv", { ply, fen, lines, budget_ms: budgetMs });
+    rememberPositionAnalysis(cacheKey, multiPvData);
     autoPositionAnalysisFen = fen;
     if (!quiet) setStatus(`Candidate lines searched to depth ${multiPvData.depth}.`, "success");
   } catch (error) {
@@ -3315,6 +3891,11 @@ async function runMultiPv(options = {}) {
     multiPvBusy = false;
     renderMultiPvPanel();
     renderBoard();
+    if (manualPositionAnalysisQueued) {
+      manualPositionAnalysisQueued = false;
+      setTimeout(() => runMultiPv({ quiet: true }), 0);
+      return;
+    }
     if (autoPositionAnalysisQueued) {
       autoPositionAnalysisQueued = false;
       scheduleAutoPositionAnalysis(true);

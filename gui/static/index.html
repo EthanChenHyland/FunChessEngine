@@ -71,6 +71,7 @@
           <button id="startLibraryBtn" class="start-quick" type="button"><strong>Library</strong><span>Saved games</span></button>
           <button id="startSettingsBtn" class="start-quick" type="button"><strong>Settings</strong><span>Appearance</span></button>
         </div>
+        <div id="startRecents" class="start-recents" aria-label="Recent games and studies"></div>
         <div class="start-footer-row">
           <p class="start-footnote">Everything stays local on this computer.</p>
           <p id="startStatus" class="start-status" role="status" aria-live="polite"></p>
@@ -197,12 +198,37 @@
 
           <details class="file-card recent-games-card">
             <summary><span>Game library</span><span id="recentGameCount" class="setting-value">0</span></summary>
+            <div id="libraryStats" class="library-stats" aria-label="Game library statistics"></div>
             <div class="recent-games-tools">
               <input id="recentGamesSearch" type="search" placeholder="Search opening, result, date…" aria-label="Search saved games">
-              <label class="recent-favorites-filter"><input id="recentFavoritesOnly" type="checkbox"> Favorites only</label>
+              <div class="row two compact-row library-filters">
+                <div><label for="recentResultFilter">Result</label><select id="recentResultFilter"><option value="all">All results</option><option value="1-0">White wins</option><option value="0-1">Black wins</option><option value="1/2-1/2">Draws</option><option value="*">Unfinished</option></select></div>
+                <div><label for="recentSort">Sort</label><select id="recentSort"><option value="recent">Newest</option><option value="favorite">Favorites</option><option value="moves">Longest</option></select></div>
+              </div>
+              <div class="library-checks"><label><input id="recentFavoritesOnly" type="checkbox"> Favorites only</label><label><input id="recentAnalyzedOnly" type="checkbox"> Analyzed only</label></div>
             </div>
             <div id="recentGamesList" class="recent-games-list"></div>
             <button id="clearRecentGamesBtn" class="text-button recent-clear" hidden>Clear game library</button>
+          </details>
+
+          <details class="file-card study-library-card" open>
+            <summary><span>Studies &amp; repertoires</span><span id="studyLibraryCount" class="setting-value">0</span></summary>
+            <p class="hint">Named analysis trees are saved locally with comments, NAGs, and board markup.</p>
+            <div class="recent-games-tools">
+              <input id="studyLibrarySearch" type="search" placeholder="Search studies…" aria-label="Search studies and repertoires">
+              <div class="row two compact-row library-filters">
+                <div><label for="studyKindFilter">Type</label><select id="studyKindFilter"><option value="all">All</option><option value="study">Studies</option><option value="repertoire">Repertoires</option></select></div>
+                <div><label for="studySort">Sort</label><select id="studySort"><option value="updated">Recently edited</option><option value="name">Name</option><option value="size">Largest tree</option></select></div>
+              </div>
+            </div>
+            <div id="studyLibraryList" class="study-library-list"></div>
+            <div class="row two compact-row"><button id="importStudyBtn" class="secondary">Import study…</button><button id="newStudyFromPositionBtn" class="secondary">Study current position</button></div>
+            <input id="importStudyInput" type="file" accept=".json,application/json" hidden>
+          </details>
+
+          <details class="file-card bookmark-library-card">
+            <summary><span>Position bookmarks</span><span id="bookmarkCount" class="setting-value">0</span></summary>
+            <div id="bookmarkList" class="bookmark-list"></div>
           </details>
 
           <div class="file-card">
@@ -299,6 +325,7 @@
               <button id="reviewPrevErrorBtn" class="secondary compact" type="button">← Previous error</button>
               <button id="reviewNextErrorBtn" class="secondary compact" type="button">Next error →</button>
               <button id="copyAnalysisFenBtn" class="secondary compact" type="button">Copy position FEN</button>
+              <button id="bookmarkPositionBtn" class="secondary compact" type="button">Bookmark position</button>
             </div>
             <canvas id="evalGraph" class="eval-graph" height="150" tabindex="0" role="img" aria-label="Evaluation history graph. Use left and right arrows to review moves." aria-describedby="graphKeyboardHint"></canvas>
             <div class="review-meta"><span id="reviewEval">—</span><span id="reviewFen">Select a move or graph point to review.</span></div>
@@ -319,6 +346,10 @@
               <button id="variationExitBtn" class="secondary" hidden>Return to review</button>
             </div>
             <div id="variationControls" hidden>
+              <div class="study-identity">
+                <div><label for="studyNameInput">Study name</label><input id="studyNameInput" type="text" maxlength="80" placeholder="Untitled study"></div>
+                <div><label for="studyKindSelect">Type</label><select id="studyKindSelect"><option value="study">Study</option><option value="repertoire">Repertoire</option></select></div>
+              </div>
               <div class="variation-toolbar">
                 <button id="variationBackBtn" class="secondary compact">← Parent</button>
                 <button id="variationDeleteBtn" class="text-button">Delete branch</button>
@@ -335,6 +366,7 @@
                 <select id="annotationColor"><option value="amber">Amber</option><option value="cyan">Cyan</option><option value="violet">Violet</option><option value="lime">Lime</option></select>
                 <button id="clearAnnotationsBtn" class="secondary compact">Clear marks</button>
               </div>
+              <div class="row two compact-row"><button id="studyFavoriteBtn" class="secondary compact">☆ Bookmark study</button><button id="exportStudyBtn" class="secondary compact">Export study…</button></div>
               <p class="shortcut-hint">Right-click a square to highlight · right-drag to draw an arrow.</p>
             </div>
           </div>
@@ -397,12 +429,14 @@
           </div>
           <div class="multipv-card">
             <div class="setting-heading"><span class="label">Candidate lines</span><span id="multipvMeta" class="setting-value">Current position</span></div>
+            <div class="analysis-preset-row"><label for="analysisPresetSelect">Preset</label><select id="analysisPresetSelect"><option value="quick">Quick glance</option><option value="balanced" selected>Balanced</option><option value="deep">Deep review</option><option value="study">Study mode</option><option value="custom">Custom</option></select></div>
             <div class="analysis-engine-controls compact-row">
               <div><label for="multipvCount">Lines</label><select id="multipvCount"><option value="1">1</option><option value="3" selected>3</option><option value="5">5</option></select></div>
               <div><label for="positionAnalysisQuality">Search</label><select id="positionAnalysisQuality"><option value="150">Fast</option><option value="350" selected>Normal</option><option value="750">Deep</option><option value="1500">Maximum</option></select></div>
               <button id="multipvBtn" class="secondary align-end">Analyze position</button>
             </div>
             <label class="analysis-auto"><input id="analysisAutoToggle" type="checkbox"> <span><strong>Auto-refresh engine lines</strong><small>Re-analyze when you browse or branch to a new position.</small></span></label>
+            <div class="analysis-cache-row"><span id="analysisCacheMeta">Session cache empty</span><button id="clearAnalysisCacheBtn" class="text-button" type="button">Clear cache</button></div>
             <div id="multipvLines" class="multipv-lines"><p class="hint">Rank the strongest candidate moves for the live or reviewed position.</p></div>
           </div>
           <div class="opening-explorer-card">
@@ -452,6 +486,11 @@
               <div><span>Solved</span><strong id="trainerSolved">0</strong></div>
               <div><span>Streak</span><strong id="trainerStreak">0</strong></div>
             </div>
+            <div id="trainerDashboard" class="trainer-dashboard" aria-label="Training dashboard"></div>
+            <div class="row two compact-row trainer-focus-row">
+              <div><label for="trainerFocusSelect">Focus</label><select id="trainerFocusSelect"><option value="due">Due now</option><option value="unsolved">Unsolved</option><option value="blunder">Blunders</option><option value="opening">Opening</option><option value="middlegame">Middlegame</option><option value="endgame">Endgame</option></select></div>
+              <button id="trainerFocusBtn" class="secondary align-end">Start focus</button>
+            </div>
             <button id="trainerStartBtn" class="primary full">Start training</button>
             <div id="trainerSession" hidden>
               <div class="setting-heading"><span id="trainerLabel" class="label">Find the best move</span><span id="trainerProgress" class="setting-value">1 / 1</span></div>
@@ -466,6 +505,7 @@
           <div class="trainer-card">
             <div class="setting-heading"><span class="label">Weakness profile</span><span class="setting-value">From analysis</span></div>
             <div id="weaknessProfile" class="weakness-profile"><p class="hint">Analyze games to build opening, middlegame, and endgame weakness statistics.</p></div>
+            <div id="trainingVisualization" class="training-visualization"></div>
           </div>
           <div class="trainer-card">
             <div class="setting-heading"><span class="label">Training queue</span><button id="clearTrainerBtn" class="text-button">Clear</button></div>
@@ -486,19 +526,28 @@
             <div class="setting-heading"><label for="pieceSizeInput">Piece size</label><span id="pieceSizeValue" class="setting-value">78%</span></div>
             <input id="pieceSizeInput" type="range" min="66" max="90" step="2" value="78">
           </div>
+          <div class="setting-group">
+            <div class="setting-heading"><label for="sidebarWidthInput">Sidebar width</label><span id="sidebarWidthValue" class="setting-value">390 px</span></div>
+            <input id="sidebarWidthInput" type="range" min="330" max="520" step="10" value="390">
+            <p class="hint">One stable width is used for every workspace tab.</p>
+          </div>
           <div class="toggle-list">
             <label class="toggle"><span><strong>Coordinates</strong><small>Files and ranks on board edges</small></span><input id="coordsToggle" type="checkbox" checked><i></i></label>
             <label class="toggle"><span><strong>Legal moves</strong><small>Destination dots and capture rings</small></span><input id="targetsToggle" type="checkbox" checked><i></i></label>
             <label class="toggle"><span><strong>Last move</strong><small>Highlight the previous move</small></span><input id="lastMoveToggle" type="checkbox" checked><i></i></label>
             <label class="toggle"><span><strong>Auto orientation</strong><small>Face the board toward the human side</small></span><input id="autoOrientToggle" type="checkbox" checked><i></i></label>
             <label class="toggle"><span><strong>Move sounds</strong><small>Subtle local move/capture feedback</small></span><input id="soundToggle" type="checkbox" checked><i></i></label>
+            <label class="toggle"><span><strong>Zen mode</strong><small>Hide workspace chrome and focus on the board</small></span><input id="zenToggle" type="checkbox"><i></i></label>
+            <label class="toggle"><span><strong>High contrast</strong><small>Stronger panel borders and focus indicators</small></span><input id="highContrastToggle" type="checkbox"><i></i></label>
+            <label class="toggle"><span><strong>Larger interface text</strong><small>Increase supporting text and control labels</small></span><input id="largeTextToggle" type="checkbox"><i></i></label>
           </div>
           <button id="resetDisplayBtn" class="secondary full">Reset appearance</button>
-          <p class="shortcut-hint">Keyboard: <kbd>⌘K</kbd> commands · <kbd>F</kbd> flip · <kbd>U</kbd> undo · <kbd>E</kbd> engine · <kbd>Space</kbd> pause · <kbd>Esc</kbd> clear</p>
+          <p class="shortcut-hint">Keyboard: <kbd>⌘K</kbd> commands · <kbd>Z</kbd> zen · <kbd>Alt+1…5</kbd> tabs · <kbd>F</kbd> flip · <kbd>U</kbd> undo · <kbd>E</kbd> engine · <kbd>Space</kbd> pause · <kbd>Esc</kbd> clear</p>
         </div>
       </aside>
     </section>
   </main>
+  <button id="zenExitBtn" class="zen-exit" type="button" aria-label="Exit Zen mode">Exit Zen · Z</button>
 
   <dialog id="promotionDialog" class="promotion-dialog" aria-labelledby="promotionTitle">
     <form method="dialog">

@@ -9,6 +9,22 @@ import agent
 
 
 class AgentTests(unittest.TestCase):
+    def test_board_from_fen_preserves_standard_and_accepts_chess960(self) -> None:
+        standard = agent._board_from_fen(chess.STARTING_FEN)
+        self.assertTrue(standard.is_valid())
+        self.assertFalse(standard.chess960)
+
+        chess960_source = chess.Board.from_chess960_pos(0)
+        chess960 = agent._board_from_fen(chess960_source.fen())
+        self.assertTrue(chess960.is_valid())
+        self.assertTrue(chess960.chess960)
+        self.assertEqual(chess960.board_fen(), chess960_source.board_fen())
+
+    def test_returns_legal_chess960_move(self) -> None:
+        board = chess.Board.from_chess960_pos(0)
+        move = chess.Move.from_uci(agent.get_move(board.fen(), 300))
+        self.assertIn(move, board.legal_moves)
+
     def setUp(self) -> None:
         agent.reset_game_state()
 

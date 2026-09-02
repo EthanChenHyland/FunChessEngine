@@ -25,6 +25,23 @@
     "productName": "FunChessEngine",
     "asar": true,
     "afterSign": "scripts/notarize.js",
+    "fileAssociations": [
+      {
+        "ext": "pgn",
+        "name": "Portable Game Notation",
+        "role": "Editor"
+      },
+      {
+        "ext": "fen",
+        "name": "Chess FEN Position",
+        "role": "Editor"
+      },
+      {
+        "ext": "fce",
+        "name": "FunChessEngine Backup",
+        "role": "Editor"
+      }
+    ],
     "files": [
       "main.js",
       "preload.js",

@@ -102,6 +102,21 @@ class GameSessionTests(unittest.TestCase):
         self.assertEqual(state["last_engine_pv"][0], uci)
         self.assertGreaterEqual(state["last_engine_researches"], 0)
 
+    def test_engine_personality_and_skill_configuration_remain_legal(self) -> None:
+        config = self.game.configure_engine(profile="aggressive", skill=55, move_time_cap_ms=250)
+        self.assertEqual(config["profile"], "aggressive")
+        self.assertEqual(config["skill"], 55)
+        self.assertEqual(config["move_time_cap_ms"], 250)
+        before = self.game.board.copy()
+        uci = self.game.engine_move(120)
+        self.assertIn(chess.Move.from_uci(uci), before.legal_moves)
+        state = self.game.state()
+        self.assertEqual(state["engine_profile"], "aggressive")
+        self.assertEqual(state["engine_skill"], 55)
+
+        with self.assertRaisesRegex(ValueError, "Unknown engine personality"):
+            self.game.configure_engine(profile="reckless-random")
+
     def test_reset_accepts_fen_and_resets_clock(self) -> None:
         fen = "8/8/8/8/8/4k3/8/4K3 w - - 0 1"
         self.game.reset(fen, 30_000, 2_000)
@@ -115,6 +130,27 @@ class GameSessionTests(unittest.TestCase):
     def test_reset_rejects_invalid_setup_position(self) -> None:
         with self.assertRaisesRegex(ValueError, "Invalid chess position"):
             self.game.reset("8/8/8/8/8/8/8/8 w - - 0 1")
+
+    def test_chess960_reset_move_review_and_export_preserve_variant(self) -> None:
+        start = chess.Board.from_chess960_pos(0)
+        self.game.reset(start.fen(), chess960=True)
+        before = self.game.state()
+        self.assertEqual(before["variant"], "chess960")
+        self.assertTrue(self.game.board.chess960)
+
+        move = next(iter(self.game.board.legal_moves))
+        self.game.play_move(move.uci())
+        review = self.game.review_state(1)
+        self.assertEqual(review["fen"], self.game.board.fen())
+        self.assertTrue(self.game.board.chess960)
+
+        exported = self.game.export_pgn()
+        parsed = chess.pgn.read_game(io.StringIO(exported))
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed.headers.get("Variant"), "Chess960")
+        self.assertTrue(parsed.board().chess960)
+        self.assertEqual([item.uci() for item in parsed.mainline_moves()], [move.uci()])
 
     def test_pawn_promotion_and_underpromotion_are_legal(self) -> None:
         fen = "8/P7/8/8/8/8/7k/4K3 w - - 0 1"
@@ -312,6 +348,35 @@ class GameSessionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid or illegal notation"):
             self.game.load_pgn('[Result "*"]\n\n1. e4 e5 2. Bh6 *\n')
 
+    def test_batch_pgn_parser_preserves_games_without_mutating_live_board(self) -> None:
+        live_fen = self.game.board.fen()
+        pgn = """[Event "First"]
+[Result "*"]
+
+1. e4 {first note} e5 *
+
+[Event "Second"]
+[Result "1/2-1/2"]
+
+1. d4 d5 2. c4 1/2-1/2
+"""
+        games = self.game.parse_pgn_batch(pgn)
+        self.assertEqual(len(games), 2)
+        self.assertEqual(games[0]["headers"]["Event"], "First")
+        self.assertIn("first note", games[0]["pgn"])
+        self.assertEqual(games[1]["moves_uci"], ["d2d4", "d7d5", "c2c4"])
+        self.assertEqual(self.game.board.fen(), live_fen)
+
+    def test_isolated_pgn_analysis_does_not_replace_live_game(self) -> None:
+        self.game.play_move("d2d4")
+        live_fen = self.game.board.fen()
+        result = self.game.analyze_pgn('[Event "Queued"]\n[Result "*"]\n\n1. e4 e5 *\n', 80)
+        self.assertEqual(result["total"], 2)
+        self.assertEqual(len(result["results"]), 2)
+        self.assertIn("accuracy", result["summary"])
+        self.assertEqual(result["headers"]["Event"], "Queued")
+        self.assertEqual(self.game.board.fen(), live_fen)
+
     def test_load_pgn_preserves_headers_and_result(self) -> None:
         pgn = """[Event \"Review Test\"]
 [White \"Alpha\"]
@@ -429,6 +494,46 @@ class GameSessionTests(unittest.TestCase):
         self.assertGreaterEqual(state["white_ms"], 10_900)
         self.assertLessEqual(state["white_ms"], 11_100)
         self.assertGreater(state["black_ms"], 9_900)
+
+    def test_bronstein_clock_refunds_only_the_configured_delay(self) -> None:
+        self.game.reset(clock_ms=10_000, increment_ms=0, clock_mode="bronstein", delay_ms=500)
+        self.game.turn_started_ns -= 1_000_000_000
+        self.game.play_move("e2e4")
+        state = self.game.state()
+        self.assertEqual(state["clock_mode"], "bronstein")
+        self.assertEqual(state["delay_ms"], 500)
+        self.assertAlmostEqual(state["white_ms"], 9_500, delta=40)
+        self.assertAlmostEqual(state["black_ms"], 10_000, delta=40)
+
+    def test_hourglass_clock_transfers_elapsed_time_to_opponent(self) -> None:
+        self.game.reset(
+            clock_ms=10_000,
+            white_clock_ms=8_000,
+            black_clock_ms=12_000,
+            increment_ms=0,
+            clock_mode="hourglass",
+        )
+        self.game.turn_started_ns -= 1_000_000_000
+        self.game.play_move("e2e4")
+        state = self.game.state()
+        self.assertEqual(state["clock_mode"], "hourglass")
+        self.assertAlmostEqual(state["white_ms"], 7_000, delta=40)
+        self.assertAlmostEqual(state["black_ms"], 13_000, delta=40)
+        self.assertEqual(state["white_base_clock_ms"], 8_000)
+        self.assertEqual(state["black_base_clock_ms"], 12_000)
+
+    def test_staged_time_control_awards_time_at_move_threshold(self) -> None:
+        self.game.reset(
+            clock_ms=10_000,
+            increment_ms=0,
+            time_stages=[{"moves": 1, "add_ms": 5_000}],
+        )
+        self.game.play_move("e2e4")
+        after_white = self.game.state()
+        self.assertGreater(after_white["white_ms"], 14_900)
+        self.game.play_move("e7e5")
+        after_black = self.game.state()
+        self.assertGreater(after_black["black_ms"], 14_900)
 
     def test_clock_flag_is_reported_as_game_over(self) -> None:
         self.game.reset(clock_ms=1, increment_ms=0)

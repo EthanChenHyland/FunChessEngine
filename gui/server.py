@@ -46,6 +46,12 @@ MAX_API_BODY_BYTES = 4 * 1024 * 1024
 OPENING_DATA_PATH = ROOT / "openings.json"
 
 
+def _board_from_fen(fen: str, *, chess960: bool = False) -> chess.Board:
+    """Build a validated board with explicit standard/Chess960 semantics."""
+
+    return chess.Board(fen, chess960=chess960)
+
+
 def _load_opening_prefixes(
     path: Path = OPENING_DATA_PATH,
 ) -> dict[tuple[str, ...], tuple[str, str]]:
@@ -244,6 +250,52 @@ def _captured_name(board: chess.Board, move: chess.Move) -> str | None:
     return chess.piece_name(piece.piece_type) if piece is not None else None
 
 
+def _analysis_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
+    by_side: dict[str, list[int]] = {"white": [], "black": []}
+    phase_cpl: dict[str, list[int]] = {"opening": [], "middlegame": [], "endgame": []}
+    class_counts: dict[str, int] = {}
+    counts = {"Inaccuracy": 0, "Mistake": 0, "Blunder": 0}
+    biggest: dict[str, Any] | None = None
+    for result in results:
+        mover = str(result.get("mover", "white"))
+        cpl = max(0, int(result.get("cpl", 0)))
+        if mover in by_side:
+            by_side[mover].append(cpl)
+        classification = str(result.get("classification", ""))
+        class_counts[classification] = class_counts.get(classification, 0) + 1
+        if classification in counts:
+            counts[classification] += 1
+        phase = str(result.get("phase", "middlegame"))
+        if phase in phase_cpl:
+            phase_cpl[phase].append(cpl)
+        if biggest is None or cpl > int(biggest.get("cpl", -1)):
+            biggest = result
+    all_cpl = [max(0, int(result.get("cpl", 0))) for result in results]
+    accuracy = (
+        round(sum(100.0 * math.exp(-value / 300.0) for value in all_cpl) / len(all_cpl), 1)
+        if all_cpl
+        else 0.0
+    )
+    return {
+        "white_avg_cpl": round(sum(by_side["white"]) / len(by_side["white"]), 1)
+        if by_side["white"]
+        else 0.0,
+        "black_avg_cpl": round(sum(by_side["black"]) / len(by_side["black"]), 1)
+        if by_side["black"]
+        else 0.0,
+        "inaccuracies": counts["Inaccuracy"],
+        "mistakes": counts["Mistake"],
+        "blunders": counts["Blunder"],
+        "accuracy": accuracy,
+        "classifications": class_counts,
+        "phase_avg_cpl": {
+            phase: round(sum(values) / len(values), 1) if values else None
+            for phase, values in phase_cpl.items()
+        },
+        "biggest_turning_point": biggest,
+    }
+
+
 def _run_analysis_worker(payload: dict[str, Any]) -> None:
     """Analyze a main line in an isolated process and stream one JSON record per ply."""
 
@@ -252,7 +304,7 @@ def _run_analysis_worker(payload: dict[str, Any]) -> None:
     budget_ms = max(80, min(1_500, int(payload.get("budget_ms", 100))))
     if not isinstance(moves_raw, list) or len(moves_raw) > 1_000:
         raise ValueError("Analysis move list is invalid.")
-    board = chess.Board(initial_fen)
+    board = _board_from_fen(initial_fen, chess960=bool(payload.get("chess960", False)))
     if not board.is_valid():
         raise ValueError("Analysis starts from an invalid position.")
 
@@ -320,7 +372,10 @@ def _run_analysis_worker(payload: dict[str, Any]) -> None:
 def _run_multipv_worker(payload: dict[str, Any]) -> None:
     """Search all legal root moves to expose a few comparable candidate lines."""
 
-    board = chess.Board(str(payload.get("fen", chess.STARTING_FEN)))
+    board = _board_from_fen(
+        str(payload.get("fen", chess.STARTING_FEN)),
+        chess960=bool(payload.get("chess960", False)),
+    )
     if not board.is_valid() or board.is_game_over(claim_draw=True):
         raise ValueError("MultiPV requires a valid non-terminal chess position.")
     line_count = max(1, min(5, int(payload.get("lines", 3))))
@@ -491,10 +546,16 @@ class GameSession:
         self.lock = threading.RLock()
         self.board = chess.Board()
         self.initial_fen = chess.STARTING_FEN
+        self.chess960 = False
         self.white_ms = DEFAULT_CLOCK_MS
         self.black_ms = DEFAULT_CLOCK_MS
         self.base_clock_ms = DEFAULT_CLOCK_MS
+        self.white_base_clock_ms = DEFAULT_CLOCK_MS
+        self.black_base_clock_ms = DEFAULT_CLOCK_MS
         self.increment_ms = DEFAULT_INCREMENT_MS
+        self.delay_ms = 0
+        self.clock_mode = "increment"
+        self.time_stages: list[dict[str, int]] = []
         self.last_move: chess.Move | None = None
         self.last_engine_ms = 0
         self.last_engine_nodes = 0
@@ -502,6 +563,9 @@ class GameSession:
         self.last_engine_score: int | None = None
         self.last_engine_pv: tuple[str, ...] = ()
         self.last_engine_researches = 0
+        self.engine_profile = "maximum"
+        self.engine_skill = 100
+        self.engine_move_time_cap_ms = 2_500
         self.history: list[tuple[int, int]] = []
         # `history` is the undo baseline (pre-increment). Keep a separate clock
         # record for review so Analysis can show the time actually displayed
@@ -549,22 +613,53 @@ class GameSession:
         fen: str = chess.STARTING_FEN,
         clock_ms: int = DEFAULT_CLOCK_MS,
         increment_ms: int = DEFAULT_INCREMENT_MS,
+        *,
+        chess960: bool = False,
+        white_clock_ms: int | None = None,
+        black_clock_ms: int | None = None,
+        clock_mode: str = "increment",
+        delay_ms: int = 0,
+        time_stages: list[dict[str, int]] | None = None,
     ) -> None:
-        board = chess.Board(fen)
+        board = _board_from_fen(fen, chess960=bool(chess960))
         if not board.is_valid():
             raise ValueError(
                 "Invalid chess position. Check that both kings exist, pawns are off the back "
                 "ranks, kings are not adjacent, and castling/en-passant rights match the board."
             )
+        mode = str(clock_mode).strip().lower()
+        if mode not in {"increment", "bronstein", "hourglass"}:
+            raise ValueError("Clock mode must be increment, bronstein, or hourglass.")
+        stages: list[dict[str, int]] = []
+        for raw in time_stages or []:
+            if not isinstance(raw, dict):
+                raise ValueError("Time-control stages must be objects.")
+            moves = int(raw.get("moves", 0))
+            add_ms = int(raw.get("add_ms", 0))
+            if moves < 1 or moves > 500 or add_ms < 1 or add_ms > 24 * 60 * 60 * 1_000:
+                raise ValueError("Time-control stage is outside the supported range.")
+            stages.append({"moves": moves, "add_ms": add_ms})
+        if len(stages) > 8 or len({stage["moves"] for stage in stages}) != len(stages):
+            raise ValueError("Time-control stages must use unique move numbers (maximum 8 stages).")
+        stages.sort(key=lambda item: item["moves"])
+        base = max(1, int(clock_ms))
+        white_base = max(1, int(white_clock_ms if white_clock_ms is not None else base))
+        black_base = max(1, int(black_clock_ms if black_clock_ms is not None else base))
         with self.lock:
             self._cancel_analysis_locked()
             agent.reset_game_state()
             self.board = board
             self.initial_fen = fen
-            self.white_ms = max(1, int(clock_ms))
-            self.black_ms = max(1, int(clock_ms))
-            self.base_clock_ms = max(1, int(clock_ms))
+            self.chess960 = bool(chess960)
+            self.white_ms = white_base
+            self.black_ms = black_base
+            self.base_clock_ms = base
+            self.white_base_clock_ms = white_base
+            self.black_base_clock_ms = black_base
             self.increment_ms = max(0, int(increment_ms))
+            self.delay_ms = max(0, int(delay_ms))
+            self.clock_mode = mode
+            self.time_stages = stages
             self.last_move = None
             self.last_engine_ms = 0
             self.last_engine_nodes = 0
@@ -573,7 +668,7 @@ class GameSession:
             self.last_engine_pv = ()
             self.last_engine_researches = 0
             self.history.clear()
-            self.recorded_initial_clocks = (self.base_clock_ms, self.base_clock_ms)
+            self.recorded_initial_clocks = (self.white_base_clock_ms, self.black_base_clock_ms)
             self.recorded_clocks.clear()
             self.paused = False
             self.manual_result = None
@@ -597,14 +692,44 @@ class GameSession:
         elapsed_ms = max(0, (now - self.turn_started_ns) // 1_000_000)
         if self.board.turn == chess.WHITE:
             white_ms -= elapsed_ms
+            if self.clock_mode == "hourglass":
+                black_ms += elapsed_ms
         else:
             black_ms -= elapsed_ms
+            if self.clock_mode == "hourglass":
+                white_ms += elapsed_ms
         return max(0, int(white_ms)), max(0, int(black_ms))
 
-    def _commit_clock(self) -> None:
+    def _commit_clock(self) -> int:
         now = time.monotonic_ns()
+        elapsed_ms = max(0, (now - self.turn_started_ns) // 1_000_000)
         self.white_ms, self.black_ms = self._current_clocks(now)
         self.turn_started_ns = now
+        return int(elapsed_ms)
+
+    def _apply_elapsed(self, color: chess.Color, elapsed_ms: int) -> None:
+        elapsed = max(0, int(elapsed_ms))
+        if color == chess.WHITE:
+            self.white_ms = max(0, self.white_ms - elapsed)
+            if self.clock_mode == "hourglass":
+                self.black_ms += elapsed
+        else:
+            self.black_ms = max(0, self.black_ms - elapsed)
+            if self.clock_mode == "hourglass":
+                self.white_ms += elapsed
+
+    def _post_move_clock(self, mover: chess.Color, elapsed_ms: int) -> None:
+        bonus = 0
+        if self.clock_mode == "increment":
+            bonus = self.increment_ms
+        elif self.clock_mode == "bronstein":
+            bonus = min(self.delay_ms, max(0, int(elapsed_ms)))
+        move_number = len(self.board.move_stack) // 2 + 1
+        bonus += sum(stage["add_ms"] for stage in self.time_stages if stage["moves"] == move_number)
+        if mover == chess.WHITE:
+            self.white_ms += bonus
+        else:
+            self.black_ms += bonus
 
     def _clock_flag(self, white_ms: int, black_ms: int) -> chess.Color | None:
         if self.manual_result is not None or self.board.is_game_over(claim_draw=True):
@@ -615,12 +740,106 @@ class GameSession:
             return chess.BLACK
         return None
 
+    def configure_engine(
+        self,
+        *,
+        profile: str | None = None,
+        skill: int | None = None,
+        move_time_cap_ms: int | None = None,
+    ) -> dict[str, Any]:
+        """Configure GUI-only playing style without changing the competition API."""
+
+        with self.lock:
+            if profile is not None:
+                normalized = str(profile).strip().lower()
+                allowed = {"maximum", "fast", "beginner", "aggressive", "solid", "adaptive"}
+                if normalized not in allowed:
+                    raise ValueError("Unknown engine personality.")
+                self.engine_profile = normalized
+            if skill is not None:
+                self.engine_skill = max(1, min(100, int(skill)))
+            if move_time_cap_ms is not None:
+                self.engine_move_time_cap_ms = max(50, min(10_000, int(move_time_cap_ms)))
+            return {
+                "profile": self.engine_profile,
+                "skill": self.engine_skill,
+                "move_time_cap_ms": self.engine_move_time_cap_ms,
+            }
+
+    @staticmethod
+    def _profile_static_score(board: chess.Board, move: chess.Move, profile: str) -> int:
+        mover = board.turn
+        is_capture = board.is_capture(move)
+        is_castling = board.is_castling(move)
+        moving_piece = board.piece_at(move.from_square)
+        board.push(move)
+        try:
+            score = -int(agent.evaluate(board))
+            if profile == "aggressive":
+                if is_capture:
+                    score += 45
+                if board.is_check():
+                    score += 35
+                if move.promotion:
+                    score += 30
+            elif profile == "solid":
+                if is_castling:
+                    score += 55
+                if (
+                    moving_piece
+                    and moving_piece.piece_type == chess.QUEEN
+                    and board.fullmove_number <= 8
+                ):
+                    score -= 20
+                # Prefer pieces that remain defended after moving, all else equal.
+                if board.is_attacked_by(mover, move.to_square):
+                    score += 12
+            return score
+        finally:
+            board.pop()
+
+    def _select_profile_move(
+        self,
+        board: chess.Board,
+        searched_uci: str,
+        profile: str,
+        skill: int,
+    ) -> str:
+        if profile in {"maximum", "fast"} or (profile == "adaptive" and skill >= 75):
+            return searched_uci
+        legal = list(board.legal_moves)
+        if len(legal) <= 1:
+            return searched_uci
+        scoring_profile = profile if profile in {"aggressive", "solid"} else "maximum"
+        ranked = sorted(
+            legal,
+            key=lambda move: self._profile_static_score(board, move, scoring_profile),
+            reverse=True,
+        )
+        searched = chess.Move.from_uci(searched_uci)
+        if searched in ranked:
+            ranked.remove(searched)
+            # Keep the searched move in the candidate set, but let an explicit
+            # personality occasionally prefer a characteristic near-equal move.
+            ranked.insert(0, searched)
+        if profile in {"aggressive", "solid"}:
+            candidates = ranked[: min(4, len(ranked))]
+            return max(
+                candidates,
+                key=lambda move: self._profile_static_score(board, move, profile),
+            ).uci()
+        # Beginner/adaptive weakening is deterministic for a position so saved
+        # games and tests remain reproducible. Lower skill allows a wider rank.
+        spread = 1 + max(0, (70 - skill) // 15)
+        index = sum(ord(char) for char in board.fen()) % min(spread, len(ranked))
+        return ranked[index].uci()
+
     def _moves_uci(self) -> list[str]:
         return [move.uci() for move in self.board.move_stack]
 
     @staticmethod
     def _captures(board: chess.Board) -> tuple[list[str], list[str]]:
-        replay = chess.Board(board.root().fen())
+        replay = board.root()
         by_white: list[str] = []
         by_black: list[str] = []
         for move in board.move_stack:
@@ -668,7 +887,10 @@ class GameSession:
         if not isinstance(recorded_raw, list) or len(recorded_raw) > 1_000:
             raise ValueError("Saved game contains invalid recorded clock history.")
 
-        board = chess.Board(initial_fen)
+        chess960 = str(payload.get("variant", "standard")).lower() == "chess960" or bool(
+            payload.get("chess960", False)
+        )
+        board = _board_from_fen(initial_fen, chess960=chess960)
         if not board.is_valid():
             raise ValueError("Saved game starts from an invalid chess position.")
         moves: list[chess.Move] = []
@@ -709,14 +931,44 @@ class GameSession:
             agent.reset_game_state()
             self.board = board
             self.initial_fen = initial_fen
+            self.chess960 = chess960
             self.white_ms = max(0, int(payload.get("white_ms", DEFAULT_CLOCK_MS)))
             self.black_ms = max(0, int(payload.get("black_ms", DEFAULT_CLOCK_MS)))
             self.base_clock_ms = max(
                 1, int(payload.get("base_clock_ms", max(self.white_ms, self.black_ms, 1)))
             )
+            self.white_base_clock_ms = max(
+                1, int(payload.get("white_base_clock_ms", self.base_clock_ms))
+            )
+            self.black_base_clock_ms = max(
+                1, int(payload.get("black_base_clock_ms", self.base_clock_ms))
+            )
             self.increment_ms = max(0, int(payload.get("increment_ms", DEFAULT_INCREMENT_MS)))
+            self.delay_ms = max(0, int(payload.get("delay_ms", 0)))
+            clock_mode = str(payload.get("clock_mode", "increment")).lower()
+            self.clock_mode = (
+                clock_mode
+                if clock_mode in {"increment", "bronstein", "hourglass"}
+                else "increment"
+            )
+            stages_raw = payload.get("time_stages", [])
+            self.time_stages = []
+            if isinstance(stages_raw, list):
+                seen_moves: set[int] = set()
+                for raw in stages_raw[:8]:
+                    if not isinstance(raw, dict):
+                        continue
+                    moves = max(1, min(500, int(raw.get("moves", 0))))
+                    add_ms = max(1, min(24 * 60 * 60 * 1_000, int(raw.get("add_ms", 0))))
+                    if moves not in seen_moves:
+                        self.time_stages.append({"moves": moves, "add_ms": add_ms})
+                        seen_moves.add(moves)
+                self.time_stages.sort(key=lambda item: item["moves"])
             if recorded_initial_raw is None:
-                self.recorded_initial_clocks = (self.base_clock_ms, self.base_clock_ms)
+                self.recorded_initial_clocks = (
+                    self.white_base_clock_ms,
+                    self.black_base_clock_ms,
+                )
             else:
                 self.recorded_initial_clocks = optional_clock_pair(
                     recorded_initial_raw,
@@ -734,7 +986,7 @@ class GameSession:
             ]
             if recorded:
                 self.recorded_clocks = recorded
-            elif history:
+            elif history and self.clock_mode == "increment":
                 # Older FunChessEngine saves only stored the undo clock
                 # baseline. Reconstruct the post-move display clock by adding
                 # increment to the mover, matching play_move()/engine_move().
@@ -803,13 +1055,13 @@ class GameSession:
         }
 
     def position_from_fen(self, fen: str) -> dict[str, Any]:
-        board = chess.Board(fen)
+        board = _board_from_fen(fen, chess960=self.chess960)
         if not board.is_valid():
             raise ValueError("Analysis workspace requires a valid chess position.")
         return self._position_payload(board)
 
     def variation_move(self, fen: str, uci: str) -> dict[str, Any]:
-        board = chess.Board(fen)
+        board = _board_from_fen(fen, chess960=self.chess960)
         if not board.is_valid():
             raise ValueError("Variation starts from an invalid chess position.")
         try:
@@ -828,7 +1080,7 @@ class GameSession:
     def evaluation_breakdown(self, fen: str) -> dict[str, Any]:
         """Expose a compact white-perspective decomposition for the local GUI."""
 
-        board = chess.Board(fen)
+        board = _board_from_fen(fen, chess960=self.chess960)
         if not board.is_valid():
             raise ValueError("Evaluation breakdown requires a valid chess position.")
         material = 0
@@ -934,6 +1186,7 @@ class GameSession:
             agent.reset_game_state()
             self.board = board
             self.initial_fen = initial_fen
+            self.chess960 = bool(board.chess960)
             if base_clock_ms is not None:
                 self.base_clock_ms = base_clock_ms
                 self.increment_ms = increment_ms
@@ -943,6 +1196,11 @@ class GameSession:
                 # open before the import.
                 self.base_clock_ms = DEFAULT_CLOCK_MS
                 self.increment_ms = DEFAULT_INCREMENT_MS
+            self.white_base_clock_ms = self.base_clock_ms
+            self.black_base_clock_ms = self.base_clock_ms
+            self.clock_mode = "increment"
+            self.delay_ms = 0
+            self.time_stages = []
             self.white_ms = self.base_clock_ms
             self.black_ms = self.base_clock_ms
             self.recorded_initial_clocks = recorded_initial
@@ -963,6 +1221,111 @@ class GameSession:
             self.pgn_headers = headers
             self._imported_pgn_game = game
             self.turn_started_ns = time.monotonic_ns()
+
+    @staticmethod
+    def parse_pgn_batch(text: str, max_games: int = 200) -> list[dict[str, Any]]:
+        """Parse a bounded multi-game PGN without mutating the live session."""
+
+        if not text.strip():
+            raise ValueError("PGN file is empty.")
+        if len(text.encode("utf-8")) > 2 * 1024 * 1024:
+            raise ValueError("PGN file is too large for the local game library.")
+        limit = max(1, min(500, int(max_games)))
+        stream = io.StringIO(text)
+        games: list[dict[str, Any]] = []
+        while len(games) < limit:
+            try:
+                game = chess.pgn.read_game(stream)
+            except (ValueError, UnicodeError) as exc:
+                raise ValueError("Could not parse this PGN collection.") from exc
+            if game is None:
+                break
+            if game.errors:
+                raise ValueError(f"PGN game {len(games) + 1} contains invalid notation.")
+            moves = [move.uci() for move in game.mainline_moves()]
+            if len(moves) > 1_000:
+                raise ValueError(f"PGN game {len(games) + 1} contains too many moves.")
+            board = game.board()
+            games.append(
+                {
+                    "index": len(games) + 1,
+                    "pgn": str(game),
+                    "headers": {str(key): str(value) for key, value in game.headers.items()},
+                    "initial_fen": board.fen(),
+                    "moves_uci": moves,
+                    "variant": "chess960" if board.chess960 else "standard",
+                }
+            )
+        if not games:
+            raise ValueError("No chess games were found in this PGN.")
+        # Reaching the limit is fine for exactly `limit` games, but reject a
+        # collection that contains still more data rather than silently
+        # truncating a user's database import.
+        if len(games) == limit:
+            try:
+                extra = chess.pgn.read_game(stream)
+            except (ValueError, UnicodeError) as exc:
+                raise ValueError("Could not parse this PGN collection.") from exc
+            if extra is not None:
+                raise ValueError(f"PGN collection exceeds the {limit}-game import limit.")
+        return games
+
+    def analyze_pgn(self, text: str, budget_ms: int = 100) -> dict[str, Any]:
+        """Analyze one PGN in an isolated worker without replacing the live game."""
+
+        item = self.parse_pgn_batch(text, max_games=1)[0]
+        moves = list(item["moves_uci"])
+        if not moves:
+            raise ValueError("Analyze a PGN containing at least one move.")
+        budget = max(80, min(1_500, int(budget_ms)))
+        payload = {
+            "initial_fen": item["initial_fen"],
+            "moves": moves,
+            "budget_ms": budget,
+            "chess960": item["variant"] == "chess960",
+        }
+        if getattr(sys, "frozen", False):
+            command = [sys.executable, "--analysis-worker"]
+        else:
+            command = [sys.executable, "-m", "gui.server", "--analysis-worker"]
+        completed = subprocess.run(
+            command,
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).resolve().parents[1]),
+            timeout=max(20.0, len(moves) * (budget / 1_000 * 5 + 0.35)),
+            check=False,
+        )
+        messages: list[dict[str, Any]] = []
+        for line in completed.stdout.splitlines():
+            if not line.strip():
+                continue
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(line.strip()) from exc
+            if isinstance(message, dict):
+                messages.append(message)
+        error = next((item for item in messages if item.get("type") == "error"), None)
+        done = any(item.get("type") == "done" for item in messages)
+        if completed.returncode != 0 or error is not None or not done:
+            detail = (
+                str(error.get("error"))
+                if error is not None
+                else completed.stderr.strip()
+                or "Analysis worker did not complete."
+            )
+            raise RuntimeError(detail)
+        results = [item for item in messages if item.get("type") == "move"]
+        return {
+            "headers": item["headers"],
+            "variant": item["variant"],
+            "total": len(moves),
+            "budget_ms": budget,
+            "results": results,
+            "summary": _analysis_summary(results),
+        }
 
     def export_pgn(self) -> str:
         """Return a standards-compatible PGN without stale imported annotations."""
@@ -985,10 +1348,12 @@ class GameSession:
                 for key, value in self.pgn_headers.items():
                     game.headers[key] = value
                 if self.initial_fen != chess.STARTING_FEN:
-                    game.setup(chess.Board(self.initial_fen))
+                    game.setup(_board_from_fen(self.initial_fen, chess960=self.chess960))
+                if self.chess960:
+                    game.headers["Variant"] = "Chess960"
 
                 node: chess.pgn.GameNode = game
-                replay = chess.Board(self.initial_fen)
+                replay = _board_from_fen(self.initial_fen, chess960=self.chess960)
                 for index, move in enumerate(self.board.move_stack):
                     if move not in replay.legal_moves:
                         raise RuntimeError("Current game history cannot be exported as legal PGN.")
@@ -1026,7 +1391,7 @@ class GameSession:
         with self.lock:
             total = len(self.board.move_stack)
             target = max(0, min(int(ply), total))
-            replay = chess.Board(self.initial_fen)
+            replay = _board_from_fen(self.initial_fen, chess960=self.chess960)
             moves = list(self.board.move_stack)
             for move in moves[:target]:
                 replay.push(move)
@@ -1063,7 +1428,7 @@ class GameSession:
         """Return static white-perspective evaluations for each main-line ply."""
 
         with self.lock:
-            replay = chess.Board(self.initial_fen)
+            replay = _board_from_fen(self.initial_fen, chess960=self.chess960)
             values = [self._white_eval(replay)]
             labels = ["Start"]
             for index, move in enumerate(self.board.move_stack, start=1):
@@ -1075,53 +1440,7 @@ class GameSession:
             return {"evals": values, "labels": labels, "total_plies": len(self.board.move_stack)}
 
     def _analysis_summary_locked(self) -> dict[str, Any]:
-        by_side: dict[str, list[int]] = {"white": [], "black": []}
-        phase_cpl: dict[str, list[int]] = {"opening": [], "middlegame": [], "endgame": []}
-        class_counts: dict[str, int] = {}
-        counts = {"Inaccuracy": 0, "Mistake": 0, "Blunder": 0}
-        biggest: dict[str, Any] | None = None
-        for result in self.analysis_results:
-            mover = str(result.get("mover", "white"))
-            cpl = max(0, int(result.get("cpl", 0)))
-            if mover in by_side:
-                by_side[mover].append(cpl)
-            classification = str(result.get("classification", ""))
-            class_counts[classification] = class_counts.get(classification, 0) + 1
-            if classification in counts:
-                counts[classification] += 1
-            phase = str(result.get("phase", "middlegame"))
-            if phase in phase_cpl:
-                phase_cpl[phase].append(cpl)
-            if biggest is None or cpl > int(biggest.get("cpl", -1)):
-                biggest = result
-        all_cpl = [max(0, int(result.get("cpl", 0))) for result in self.analysis_results]
-        # FunChess Accuracy is intentionally our own transparent local metric.
-        accuracy = (
-            round(
-                sum(100.0 * math.exp(-value / 300.0) for value in all_cpl) / len(all_cpl),
-                1,
-            )
-            if all_cpl
-            else 0.0
-        )
-        return {
-            "white_avg_cpl": round(sum(by_side["white"]) / len(by_side["white"]), 1)
-            if by_side["white"]
-            else 0.0,
-            "black_avg_cpl": round(sum(by_side["black"]) / len(by_side["black"]), 1)
-            if by_side["black"]
-            else 0.0,
-            "inaccuracies": counts["Inaccuracy"],
-            "mistakes": counts["Mistake"],
-            "blunders": counts["Blunder"],
-            "accuracy": accuracy,
-            "classifications": class_counts,
-            "phase_avg_cpl": {
-                phase: round(sum(values) / len(values), 1) if values else None
-                for phase, values in phase_cpl.items()
-            },
-            "biggest_turning_point": biggest,
-        }
+        return _analysis_summary(self.analysis_results)
 
     def analysis_state(self) -> dict[str, Any]:
         with self.lock:
@@ -1141,7 +1460,7 @@ class GameSession:
         with self.lock:
             total = len(self.board.move_stack)
             target = max(0, min(int(ply), total))
-            replay = chess.Board(self.initial_fen)
+            replay = _board_from_fen(self.initial_fen, chess960=self.chess960)
             for move in list(self.board.move_stack)[:target]:
                 replay.push(move)
             worker_budget = max(100, min(2_000, int(budget_ms)))
@@ -1149,6 +1468,7 @@ class GameSession:
                 "fen": replay.fen(),
                 "lines": max(1, min(5, int(lines))),
                 "budget_ms": worker_budget,
+                "chess960": self.chess960,
             }
         return self._multipv_payload(
             payload,
@@ -1160,7 +1480,7 @@ class GameSession:
     def multipv_fen(self, fen: str, lines: int = 3, budget_ms: int = 350) -> dict[str, Any]:
         """Analyze an arbitrary valid position without touching the live game."""
 
-        board = chess.Board(fen)
+        board = _board_from_fen(fen, chess960=self.chess960)
         if not board.is_valid() or board.is_game_over(claim_draw=True):
             raise ValueError("MultiPV requires a valid non-terminal chess position.")
         worker_budget = max(100, min(2_000, int(budget_ms)))
@@ -1168,6 +1488,7 @@ class GameSession:
             "fen": board.fen(),
             "lines": max(1, min(5, int(lines))),
             "budget_ms": worker_budget,
+            "chess960": self.chess960,
         }
         return self._multipv_payload(
             payload,
@@ -1311,6 +1632,7 @@ class GameSession:
                 "initial_fen": self.initial_fen,
                 "moves": moves,
                 "budget_ms": self.analysis_budget_ms,
+                "chess960": self.chess960,
             }
         thread = threading.Thread(
             target=self._analysis_thread_main,
@@ -1413,7 +1735,13 @@ class GameSession:
                 "white_ms": white_ms,
                 "black_ms": black_ms,
                 "base_clock_ms": self.base_clock_ms,
+                "white_base_clock_ms": self.white_base_clock_ms,
+                "black_base_clock_ms": self.black_base_clock_ms,
                 "increment_ms": self.increment_ms,
+                "delay_ms": self.delay_ms,
+                "clock_mode": self.clock_mode,
+                "time_stages": [dict(stage) for stage in self.time_stages],
+                "variant": "chess960" if self.chess960 else "standard",
                 "eval_cp": eval_cp,
                 "check": board.is_check(),
                 "game_over": (
@@ -1460,6 +1788,9 @@ class GameSession:
                 "last_engine_score": self.last_engine_score,
                 "last_engine_pv": self.last_engine_pv,
                 "last_engine_researches": self.last_engine_researches,
+                "engine_profile": self.engine_profile,
+                "engine_skill": self.engine_skill,
+                "engine_move_time_cap_ms": self.engine_move_time_cap_ms,
                 "analysis_status": self.analysis_status,
                 "analysis_total": self.analysis_total,
                 "phase": _phase_name(board),
@@ -1475,7 +1806,7 @@ class GameSession:
 
     @staticmethod
     def _pgn_moves(board: chess.Board) -> list[dict[str, Any]]:
-        replay = chess.Board(board.root().fen())
+        replay = board.root()
         result: list[dict[str, Any]] = []
         for ply, move in enumerate(board.move_stack):
             san = replay.san(move)
@@ -1496,7 +1827,7 @@ class GameSession:
             if move not in self.board.legal_moves:
                 raise ValueError("That move is not legal in the current position.")
             self._cancel_analysis_locked()
-            self._commit_clock()
+            elapsed_ms = self._commit_clock()
             mover = self.board.turn
             remaining = self.white_ms if mover == chess.WHITE else self.black_ms
             if remaining <= 0:
@@ -1504,10 +1835,7 @@ class GameSession:
                 raise ValueError(f"{side} has flagged on time.")
             self._imported_pgn_game = None
             self.history.append((self.white_ms, self.black_ms))
-            if mover == chess.WHITE:
-                self.white_ms += self.increment_ms
-            else:
-                self.black_ms += self.increment_ms
+            self._post_move_clock(mover, elapsed_ms)
             self.recorded_clocks.append((self.white_ms, self.black_ms))
             self.board.push(move)
             self.last_move = move
@@ -1521,15 +1849,26 @@ class GameSession:
                 raise ValueError("The game is paused.")
             self._cancel_analysis_locked()
             color = self.board.turn
-            self._commit_clock()
+            committed_elapsed_ms = self._commit_clock()
             available = self.white_ms if color == chess.WHITE else self.black_ms
             if available <= 0:
                 side = "White" if color == chess.WHITE else "Black"
                 raise ValueError(f"{side} has flagged on time.")
             requested = available if budget_ms is None else min(available, max(1, budget_ms))
+            requested = min(requested, self.engine_move_time_cap_ms)
+            skill_scale = 0.12 + 0.88 * (self.engine_skill / 100.0) ** 2
+            if self.engine_profile == "fast":
+                skill_scale *= 0.45
+            requested = max(20, min(requested, int(requested * skill_scale)))
             fen = self.board.fen()
             before = time.monotonic_ns()
-            uci = agent.get_move(fen, requested)
+            searched_uci = agent.get_move(fen, requested)
+            uci = self._select_profile_move(
+                self.board,
+                searched_uci,
+                self.engine_profile,
+                self.engine_skill,
+            )
             elapsed_ms = max(0, (time.monotonic_ns() - before) // 1_000_000)
 
             try:
@@ -1539,16 +1878,21 @@ class GameSession:
             if move not in self.board.legal_moves:
                 raise RuntimeError(f"Engine returned illegal move {uci!r}.")
 
-            if color == chess.WHITE:
-                self.white_ms = max(0, self.white_ms - elapsed_ms)
-            else:
-                self.black_ms = max(0, self.black_ms - elapsed_ms)
+            self._apply_elapsed(color, int(elapsed_ms))
             self.last_engine_ms = int(elapsed_ms)
             info = agent.LAST_SEARCH_INFO
             self.last_engine_nodes = int(info.nodes)
             self.last_engine_depth = int(info.depth)
-            self.last_engine_score = int(info.score)
-            self.last_engine_pv = tuple(info.pv)
+            if uci == searched_uci:
+                self.last_engine_score = int(info.score)
+                self.last_engine_pv = tuple(info.pv)
+            else:
+                self.last_engine_score = self._profile_static_score(
+                    self.board,
+                    move,
+                    self.engine_profile,
+                )
+                self.last_engine_pv = (uci,)
             self.last_engine_researches = int(info.aspiration_researches)
             self.turn_started_ns = time.monotonic_ns()
             remaining = self.white_ms if color == chess.WHITE else self.black_ms
@@ -1560,10 +1904,7 @@ class GameSession:
                 return ""
             self._imported_pgn_game = None
             self.history.append((self.white_ms, self.black_ms))
-            if color == chess.WHITE:
-                self.white_ms += self.increment_ms
-            else:
-                self.black_ms += self.increment_ms
+            self._post_move_clock(color, committed_elapsed_ms + int(elapsed_ms))
             self.recorded_clocks.append((self.white_ms, self.black_ms))
             self.board.push(move)
             self.last_move = move
@@ -1717,16 +2058,74 @@ class Handler(SimpleHTTPRequestHandler):
             elif self.path == "/api/engine":
                 budget = payload.get("budget_ms")
                 SESSION.engine_move(int(budget) if budget is not None else None)
+            elif self.path == "/api/engine-config":
+                config = SESSION.configure_engine(
+                    profile=(
+                        str(payload["profile"])
+                        if payload.get("profile") is not None
+                        else None
+                    ),
+                    skill=(int(payload["skill"]) if payload.get("skill") is not None else None),
+                    move_time_cap_ms=(
+                        int(payload["move_time_cap_ms"])
+                        if payload.get("move_time_cap_ms") is not None
+                        else None
+                    ),
+                )
+                self._json(config)
+                return
             elif self.path == "/api/reset":
+                variant = str(payload.get("variant", "standard")).strip().lower()
+                chess960 = variant == "chess960" or bool(payload.get("chess960", False))
+                fen = str(payload.get("fen", chess.STARTING_FEN))
+                chess960_pos = payload.get("chess960_pos")
+                if chess960_pos is not None:
+                    index = int(chess960_pos)
+                    if index < 0 or index > 959:
+                        raise ValueError("Chess960 position number must be between 0 and 959.")
+                    fen = chess.Board.from_chess960_pos(index).fen()
+                    chess960 = True
                 SESSION.reset(
-                    str(payload.get("fen", chess.STARTING_FEN)),
+                    fen,
                     int(payload.get("clock_ms", DEFAULT_CLOCK_MS)),
                     int(payload.get("increment_ms", DEFAULT_INCREMENT_MS)),
+                    chess960=chess960,
+                    white_clock_ms=(
+                        int(payload["white_clock_ms"])
+                        if payload.get("white_clock_ms") is not None
+                        else None
+                    ),
+                    black_clock_ms=(
+                        int(payload["black_clock_ms"])
+                        if payload.get("black_clock_ms") is not None
+                        else None
+                    ),
+                    clock_mode=str(payload.get("clock_mode", "increment")),
+                    delay_ms=int(payload.get("delay_ms", 0)),
+                    time_stages=(
+                        payload.get("time_stages")
+                        if isinstance(payload.get("time_stages"), list)
+                        else []
+                    ),
                 )
             elif self.path == "/api/load-game":
                 SESSION.load_snapshot(payload)
             elif self.path == "/api/load-pgn":
                 SESSION.load_pgn(str(payload.get("pgn", "")))
+            elif self.path == "/api/parse-pgn-batch":
+                games = SESSION.parse_pgn_batch(
+                    str(payload.get("pgn", "")),
+                    int(payload.get("max_games", 200)),
+                )
+                self._json({"games": games, "count": len(games)})
+                return
+            elif self.path == "/api/analyze-pgn":
+                result = SESSION.analyze_pgn(
+                    str(payload.get("pgn", "")),
+                    int(payload.get("budget_ms", 100)),
+                )
+                self._json(result)
+                return
             elif self.path == "/api/export-pgn":
                 self._json({"pgn": SESSION.export_pgn()})
                 return

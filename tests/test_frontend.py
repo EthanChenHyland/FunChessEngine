@@ -197,8 +197,9 @@ class FrontendTransitionContractTests(unittest.TestCase):
         self.assertIn("const MAX_PGN_BYTES = 2 * 1024 * 1024;", self.desktop_main)
 
     def test_second_desktop_launch_reopens_a_closed_mac_window(self) -> None:
-        self.assertIn('app.on("second-instance", async () => {', self.desktop_main)
+        self.assertIn('app.on("second-instance", async (_event, argv) => {', self.desktop_main)
         self.assertIn("await createWindow();", self.desktop_main)
+        self.assertIn("candidateDocumentArgs(argv)", self.desktop_main)
 
     def test_saved_desktop_window_bounds_are_clamped_to_a_current_display(self) -> None:
         self.assertIn("function restoredWindowState(saved)", self.desktop_main)

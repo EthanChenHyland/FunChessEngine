@@ -14,12 +14,14 @@ const intentionalBackends = new WeakSet();
 const MAX_FEN_BYTES = 64 * 1024;
 const MAX_PGN_BYTES = 2 * 1024 * 1024;
 const MAX_SAVE_BYTES = 50 * 1024 * 1024;
+const MAX_BUNDLE_BYTES = 12 * 1024 * 1024;
 const MAX_RESTART_SNAPSHOT_BYTES = 512 * 1024;
 const DESKTOP_BACKEND_PORT = 8765;
 const MIN_WINDOW_WIDTH = 900;
 const MIN_WINDOW_HEIGHT = 680;
 const DEFAULT_WINDOW_WIDTH = 1320;
 const DEFAULT_WINDOW_HEIGHT = 900;
+const pendingOpenDocuments = [];
 
 app.setName("FunChessEngine");
 
@@ -359,6 +361,71 @@ function sendCommand(command) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("menu:command", command);
 }
 
+function nativeDocument(filePath) {
+  const extension = path.extname(filePath).toLowerCase();
+  if (extension === ".pgn") {
+    return {
+      kind: "pgn",
+      name: path.basename(filePath),
+      text: readBounded(filePath, MAX_PGN_BYTES, "utf8"),
+    };
+  }
+  if (extension === ".fen" || extension === ".txt") {
+    return {
+      kind: "fen",
+      name: path.basename(filePath),
+      text: readBounded(filePath, MAX_FEN_BYTES, "utf8"),
+    };
+  }
+  if (extension === ".fce") {
+    return {
+      kind: "bundle",
+      name: path.basename(filePath),
+      text: readBounded(filePath, MAX_BUNDLE_BYTES, "utf8"),
+    };
+  }
+  return null;
+}
+
+function dispatchNativeDocument(filePath) {
+  let payload;
+  try {
+    payload = nativeDocument(filePath);
+  } catch (error) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      dialog.showMessageBox(mainWindow, {
+        type: "error",
+        title: "Could not open file",
+        message: "FunChessEngine could not open this document.",
+        detail: String(error?.message || error),
+      });
+    }
+    return false;
+  }
+  if (!payload) return false;
+  app.addRecentDocument(filePath);
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isLoadingMainFrame()) {
+    pendingOpenDocuments.push(filePath);
+    return true;
+  }
+  mainWindow.webContents.send("file:opened-document", payload);
+  return true;
+}
+
+function flushPendingOpenDocuments() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const queued = pendingOpenDocuments.splice(0);
+  for (const filePath of queued) dispatchNativeDocument(filePath);
+}
+
+function candidateDocumentArgs(argv) {
+  return argv.filter((value) => {
+    if (!value || value.startsWith("-")) return false;
+    const extension = path.extname(value).toLowerCase();
+    return [".pgn", ".fen", ".txt", ".fce"].includes(extension) && fs.existsSync(value);
+  });
+}
+
 function installMenu() {
   const template = [
     ...(process.platform === "darwin" ? [{
@@ -425,6 +492,7 @@ function installMenu() {
         { role: "zoomOut" },
         { type: "separator" },
         { label: "Command Palette…", accelerator: "CmdOrCtrl+K", click: () => sendCommand("command-palette") },
+        { label: "Zen Board", accelerator: "CmdOrCtrl+Shift+Z", click: () => sendCommand("zen") },
         { type: "separator" },
         { role: "togglefullscreen" },
       ],
@@ -448,6 +516,7 @@ function registerFileHandlers() {
       filters: [{ name: "FEN position", extensions: ["fen", "txt"] }],
     });
     if (result.canceled || !result.filePaths[0]) return null;
+    app.addRecentDocument(result.filePaths[0]);
     return readBounded(result.filePaths[0], MAX_FEN_BYTES, "utf8");
   });
 
@@ -458,6 +527,7 @@ function registerFileHandlers() {
       filters: [{ name: "Portable Game Notation", extensions: ["pgn"] }],
     });
     if (result.canceled || !result.filePaths[0]) return null;
+    app.addRecentDocument(result.filePaths[0]);
     return readBounded(result.filePaths[0], MAX_PGN_BYTES, "utf8");
   });
 
@@ -509,6 +579,36 @@ function registerFileHandlers() {
     });
     if (result.canceled || !result.filePath) return false;
     fs.writeFileSync(result.filePath, bytes);
+    return true;
+  });
+
+  ipcMain.handle("file:open-bundle", async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: "Restore FunChessEngine Backup",
+      properties: ["openFile"],
+      filters: [
+        { name: "FunChessEngine backup", extensions: ["fce"] },
+        { name: "JSON data", extensions: ["json"] },
+      ],
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+    app.addRecentDocument(result.filePaths[0]);
+    return readBounded(result.filePaths[0], MAX_BUNDLE_BYTES, "utf8");
+  });
+
+  ipcMain.handle("file:save-bundle", async (_event, payload) => {
+    if (!payload || typeof payload.text !== "string") return false;
+    if (Buffer.byteLength(payload.text, "utf8") > MAX_BUNDLE_BYTES) {
+      throw new Error("Backup bundle is too large.");
+    }
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: "Back Up FunChessEngine Data",
+      defaultPath: payload.filename || "FunChessEngine-backup.fce",
+      filters: [{ name: "FunChessEngine backup", extensions: ["fce"] }],
+    });
+    if (result.canceled || !result.filePath) return false;
+    fs.writeFileSync(result.filePath, payload.text, "utf8");
+    app.addRecentDocument(result.filePath);
     return true;
   });
 }
@@ -573,6 +673,7 @@ async function createWindow() {
     const url = await startBackend();
     backendUrl = url;
     await mainWindow.loadURL(url);
+    flushPendingOpenDocuments();
   } catch (error) {
     await showBackendFailure(error);
     app.quit();
@@ -583,13 +684,18 @@ const singleInstance = app.requestSingleInstanceLock();
 if (!singleInstance) {
   app.quit();
 } else {
-  app.on("second-instance", async () => {
+  app.on("second-instance", async (_event, argv) => {
     if (!mainWindow || mainWindow.isDestroyed()) {
       await createWindow();
-      return;
     }
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.focus();
+    for (const filePath of candidateDocumentArgs(argv)) dispatchNativeDocument(filePath);
+  });
+
+  app.on("open-file", (event, filePath) => {
+    event.preventDefault();
+    dispatchNativeDocument(filePath);
   });
 
   app.whenReady().then(async () => {
@@ -601,6 +707,7 @@ if (!singleInstance) {
     registerBackendHandlers();
     installMenu();
     await createWindow();
+    for (const filePath of candidateDocumentArgs(process.argv.slice(1))) dispatchNativeDocument(filePath);
     app.on("activate", async () => {
       if (BrowserWindow.getAllWindows().length === 0) await createWindow();
     });

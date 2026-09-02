@@ -743,12 +743,31 @@ def _trim_state() -> None:
         HISTORY.clear()
 
 
+def _board_from_fen(fen: str) -> chess.Board:
+    """Parse standard positions first, with a Chess960 fallback when needed.
+
+    The competition/runtime protocol only provides a FEN string, so there is no
+    separate variant flag to pass through.  python-chess marks Chess960-style
+    castling rights as invalid on an ordinary Board; in that specific case we
+    retry with ``chess960=True``.  Standard positions keep the existing board
+    semantics and UCI castling representation unchanged.
+    """
+
+    board = chess.Board(fen)
+    if board.is_valid():
+        return board
+    chess960_board = chess.Board(fen, chess960=True)
+    if chess960_board.is_valid():
+        return chess960_board
+    return board
+
+
 def get_move(fen: str, time_left_ms: int) -> str:
     """Return a legal UCI move before the game clock expires."""
 
     global DEADLINE_NS, LAST_SEARCH_INFO, NODES
 
-    board = chess.Board(fen)
+    board = _board_from_fen(fen)
     legal = list(board.legal_moves)
     if not legal:
         # The referee never asks for a move after game over, but returning an
