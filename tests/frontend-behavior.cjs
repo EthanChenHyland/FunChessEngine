@@ -54,6 +54,42 @@ test('transposition move prefixes follow edges rather than first incoming node m
   assert.equal(c.currentMovePrefix().join(' '),moves.join(' '));
 });
 
+test('legacy transposition migration never invents a secondary incoming move',()=>{
+  const c=load(['normalizeVariationWorkspace'],{validateStudyGraph:()=>true});
+  const fen='4k3/8/8/8/8/8/8/4K3 w - - 0 1';
+  const node=(id,children=[],extra={})=>({id,children,snapshot:{fen},...extra});
+  const graph={root:'r',edges:{},nodes:{
+    r:node('r',['a','b']),
+    a:node('a',['shared'],{parent:'r',parents:['r'],move_uci:'a2a3'}),
+    b:node('b',['shared'],{parent:'r',parents:['r'],move_uci:'b2b3'}),
+    shared:node('shared',[],{parent:'a',parents:['a','b'],move_uci:'c2c3',move_san:'c3'}),
+  }};
+  const migrated=c.normalizeVariationWorkspace(graph);
+  assert.equal(migrated.edges['a>shared'].move_uci,'c2c3');
+  assert.equal(migrated.edges['b>shared'],undefined);
+  assert.equal(migrated.nodes.b.children.includes('shared'),false);
+  assert.deepEqual(Array.from(migrated.nodes.shared.parents),['a']);
+});
+
+test('plugin disable removes only its trainer contributions and opening labels are longest-prefix',()=>{
+  const globals={
+    trainerItems:[
+      {key:'plugin:one:a',plugin_id:'one'},
+      {key:'plugin:two:b',plugin_id:'two'},
+      {key:'personal',source:'analysis'},
+    ],
+    saveTrainerItems:()=>{},renderTrainerPanel:()=>{},
+    pluginManifests:[
+      {id:'open',enabled:true,kind:'openings',items:[{name:'Short',moves:['e2e4']},{name:'Long',moves:['e2e4','e7e5']}]},
+      {id:'off',enabled:false,kind:'openings',items:[{name:'Disabled',moves:['e2e4','e7e5','g1f3']}]},
+    ],
+  };
+  const c=load(['removePluginContributions','pluginOpeningForMoves'],globals);
+  c.removePluginContributions('one');
+  assert.deepEqual(Array.from(c.trainerItems, item=>item.key),['plugin:two:b','personal']);
+  assert.equal(c.pluginOpeningForMoves(['e2e4','e7e5','g1f3']).name,'Long');
+});
+
 test('desktop metadata is bounded, persists across store instances and rejects unknown keys',()=>{
   const {metadataStore}=require('../desktop/storage');
   const folder=fs.mkdtempSync(require('node:path').join(require('node:os').tmpdir(),'fce-metadata-'));
@@ -69,11 +105,13 @@ test('desktop metadata is bounded, persists across store instances and rejects u
 test('study validation accepts transpositions and rejects cycles, missing references and prototype keys',()=>{
   const ctx=vm.createContext({console});
   vm.runInContext(fs.readFileSync(require('node:path').join(__dirname,'../gui/static/workflows.js'),'utf8'),ctx);
-  const node=(id,children=[])=>({id,children,snapshot:{fen:'valid-test-position'}});
+  const node=(id,children=[])=>({id,children,snapshot:{fen:'4k3/8/8/8/8/8/8/4K3 w - - 0 1'}});
   const graph={root:'r',nodes:{r:node('r',['a','b']),a:node('a',['c']),b:node('b',['c']),c:node('c')}};
   assert.equal(ctx.validateStudyGraph(graph),graph);
   graph.nodes.c.children=['r']; assert.throws(()=>ctx.validateStudyGraph(graph),/cycle/);
   graph.nodes.c.children=['missing']; assert.throws(()=>ctx.validateStudyGraph(graph),/missing/);
   assert.throws(()=>ctx.validateBackupCollections(JSON.parse('{"annotations":{"__proto__":{}}}')),/reserved/);
   assert.throws(()=>ctx.validateBackupCollections({lessons:[{title:'Bad',cards:'wrong'}]}),/lessons/);
+  graph.nodes.c.children=[]; graph.nodes.c.snapshot.fen='8/8/8/8/8/8/8/8 w - - 0 1';
+  assert.throws(()=>ctx.validateStudyGraph(graph),/invalid/);
 });

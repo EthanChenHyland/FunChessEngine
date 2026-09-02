@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import atexit
 import os
 import queue
+import signal
 import subprocess
 import threading
 import time
 from contextlib import suppress
 from typing import IO
+
+_ACTIVE_LOCK = threading.RLock()
+_ACTIVE_PROCESSES: dict[int, tuple[subprocess.Popen[bytes], bool]] = {}
 
 
 class PipeError(RuntimeError):
@@ -85,6 +90,53 @@ class TailReader:
             pass
 
 
+def register_process(process: subprocess.Popen[bytes], *, group: bool = False) -> None:
+    """Register a child that must not outlive this Python process."""
+
+    with _ACTIVE_LOCK:
+        _ACTIVE_PROCESSES[process.pid] = (process, group)
+
+
+def unregister_process(process: subprocess.Popen[bytes]) -> None:
+    with _ACTIVE_LOCK:
+        _ACTIVE_PROCESSES.pop(process.pid, None)
+
+
+def _posix_descendants(root_pid: int) -> list[int]:
+    """Return descendants deepest-first without relying on Linux-only /proc."""
+
+    try:
+        result = subprocess.run(
+            ["ps", "-eo", "pid=,ppid="],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    children: dict[int, list[int]] = {}
+    for raw in result.stdout.splitlines():
+        parts = raw.split()
+        if len(parts) != 2:
+            continue
+        try:
+            pid, parent = (int(parts[0]), int(parts[1]))
+        except ValueError:
+            continue
+        children.setdefault(parent, []).append(pid)
+    ordered: list[int] = []
+
+    def visit(parent: int) -> None:
+        for child in children.get(parent, []):
+            visit(child)
+            ordered.append(child)
+
+    visit(root_pid)
+    return ordered
+
+
 def terminate_tree(process: subprocess.Popen[bytes], *, group: bool = False) -> None:
     """Stop a worker and its descendants; group requires start_new_session on POSIX."""
     if os.name == "nt":
@@ -95,10 +147,37 @@ def terminate_tree(process: subprocess.Popen[bytes], *, group: bool = False) -> 
             check=False,
         )
     elif group:
-        import signal
-
         with suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGKILL)
-    elif process.poll() is None:
-        process.kill()
-    process.wait(timeout=5)
+    else:
+        # External UCI executables are intentionally not moved to their own
+        # session because tournament workers already live in an isolated
+        # process group. Walk their descendants explicitly so helper processes
+        # cannot survive a normal close in the host backend.
+        for pid in _posix_descendants(process.pid):
+            with suppress(ProcessLookupError, PermissionError):
+                os.kill(pid, signal.SIGKILL)
+        if process.poll() is None:
+            with suppress(ProcessLookupError):
+                process.kill()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        with suppress(ProcessLookupError):
+            process.kill()
+        with suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=1)
+
+
+def terminate_active_processes() -> None:
+    """Best-effort emergency cleanup for backend shutdown/restart."""
+
+    with _ACTIVE_LOCK:
+        active = list(_ACTIVE_PROCESSES.values())
+        _ACTIVE_PROCESSES.clear()
+    for process, group in active:
+        with suppress(OSError, subprocess.SubprocessError):
+            terminate_tree(process, group=group)
+
+
+atexit.register(terminate_active_processes)

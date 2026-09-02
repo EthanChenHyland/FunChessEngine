@@ -1,7 +1,7 @@
 "use strict";
 
 const { app, BrowserWindow, Menu, dialog, ipcMain, nativeImage, screen, shell } = require("electron");
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const { metadataStore } = require("./storage");
@@ -178,6 +178,49 @@ function backendCommand() {
   };
 }
 
+function posixDescendants(rootPid) {
+  const result = spawnSync("ps", ["-eo", "pid=,ppid="], { encoding: "utf8", timeout: 2000 });
+  if (result.error || result.status !== 0) return [];
+  const children = new Map();
+  for (const raw of String(result.stdout || "").split(/\r?\n/)) {
+    const parts = raw.trim().split(/\s+/);
+    if (parts.length !== 2) continue;
+    const pid = Number(parts[0]);
+    const parent = Number(parts[1]);
+    if (!Number.isInteger(pid) || !Number.isInteger(parent)) continue;
+    if (!children.has(parent)) children.set(parent, []);
+    children.get(parent).push(pid);
+  }
+  const ordered = [];
+  const visit = (parent) => {
+    for (const child of children.get(parent) || []) {
+      visit(child);
+      ordered.push(child);
+    }
+  };
+  visit(rootPid);
+  return ordered;
+}
+
+function terminateBackendTree(child, force = false) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  if (process.platform === "win32") {
+    const result = spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+      stdio: "ignore",
+      windowsHide: true,
+      timeout: 5000,
+    });
+    if (result.error) child.kill();
+    return;
+  }
+  if (force) {
+    for (const pid of posixDescendants(child.pid)) {
+      try { process.kill(pid, "SIGKILL"); } catch (_) { /* Already exited. */ }
+    }
+  }
+  try { child.kill(force ? "SIGKILL" : "SIGTERM"); } catch (_) { /* Already exited. */ }
+}
+
 function startBackend() {
   return new Promise((resolve, reject) => {
     const spec = backendCommand();
@@ -194,7 +237,7 @@ function startBackend() {
       if (!settled) {
         settled = true;
         intentionalBackends.add(child);
-        child.kill("SIGTERM");
+        terminateBackendTree(child);
         if (backend === child) backend = null;
         reject(new Error(`Engine backend did not become ready.\n${output.trim()}`));
       }
@@ -252,7 +295,7 @@ function stopBackend() {
   if (!backend) return null;
   const child = backend;
   intentionalBackends.add(child);
-  child.kill("SIGTERM");
+  terminateBackendTree(child);
   backend = null;
   backendUrl = null;
   return child;
@@ -274,7 +317,7 @@ async function stopBackendAndWait() {
     };
     child.once("exit", finish);
     forceTimer = setTimeout(() => {
-      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      terminateBackendTree(child, true);
     }, 1_500);
     hardTimer = setTimeout(finish, 2_500);
   });
@@ -636,7 +679,7 @@ function registerFileHandlers() {
       title: "Restore FunChessEngine Backup",
       properties: ["openFile"],
       filters: [
-        { name: "FunChessEngine backup", extensions: ["fce"] },
+        { name: "Legacy FunChessEngine metadata backup", extensions: ["fce"] },
         { name: "JSON data", extensions: ["json"] },
       ],
     });
@@ -654,7 +697,7 @@ function registerFileHandlers() {
     const result = await dialog.showSaveDialog(mainWindow, {
       title: "Back Up FunChessEngine Data",
       defaultPath: payload.filename || "FunChessEngine-backup.fce",
-      filters: [{ name: "FunChessEngine backup", extensions: ["fce"] }],
+      filters: [{ name: "Legacy FunChessEngine metadata backup", extensions: ["fce"] }],
     });
     if (result.canceled || !result.filePath) return false;
     fs.writeFileSync(result.filePath, payload.text, "utf8");

@@ -12,7 +12,14 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
-from harness.process_io import LineReader, PipeError, TailReader, terminate_tree
+from harness.process_io import (
+    LineReader,
+    PipeError,
+    TailReader,
+    register_process,
+    terminate_tree,
+    unregister_process,
+)
 
 _CONTEXT = threading.local()
 _PROCESS_SLOTS = threading.BoundedSemaphore(2)
@@ -69,6 +76,7 @@ def run_process(
             cwd=cwd,
             start_new_session=os.name != "nt",
         )
+        register_process(process, group=os.name != "nt")
         assert process.stdin and process.stdout and process.stderr
         reader = LineReader(
             process.stdout, line_limit=32 * 1024 * 1024, total_limit=64 * 1024 * 1024
@@ -110,6 +118,7 @@ def run_process(
         return result
     finally:
         if process is not None:
+            unregister_process(process)
             # Also remove descendants left behind by a failed or completed worker.
             terminate_tree(process, group=os.name != "nt")
             if "reader" in locals():
@@ -181,6 +190,14 @@ class JobRegistry:
             if row["status"] == "running":
                 self.cancels[identifier].set()
             return row
+
+    def cancel_all(self) -> None:
+        """Request cancellation for every running background job."""
+
+        with self.lock:
+            for identifier, row in self.jobs.items():
+                if row["status"] == "running":
+                    self.cancels[identifier].set()
 
     def list(self) -> list[dict[str, Any]]:
         with self.lock:

@@ -14,7 +14,13 @@ from pathlib import Path
 
 import chess
 
-from harness.process_io import LineReader, PipeError
+from harness.process_io import (
+    LineReader,
+    PipeError,
+    register_process,
+    terminate_tree,
+    unregister_process,
+)
 
 
 class UCIClientError(RuntimeError):
@@ -99,6 +105,7 @@ class ExternalUCIEngine:
                 bufsize=0,
                 shell=False,
             )
+            register_process(self.process)
             assert self.process.stdout is not None
             self.reader = LineReader(self.process.stdout)
             self._send("uci")
@@ -115,21 +122,15 @@ class ExternalUCIEngine:
         self.process = None
         if process is None:
             return
-        try:
-            if process.poll() is None and process.stdin:
-                process.stdin.write(b"quit\n")
-                process.stdin.flush()
-                process.wait(timeout=0.5)
-        except (BrokenPipeError, subprocess.TimeoutExpired):
-            process.kill()
-        finally:
-            if process.poll() is None:
-                process.kill()
-            process.wait(timeout=1.0)
-            if process.stdin is not None:
-                process.stdin.close()
-            if process.stdout is not None:
-                process.stdout.close()
+        # Terminate the process tree while the engine is still the parent of
+        # any helpers it spawned. Waiting for a graceful `quit` first can let
+        # the engine exit and re-parent those helpers before we discover them.
+        unregister_process(process)
+        terminate_tree(process)
+        if process.stdin is not None:
+            process.stdin.close()
+        if process.stdout is not None:
+            process.stdout.close()
 
     def _send(self, command: str) -> None:
         process = self.process

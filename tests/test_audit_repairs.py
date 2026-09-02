@@ -24,8 +24,15 @@ import agent
 from gui import workspace
 from gui.imports import import_reference_file
 from gui.jobs import JobCancelled, JobRegistry, check_cancelled, run_process
-from gui.server import GameSession
-from harness.process_io import LineReader, PipeError, terminate_tree
+from gui.server import JOBS as SERVER_JOBS
+from gui.server import GameSession, _submit_job, _validate_workspace_metadata
+from harness.process_io import (
+    LineReader,
+    PipeError,
+    register_process,
+    terminate_active_processes,
+    terminate_tree,
+)
 from integrations.tournament import _InternalEngine, run_tournament
 from librarydb.store import LibraryDatabase, structure_tags
 from openingbook.store import OpeningBook
@@ -145,6 +152,103 @@ class AuditRepairsTests(unittest.TestCase):
             time.sleep(0.01)
         self.assertEqual(registry.get(job["id"])["status"], "cancelled")
 
+    def test_backend_shutdown_cleanup_terminates_registered_worker_tree(self) -> None:
+        with tempfile.NamedTemporaryFile(delete=False) as marker_file:
+            marker_name = marker_file.name
+        os.unlink(marker_name)
+        code = (
+            "import subprocess,sys,time; "
+            f"child=subprocess.Popen([sys.executable,'-c',\"import time; time.sleep(30)\"]); "
+            f"open({marker_name!r},'w').write(str(child.pid)); time.sleep(30)"
+        )
+        process = subprocess.Popen(
+            [sys.executable, "-c", code],
+            start_new_session=os.name != "nt",
+        )
+        register_process(process, group=os.name != "nt")
+        try:
+            deadline = time.monotonic() + 2
+            while not os.path.exists(marker_name) and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(os.path.exists(marker_name))
+            child_pid = int(Path(marker_name).read_text())
+            terminate_active_processes()
+            process.wait(timeout=2)
+            if os.name != "nt":
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(child_pid, 0)
+        finally:
+            terminate_tree(process, group=os.name != "nt")
+            Path(marker_name).unlink(missing_ok=True)
+
+    def test_workspace_metadata_rejects_invalid_positions_and_mismatched_edges(self) -> None:
+        valid = "4k3/8/8/8/8/8/4P3/4K3 w - - 0 1"
+        child = "4k3/8/8/8/8/4P3/8/4K3 b - - 0 1"
+        metadata = {
+            "studies": {
+                "one": {
+                    "root": "r",
+                    "nodes": {
+                        "r": {"id": "r", "children": ["c"], "snapshot": {"fen": valid}},
+                        "c": {"id": "c", "children": [], "snapshot": {"fen": child}},
+                    },
+                    "edges": {"r>c": {"move_uci": "e2e3"}},
+                }
+            }
+        }
+        self.assertEqual(_validate_workspace_metadata(metadata), {"valid": True})
+        metadata["studies"]["one"]["edges"]["r>c"]["move_uci"] = "e2e4"
+        with self.assertRaisesRegex(ValueError, "does not reach"):
+            _validate_workspace_metadata(metadata)
+        metadata["studies"]["one"]["edges"]["r>c"]["move_uci"] = "e2e3"
+        metadata["studies"]["one"]["nodes"]["c"]["snapshot"]["fen"] = (
+            "8/8/8/8/8/8/8/8 b - - 0 1"
+        )
+        with self.assertRaisesRegex(ValueError, "invalid chess position"):
+            _validate_workspace_metadata(metadata)
+
+    def test_workspace_metadata_rejects_study_cycles_and_orphan_edges(self) -> None:
+        fen = "4k3/8/8/8/8/8/8/4K3 w - - 0 1"
+        cyclic = {
+            "studies": {
+                "one": {
+                    "root": "r",
+                    "nodes": {
+                        "r": {"id": "r", "children": ["c"], "snapshot": {"fen": fen}},
+                        "c": {"id": "c", "children": ["r"], "snapshot": {"fen": fen}},
+                    },
+                    "edges": {},
+                }
+            }
+        }
+        with self.assertRaisesRegex(ValueError, "cycle"):
+            _validate_workspace_metadata(cyclic)
+
+        clean = {
+            "studies": {
+                "one": {
+                    "root": "r",
+                    "nodes": {"r": {"id": "r", "children": [], "snapshot": {"fen": fen}}},
+                    "edges": {"r>missing": {"move_uci": "e1e2"}},
+                }
+            }
+        }
+        with self.assertRaisesRegex(ValueError, "orphan edge"):
+            _validate_workspace_metadata(clean)
+
+    def test_workspace_metadata_accepts_legacy_chess960_snapshot_without_variant(self) -> None:
+        fen = chess.Board.from_chess960_pos(0).fen()
+        metadata = {
+            "studies": {
+                "960": {
+                    "root": "r",
+                    "nodes": {"r": {"id": "r", "children": [], "snapshot": {"fen": fen}}},
+                    "edges": {},
+                }
+            }
+        }
+        self.assertEqual(_validate_workspace_metadata(metadata), {"valid": True})
+
 
 class WorkspaceRepairTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -244,3 +348,19 @@ class WorkspaceRepairTests(unittest.TestCase):
         self.assertEqual(result["imported"], 110)
         self.assertEqual(database.stats()["games"], 110)
         self.assertEqual(import_reference_file(database, path, "test")["imported"], 110)
+
+    def test_reference_import_job_releases_transfer_without_browser_cleanup(self) -> None:
+        token = self.upload(b'[Event "Import"]\n\n1. e4 e5 *')
+        database = LibraryDatabase(self.root / "job-library.sqlite3")
+        with patch("gui.server._library_database", return_value=database):
+            job = _submit_job("reference-import", {"token": token})
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                current = SERVER_JOBS.get(job["id"])
+                if current["status"] != "running":
+                    break
+                time.sleep(0.01)
+            self.assertEqual(SERVER_JOBS.get(job["id"])["status"], "completed")
+        self.tokens.remove(token)
+        with self.assertRaisesRegex(ValueError, "expired or is unknown"):
+            workspace.upload({"action": "cancel", "token": token})

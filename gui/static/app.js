@@ -817,21 +817,38 @@ function normalizeVariationWorkspace(workspace) {
     node.children = Array.isArray(node.children) ? [...new Set(node.children)] : [];
     node.parents = Array.isArray(node.parents) ? [...new Set(node.parents)] : [];
     if (node.parent && !node.parents.includes(node.parent)) node.parents.unshift(node.parent);
+    if (!node.parent && node.parents.length) node.parent = node.parents[0];
   }
+  // Rebuild parent references first. Legacy studies kept the incoming move on
+  // the child node, which is only trustworthy for that child's primary parent.
   for (const [parentId, parent] of Object.entries(workspace.nodes)) {
     for (const childId of parent?.children || []) {
       const child = workspace.nodes[childId];
       if (!child) continue;
       if (!child.parents.includes(parentId)) child.parents.push(parentId);
       if (!child.parent) child.parent = parentId;
+    }
+  }
+  for (const [parentId, parent] of Object.entries(workspace.nodes)) {
+    const keptChildren = [];
+    for (const childId of parent?.children || []) {
+      const child = workspace.nodes[childId];
+      if (!child) continue;
       const edgeKey = `${parentId}>${childId}`;
       if (!workspace.edges[edgeKey]) {
+        if (child.parents.length > 1 && child.parent !== parentId) {
+          child.parents = child.parents.filter((value) => value !== parentId);
+          if (child.last_parent === parentId) delete child.last_parent;
+          continue;
+        }
         workspace.edges[edgeKey] = {
           move_uci: child.move_uci || "",
           move_san: child.move_san || child.move_uci || "Move",
         };
       }
+      keptChildren.push(childId);
     }
+    parent.children = keptChildren;
   }
   if (workspace.root && workspace.nodes[workspace.root]) {
     workspace.nodes[workspace.root].parent = null;
@@ -3823,6 +3840,7 @@ async function restoreWorkspaceText(text, beforeApply = null) {
     const raw = String(text || "");
     if (utf8ByteLength(raw) > MAX_BACKUP_BYTES) throw new Error("Workspace backup exceeds the 16 MB restore limit.");
     const payload = validateWorkspaceBackup(JSON.parse(raw));
+    await api("/api/workspace-data", { action: "validate-metadata", metadata: payload });
     const confirmed = await confirmAction(
       "Restore workspace backup?",
       "This replaces the included library, book, studies, training, histories and settings. A saved live game is restored paused. Excluded databases are kept.",
@@ -4074,11 +4092,14 @@ function validatePluginManifestClient(payload) {
     if (kind === "training") {
       const fen = String(item.fen || "").slice(0, 120);
       const best = String(item.best_uci || "").slice(0, 5);
-      if (!fen || !/^[a-h][1-8][a-h][1-8][qrbn]?$/.test(best)) throw new Error("Training plugin item needs FEN and best_uci.");
+      if (!validFenText(fen) || !/^[a-h][1-8][a-h][1-8][qrbn]?$/.test(best)) throw new Error("Training plugin item needs a valid FEN and best_uci.");
       return { fen, best_uci: best, title: String(item.title || "Plugin training").slice(0, 100) };
     }
     if (kind === "openings") {
       const moves = Array.isArray(item.moves) ? item.moves.map(String).slice(0, 40) : [];
+      if (!String(item.name || "").trim() || !moves.length || moves.some((move) => !/^[a-h][1-8][a-h][1-8][qrbn]?$/.test(move))) {
+        throw new Error("Opening plugin items need a name and UCI move prefix.");
+      }
       return { name: String(item.name || "Opening").slice(0, 100), moves };
     }
     const action = String(item.action || "").slice(0, 64);
@@ -4104,6 +4125,7 @@ function applyPluginContributions(plugin) {
         phase: "middlegame",
         explanation: item.title || plugin.name,
         source: `plugin:${plugin.name}`,
+        plugin_id: plugin.id,
         created_at: new Date().toISOString(),
         attempts: 0,
         solved: 0,
@@ -4113,6 +4135,30 @@ function applyPluginContributions(plugin) {
     saveTrainerItems();
     renderTrainerPanel();
   }
+}
+
+function removePluginContributions(pluginId) {
+  const before = trainerItems.length;
+  trainerItems = trainerItems.filter((item) => item.plugin_id !== pluginId && !String(item.key || "").startsWith(`plugin:${pluginId}:`));
+  if (trainerItems.length !== before) {
+    saveTrainerItems();
+    renderTrainerPanel();
+  }
+}
+
+function pluginOpeningForMoves(moves) {
+  if (!Array.isArray(moves)) return null;
+  let best = null;
+  for (const plugin of pluginManifests) {
+    if (!plugin?.enabled || plugin.kind !== "openings") continue;
+    for (const item of plugin.items || []) {
+      const prefix = Array.isArray(item.moves) ? item.moves : [];
+      if (!prefix.length || prefix.length > moves.length) continue;
+      if (!prefix.every((move, index) => moves[index] === move)) continue;
+      if (!best || prefix.length > best.plies) best = { name: item.name, eco: "Plugin", plies: prefix.length };
+    }
+  }
+  return best;
 }
 
 function renderPlugins() {
@@ -4134,17 +4180,21 @@ function renderPlugins() {
     toggle.textContent = plugin.enabled ? "Disable" : "Enable";
     toggle.addEventListener("click", () => {
       plugin.enabled = !plugin.enabled;
+      if (!plugin.enabled) removePluginContributions(plugin.id);
       savePluginManifests();
       applyPluginContributions(plugin);
-      renderPlugins();
+      if (plugin.kind === "openings" && state) render();
+      else renderPlugins();
     });
     const remove = document.createElement("button");
     remove.className = "text-button compact";
     remove.textContent = "Remove";
     remove.addEventListener("click", () => {
+      removePluginContributions(plugin.id);
       pluginManifests.splice(index, 1);
       savePluginManifests();
-      renderPlugins();
+      if (plugin.kind === "openings" && state) render();
+      else renderPlugins();
     });
     row.append(info, toggle, remove);
     target.appendChild(row);
@@ -4157,7 +4207,10 @@ async function installPluginFile(file) {
     assertBrowserFileSize(file, 256 * 1024, "Plugin manifest");
     const plugin = validatePluginManifestClient(JSON.parse(await file.text()));
     const existing = pluginManifests.findIndex((item) => item.id === plugin.id);
-    if (existing >= 0) pluginManifests.splice(existing, 1);
+    if (existing >= 0) {
+      removePluginContributions(pluginManifests[existing].id);
+      pluginManifests.splice(existing, 1);
+    }
     pluginManifests.unshift(plugin);
     savePluginManifests();
     renderPlugins();
@@ -4205,7 +4258,7 @@ const ONBOARDING_STEPS = [
   ["Build a real library", "Import PGN collections, search saved positions, favorite games, and run isolated background analysis without replacing the live board."],
   ["Study deeply", "Use review, MultiPV, comments, arrows, repertoires, bookmarks, the visual variation tree, opening preparation, and persistent local analysis cache."],
   ["Train deliberately", "Turn mistakes into spaced-repetition puzzles, create your own puzzles, practice endgames, use blindfold modes, and run coordinate drills."],
-  ["Keep it portable", "Back up the whole workspace to a .fce file, save portable game PNGs, share PGN/FEN, and keep all analysis local on this computer."],
+  ["Keep it portable", "Back up the whole workspace to a .fce.zip bundle, save portable game PNGs, share PGN/FEN, and keep all analysis local on this computer."],
 ];
 
 function renderOnboarding() {
@@ -4922,7 +4975,12 @@ function render() {
     : reviewMode
     ? `Review · ${reviewSnapshot?.ply ?? 0}/${reviewSnapshot?.total_plies ?? 0}`
     : state.game_over ? (state.result || "Game over") : `${capitalize(state.turn)} to move`;
-  const opening = view.opening || state.opening;
+  const openingMoves = variationMode
+    ? currentMovePrefix()
+    : reviewMode
+      ? (state.moves_uci || []).slice(0, reviewSnapshot?.ply || 0)
+      : (state.moves_uci || []);
+  const opening = pluginOpeningForMoves(openingMoves) || view.opening || state.opening;
   $("openingEco").textContent = opening?.eco || "—";
   $("openingName").textContent = opening?.name || (state.initial_fen === STARTING_FEN ? "Opening not identified" : "Custom position");
   $("phaseLabel").textContent = capitalize(view.phase || state.phase || "opening");
@@ -6525,7 +6583,12 @@ async function runMeasuredCalibration() {
       games,
       movetime_ms: 80,
     });
-    const record = { ...result, engine_name: engine.name || engine.path, created_at: new Date().toISOString() };
+    const record = {
+      ...result,
+      engine_name: engine.name || engine.path,
+      ...(result._workstationJobId ? { job_id: result._workstationJobId } : {}),
+      created_at: new Date().toISOString(),
+    };
     calibrationHistory.unshift(record);
     saveCalibrationHistory();
     renderCalibrationEngines();

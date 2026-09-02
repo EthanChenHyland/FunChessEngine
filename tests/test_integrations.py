@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -56,6 +58,48 @@ class OptionalIntegrationTests(unittest.TestCase):
             with python_uci(script) as engine:
                 result = engine.bestmove(chess.STARTING_FEN, movetime_ms=20)
             self.assertEqual(result.move, "e2e4")
+
+    @unittest.skipIf(os.name == "nt", "POSIX helper-process liveness probe")
+    def test_external_uci_close_terminates_descendants(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = root / "child.pid"
+            script = root / "fake-uci-child.py"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/usr/bin/env python3
+                    import subprocess, sys
+                    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+                    open({str(marker)!r}, "w").write(str(child.pid))
+                    for raw in sys.stdin:
+                        line = raw.strip()
+                        if line == "uci": print("id name Child Fake\\nuciok", flush=True)
+                        elif line == "isready": print("readyok", flush=True)
+                        elif line == "quit": break
+                    """
+                ),
+                encoding="utf-8",
+            )
+            script.chmod(0o755)
+            # This POSIX-only test can execute the shebang directly. Avoid the
+            # cross-platform Popen patch used by python_uci(), because patching
+            # subprocess.Popen also affects the `ps` descendant walk under test.
+            with ExternalUCIEngine(script):
+                deadline = time.monotonic() + 2
+                while not marker.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+            self.assertTrue(marker.exists())
+            child_pid = int(marker.read_text())
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(child_pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.01)
+            else:
+                self.fail("External UCI helper process survived engine.close()")
 
     def test_external_uci_client_parses_identity_options_and_multipv(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -19,6 +19,7 @@ import json
 import math
 import os
 import secrets
+import signal
 import socket
 import sqlite3
 import subprocess
@@ -44,6 +45,7 @@ from gui import workspace as workspace_files
 from gui.imports import import_reference_file
 from gui.jobs import JOBS, JobCancelled, progress, run_process, worker_slot
 from harness import benchmark as benchmark_harness
+from harness.process_io import terminate_active_processes
 from harness.referee import FAILED_TERMINATIONS, play_match
 from harness.regression import compare_runs as compare_regression_runs
 from harness.regression import run_suite as run_regression_suite
@@ -2820,6 +2822,166 @@ class GameSession:
 SESSION = GameSession()
 
 
+def _validate_workspace_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Validate chess-bearing backup metadata independently of the renderer."""
+
+    def board_from_record(
+        record: Any,
+        label: str,
+        *,
+        default_chess960: bool = False,
+    ) -> chess.Board:
+        if not isinstance(record, dict) or not isinstance(record.get("fen"), str):
+            raise ValueError(f"{label} is missing a FEN position.")
+        chess960 = str(record.get("variant", "")).lower() == "chess960" or default_chess960
+        try:
+            board = _board_from_fen(str(record["fen"]), chess960=chess960)
+        except ValueError as exc:
+            raise ValueError(f"{label} contains an invalid FEN position.") from exc
+        if not board.is_valid() and not chess960:
+            # Older saved study snapshots did not carry an explicit variant.
+            # A legal Chess960 FEN can therefore look invalid under standard
+            # castling semantics; recover it without weakening position checks.
+            try:
+                chess960_board = _board_from_fen(str(record["fen"]), chess960=True)
+            except ValueError:
+                chess960_board = None
+            if chess960_board is not None and chess960_board.is_valid():
+                board = chess960_board
+        if not board.is_valid():
+            raise ValueError(f"{label} contains an invalid chess position.")
+        return board
+
+    def validate_acyclic(graph: dict[str, list[str]]) -> None:
+        visiting: set[str] = set()
+        complete: set[str] = set()
+
+        def visit(node_id: str) -> None:
+            if node_id in visiting:
+                raise ValueError("Workspace study contains a cycle.")
+            if node_id in complete:
+                return
+            visiting.add(node_id)
+            for child_id in graph[node_id]:
+                visit(child_id)
+            visiting.remove(node_id)
+            complete.add(node_id)
+
+        for node_id in graph:
+            visit(node_id)
+
+    studies = metadata.get("studies", {})
+    if studies is not None:
+        if not isinstance(studies, dict) or len(studies) > 20:
+            raise ValueError("Workspace studies are invalid or exceed the local limit.")
+        for workspace in studies.values():
+            if not isinstance(workspace, dict):
+                raise ValueError("Workspace study must be an object.")
+            nodes = workspace.get("nodes", {})
+            edges = workspace.get("edges", {})
+            root_id = workspace.get("root")
+            if (
+                not isinstance(nodes, dict)
+                or len(nodes) > 500
+                or not isinstance(edges, dict)
+                or not isinstance(root_id, str)
+                or root_id not in nodes
+            ):
+                raise ValueError("Workspace study graph is invalid or too large.")
+            default_chess960 = str(workspace.get("variant", "")).lower() == "chess960"
+            boards: dict[str, chess.Board] = {}
+            for node_id, node in nodes.items():
+                if (
+                    not isinstance(node_id, str)
+                    or not isinstance(node, dict)
+                    or node.get("id") != node_id
+                ):
+                    raise ValueError("Workspace study node is invalid.")
+                snapshot = node.get("snapshot")
+                boards[node_id] = board_from_record(
+                    snapshot,
+                    "Workspace study node",
+                    default_chess960=default_chess960,
+                )
+            expected_edges: set[str] = set()
+            graph: dict[str, list[str]] = {}
+            for parent_id, node in nodes.items():
+                children = node.get("children", [])
+                if not isinstance(children, list) or len(children) > 500:
+                    raise ValueError("Workspace study child list is invalid.")
+                graph[parent_id] = []
+                for child_id in children:
+                    if not isinstance(child_id, str) or child_id not in boards:
+                        raise ValueError("Workspace study references a missing child.")
+                    graph[parent_id].append(child_id)
+                    edge_key = f"{parent_id}>{child_id}"
+                    expected_edges.add(edge_key)
+                    edge = edges.get(edge_key)
+                    if edge is None:
+                        # Legacy tree saves are normalized by the renderer. A
+                        # missing transposition edge is never invented there.
+                        continue
+                    if not isinstance(edge, dict) or not isinstance(edge.get("move_uci"), str):
+                        raise ValueError("Workspace study edge is invalid.")
+                    parent = boards[parent_id].copy(stack=False)
+                    try:
+                        move = parent.parse_uci(str(edge["move_uci"]))
+                    except ValueError as exc:
+                        raise ValueError("Workspace study edge move is invalid.") from exc
+                    if move not in parent.legal_moves:
+                        raise ValueError("Workspace study edge move is illegal.")
+                    parent.push(move)
+                    child = boards[child_id]
+                    if (
+                        parent.board_fen() != child.board_fen()
+                        or parent.turn != child.turn
+                        or parent.castling_rights != child.castling_rights
+                        or parent.ep_square != child.ep_square
+                    ):
+                        raise ValueError("Workspace study edge does not reach its child position.")
+            if any(not isinstance(key, str) or key not in expected_edges for key in edges):
+                raise ValueError("Workspace study contains an orphan edge.")
+
+            validate_acyclic(graph)
+
+    def validate_positions(key: str, limit: int, *, cards: bool = False) -> None:
+        rows = metadata.get(key, [])
+        if rows is None:
+            return
+        if not isinstance(rows, list) or len(rows) > limit:
+            raise ValueError(f"Workspace {key} collection is invalid or too large.")
+        candidates: list[Any] = []
+        if cards:
+            for lesson in rows:
+                if not isinstance(lesson, dict) or not isinstance(lesson.get("cards", []), list):
+                    raise ValueError("Workspace lesson is invalid.")
+                if len(lesson.get("cards", [])) > 250:
+                    raise ValueError("Workspace lesson contains too many cards.")
+                candidates.extend(lesson.get("cards", []))
+        else:
+            candidates = rows
+        for record in candidates:
+            board = board_from_record(record, f"Workspace {key} item")
+            best = record.get("best_uci") if isinstance(record, dict) else None
+            if best is not None:
+                try:
+                    move = board.parse_uci(str(best))
+                except ValueError as exc:
+                    raise ValueError(f"Workspace {key} best move is invalid.") from exc
+                if move not in board.legal_moves:
+                    raise ValueError(f"Workspace {key} best move is illegal.")
+
+    validate_positions("bookmarks", 100)
+    validate_positions("trainer", 250)
+    validate_positions("lessons", 100, cards=True)
+    current = metadata.get("current_game")
+    if current is not None:
+        if not isinstance(current, dict):
+            raise ValueError("Backup live game must be an object.")
+        GameSession().load_snapshot(current, reset_engine=False)
+    return {"valid": True}
+
+
 def _submit_job(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
     workers = {
         "analyze-pgn": lambda: SESSION.analyze_pgn(
@@ -2849,8 +3011,15 @@ def _submit_job(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
         workspace_files.uploaded_file(token)
 
         def import_file() -> dict[str, Any]:
-            with workspace_files.leased_file(token) as (path, name):
-                return import_reference_file(_library_database(), path, name)
+            try:
+                with workspace_files.leased_file(token) as (path, name):
+                    return import_reference_file(_library_database(), path, name)
+            finally:
+                # The server owns the import once the job starts. Browser-side
+                # cleanup is only a fallback; release the transfer even if the
+                # renderer disconnects while the import is running.
+                with suppress(ValueError):
+                    workspace_files.upload({"action": "cancel", "token": token})
 
         return JOBS.submit(kind, import_file)
     if kind not in workers:
@@ -2998,6 +3167,7 @@ class Handler(SimpleHTTPRequestHandler):
                     metadata = payload.get("metadata")
                     if not isinstance(metadata, dict):
                         raise ValueError("Backup metadata must be an object.")
+                    _validate_workspace_metadata(metadata)
                     self._json(
                         workspace_files.create_bundle(
                             metadata, bool(payload.get("include_reference", True))
@@ -3005,6 +3175,11 @@ class Handler(SimpleHTTPRequestHandler):
                     )
                 elif action == "inspect":
                     self._json(workspace_files.inspect_bundle(str(payload.get("token", ""))))
+                elif action == "validate-metadata":
+                    metadata = payload.get("metadata")
+                    if not isinstance(metadata, dict):
+                        raise ValueError("Backup metadata must be an object.")
+                    self._json(_validate_workspace_metadata(metadata))
                 elif action == "restore":
                     if any(row["status"] == "running" for row in JOBS.list()):
                         raise ValueError(
@@ -3012,6 +3187,7 @@ class Handler(SimpleHTTPRequestHandler):
                         )
                     token = str(payload.get("token", ""))
                     inspected = workspace_files.inspect_bundle(token)
+                    _validate_workspace_metadata(inspected["metadata"])
                     current = inspected["metadata"].get("current_game")
                     with SESSION.lock:
                         if current is not None:
@@ -3644,11 +3820,31 @@ def main() -> None:
     print(f"FunChessEngine GUI: {url}", flush=True)
     if not arguments.no_open:
         threading.Timer(0.35, webbrowser.open, args=(url,)).start()
+
+    previous_handlers: dict[int, Any] = {}
+
+    def stop_backend(_signum: int, _frame: Any) -> None:
+        # Electron restarts the backend with SIGTERM on POSIX. Cancel job state
+        # and kill every registered worker/UCI child before the host exits so
+        # expensive engine processes cannot be orphaned.
+        JOBS.cancel_all()
+        terminate_active_processes()
+        raise KeyboardInterrupt
+
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        with suppress(ValueError):
+            previous_handlers[signum] = signal.getsignal(signum)
+            signal.signal(signum, stop_backend)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        JOBS.cancel_all()
+        terminate_active_processes()
+        for saved_signum, handler in previous_handlers.items():
+            with suppress(ValueError):
+                signal.signal(saved_signum, handler)
         _stop_lan_server()
         server.server_close()
 

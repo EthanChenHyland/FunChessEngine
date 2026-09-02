@@ -321,6 +321,12 @@ class FrontendTransitionContractTests(unittest.TestCase):
         self.assert_function_contains("restartDesktopBackend", "boundedDesktopRestartSnapshot")
         self.assert_function_contains("handleDesktopCommand", 'command === "restart-backend"')
         self.assertIn("const DESKTOP_BACKEND_PORT = 8765;", self.desktop_main)
+        self.assertIn("function terminateBackendTree(child, force = false)", self.desktop_main)
+        self.assertIn(
+            'spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"]',
+            self.desktop_main,
+        )
+        self.assertIn("posixDescendants(child.pid)", self.desktop_main)
 
     def test_large_local_metadata_moves_to_indexeddb_with_fallback(self) -> None:
         self.assertIn('const DURABLE_DB_NAME = "FunChessEngine.LocalData"', self.source)
@@ -475,8 +481,8 @@ class FrontendTransitionContractTests(unittest.TestCase):
                 rf"(?:async\s+)?function\s+{re.escape(function_name)}\b",
                 f"missing frontend function {function_name}",
             )
-        self.assert_function_contains("render", "renderCalibrationEngines()")
-        self.assert_function_contains("render", "renderSessionGoals()")
+        self.assert_function_contains("render", "renderCalibrationEngines()", span=8_000)
+        self.assert_function_contains("render", "renderSessionGoals()", span=8_000)
         self.assert_function_contains("activateTab", 'nextTab === "position"')
         self.assert_function_contains("activateTab", "refreshOpeningBook()")
         self.assertNotIn("calibrateEngineFromHistory", self.source)

@@ -2,6 +2,7 @@
 const workstationJobs = new Map();
 let advancedTournamentResult = null;
 let developerResult = null;
+const MAX_TOURNAMENT_PARTICIPANTS = 12;
 
 function reportRow(title, detail) {
   const row = document.createElement('div');
@@ -38,10 +39,8 @@ function renderJobStatus() {
           const current=await api('/api/jobs/status',{id:job.id});
           workstationJobs.set(job.id,{...current,recover:true});
           if (current.result) {
-            showDeveloperResult(current.result);
-            saveWorkstationResult(current.kind,current.result);
+            await showRecoveredJob(current);
             workstationJobs.get(job.id).recover=false;
-            await activateTab(document.querySelector('[data-tab="engine"]'));
           }
           renderJobStatus();
         } catch(error) { setStatus(error.message,'error'); }
@@ -50,6 +49,43 @@ function renderJobStatus() {
     }
     target.append(row);
   }
+}
+
+function attachWorkstationJobId(result, jobId) {
+  if (result && typeof result === 'object') {
+    Object.defineProperty(result, '_workstationJobId', {value:jobId, enumerable:false, configurable:true});
+  }
+  return result;
+}
+
+async function showRecoveredJob(current) {
+  const result = attachWorkstationJobId(current.result, current.id);
+  if (!result) return;
+  if (current.kind === 'tournament') {
+    showTournamentResult(result);
+    saveWorkstationResult('tournament', result);
+    await activateTab(document.querySelector('[data-tab="engine"]'));
+    return;
+  }
+  if (current.kind === 'calibration') {
+    if (!calibrationHistory.some(row => row.job_id === current.id)) {
+      const engines = result.results?.[0]?.engines || [];
+      const opponent = engines.find(engine => engine?.name && engine.name !== 'FunChessEngine');
+      calibrationHistory.unshift({...result, engine_name:opponent?.name || 'External engine', job_id:current.id, created_at:new Date().toISOString()});
+      saveCalibrationHistory();
+    }
+    renderCalibrationEngines();
+    await activateTab(document.querySelector('[data-tab="engine"]'));
+    return;
+  }
+  if (current.kind === 'reference-import') {
+    if (typeof refreshOpeningDatabaseStatus === 'function') await refreshOpeningDatabaseStatus();
+    setStatus(`Reference import recovered: ${result.imported ?? 0} games indexed.`, 'success');
+    return;
+  }
+  showDeveloperResult(result);
+  saveWorkstationResult(current.kind,result);
+  await activateTab(document.querySelector('[data-tab="engine"]'));
 }
 
 async function recoverWorkstationJobs() {
@@ -82,18 +118,32 @@ async function runBackgroundJob(kind, payload, onProgress = null) {
   renderJobStatus();
   if (onProgress) onProgress(job.progress || {});
   if (job.status !== 'completed') throw new Error(job.error || `${kind} ${job.status}.`);
-  return job.result;
+  return attachWorkstationJobId(job.result, job.id);
 }
 
 function renderAdvancedTournament() {
   const target = $('advancedTournamentPlayers');
   if (!target) return;
-  const selected = new Set([...target.querySelectorAll('input:checked')].map(el => el.value));
+  const available = new Set(externalEngines.map(engine => engine.path));
+  const selected = new Set(
+    [...target.querySelectorAll('input:checked')]
+      .map(el => el.value)
+      .filter(value => available.has(value)),
+  );
   target.replaceChildren();
   externalEngines.forEach(engine => {
     const label = document.createElement('label'); label.className = 'analysis-auto';
     const check = document.createElement('input'); check.type = 'checkbox';
     check.value = engine.path; check.checked = selected.has(engine.path);
+    check.disabled = !check.checked && selected.size >= MAX_TOURNAMENT_PARTICIPANTS - 1;
+    check.addEventListener('change', () => {
+      const checked = target.querySelectorAll('input:checked').length;
+      if (checked > MAX_TOURNAMENT_PARTICIPANTS - 1) {
+        check.checked = false;
+        setStatus(`A tournament supports at most ${MAX_TOURNAMENT_PARTICIPANTS} players including FunChessEngine.`, 'error');
+      }
+      renderAdvancedTournament();
+    });
     const text = document.createElement('span'); text.textContent = engine.name || engine.path;
     label.append(check, text); target.append(label);
   });
@@ -105,14 +155,20 @@ function showTournamentResult(result) {
   const target = $('advancedTournamentStandings'); target.replaceChildren();
   target.append(reportRow(result.complete ? 'Completed' : 'Partial results', `${(result.games || []).length} games`));
   for (const row of result.standings || []) {
-    target.append(reportRow(row.name, `${row.points} points · ${row.games} games · +${row.wins} =${row.draws} −${row.losses}${row.byes ? ` · ${row.byes} bye(s)` : ''}`));
+    const performance = row.performance_elo == null ? '' : ` · perf ~${row.performance_elo}`;
+    const interval = Array.isArray(row.score_interval)
+      ? ` · 95% score ${(Number(row.score_interval[0]) * 100).toFixed(0)}–${(Number(row.score_interval[1]) * 100).toFixed(0)}%`
+      : '';
+    target.append(reportRow(row.name, `${row.points} points · ${row.games} games · +${row.wins} =${row.draws} −${row.losses}${row.byes ? ` · ${row.byes} bye(s)` : ''}${performance}${interval}`));
   }
+  if (result.rating_note) target.append(reportRow('Rating note', result.rating_note));
   $('exportAdvancedTournamentPgnBtn').disabled = !result.pgn;
 }
 
 async function runAdvancedTournament() {
   const selected = [...$('advancedTournamentPlayers').querySelectorAll('input:checked')].map(input => input.value);
   if (!selected.length) throw new Error('Select at least one saved external engine.');
+  if (selected.length > MAX_TOURNAMENT_PARTICIPANTS - 1) throw new Error(`Select at most ${MAX_TOURNAMENT_PARTICIPANTS - 1} external engines.`);
   const participants = [{name:'FunChessEngine',kind:'funchess'}, ...externalEngines.filter(e=>selected.includes(e.path)).map(e=>({name:e.name || e.path,kind:'external',executable:e.path}))];
   const payload = {participants, format:$('advancedTournamentFormat').value,
     rounds:Number($('advancedTournamentRounds').value), movetime_ms:Number($('advancedTournamentMoveTime').value),
@@ -133,7 +189,9 @@ async function runAdvancedTournament() {
 }
 
 function saveWorkstationResult(kind, result) {
-  regressionHistory.unshift({kind, result, created_at:new Date().toISOString()});
+  const jobId = result?._workstationJobId || null;
+  if (jobId && regressionHistory.some(record => record.job_id === jobId)) return;
+  regressionHistory.unshift({kind, result, ...(jobId ? {job_id:jobId} : {}), created_at:new Date().toISOString()});
   saveRegressionHistory(); renderWorkstationHistory();
 }
 
@@ -243,6 +301,32 @@ async function restoreWorkspaceBundle(file) {
   }
 }
 
+function validFenText(value) {
+  if (typeof value !== 'string' || value.length > 200) return false;
+  const fields=value.trim().split(/\s+/);
+  if (fields.length!==6) return false;
+  const ranks=fields[0].split('/');
+  if (ranks.length!==8) return false;
+  let whiteKings=0, blackKings=0;
+  for (const rank of ranks) {
+    let squares=0;
+    for (const char of rank) {
+      if (/^[1-8]$/.test(char)) squares+=Number(char);
+      else if (/^[prnbqkPRNBQK]$/.test(char)) {
+        squares+=1;
+        if (char==='K') whiteKings+=1;
+        if (char==='k') blackKings+=1;
+      } else return false;
+    }
+    if (squares!==8) return false;
+  }
+  if (whiteKings!==1 || blackKings!==1 || !/^[wb]$/.test(fields[1])) return false;
+  if (!/^(?:-|[KQABCDEFGHkqabcdefgh]+)$/.test(fields[2])) return false;
+  if (!/^(?:-|[a-h][36])$/.test(fields[3])) return false;
+  if (!/^\d+$/.test(fields[4]) || !/^[1-9]\d*$/.test(fields[5])) return false;
+  return true;
+}
+
 function validateStudyGraph(workspace) {
   if (!workspace || !workspace.nodes || typeof workspace.nodes!=='object' || Array.isArray(workspace.nodes)) throw new Error('Study nodes are invalid.');
   const nodes=workspace.nodes;
@@ -252,7 +336,7 @@ function validateStudyGraph(workspace) {
     if (visiting.has(id)) throw new Error('Study contains a cycle.');
     if (complete.has(id)) return;
     const node=nodes[id];
-    if (!node || node.id!==id || !Array.isArray(node.children) || !node.snapshot?.fen) throw new Error('Study node or reference is invalid.');
+    if (!node || node.id!==id || !Array.isArray(node.children) || !validFenText(node.snapshot?.fen)) throw new Error('Study node or reference is invalid.');
     visiting.add(id);
     for(const child of node.children) {
       if (!Object.hasOwn(nodes,child)) throw new Error('Study has a missing child.');
@@ -269,7 +353,7 @@ function validateStudyGraph(workspace) {
 function validateBackupCollections(payload) {
   const object=value=>value && typeof value==='object' && !Array.isArray(value);
   const move=value=>typeof value==='string' && /^[a-h][1-8][a-h][1-8][qrbn]?$/.test(value);
-  const fen=value=>typeof value==='string' && value.length<=200 && value.trim().split(/\s+/).length===6;
+  const fen=validFenText;
   const array=(key,limit,valid)=>{
     if (payload[key]==null) return;
     if (!Array.isArray(payload[key]) || payload[key].length>limit || payload[key].some(item=>!object(item) || !valid(item))) throw new Error(`Invalid backup collection: ${key}.`);
