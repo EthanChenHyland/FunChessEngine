@@ -231,6 +231,17 @@
             </div>
             <div class="row two compact-row"><button id="startTournamentBtn" class="secondary">Start series</button><button id="stopTournamentBtn" class="secondary" disabled>Stop</button></div>
             <div id="tournamentProgress" class="mini-report"><p class="hint">No match series has been run.</p></div>
+            <details class="inline-details advanced-tournament-card">
+              <summary>UCI tournament manager</summary>
+              <p class="hint">Run FunChessEngine against saved UCI engines using round-robin, gauntlet, or Swiss scheduling. The live game is not touched.</p>
+              <div class="row three compact-row"><div><label for="advancedTournamentFormat">Format</label><select id="advancedTournamentFormat"><option value="round_robin">Round robin</option><option value="gauntlet">Gauntlet</option><option value="swiss">Swiss</option></select></div><div><label for="advancedTournamentRounds">Swiss rounds</label><input id="advancedTournamentRounds" type="number" min="1" max="8" value="3"></div><div><label for="advancedTournamentMoveTime">Move time ms</label><input id="advancedTournamentMoveTime" type="number" min="20" max="2000" value="80"></div></div>
+              <label class="analysis-auto"><input id="advancedTournamentColorReverse" type="checkbox" checked> <span><strong>Reverse colors</strong><small>Play paired colors in round robin and gauntlet formats.</small></span></label>
+              <div class="setting-heading"><span class="label">Participants</span><span class="setting-value">FunChessEngine is always included</span></div>
+              <div id="advancedTournamentPlayers" class="compact-list"><p class="hint">Save an external UCI engine to add opponents.</p></div>
+              <label for="tournamentOpeningSuite">Opening suite FENs</label><textarea id="tournamentOpeningSuite" rows="3" placeholder="Optional: one FEN per line; blank uses the standard starting position"></textarea>
+              <div class="row two compact-row"><button id="runAdvancedTournamentBtn" class="secondary">Run tournament</button><button id="exportAdvancedTournamentPgnBtn" class="secondary" disabled>Export PGN…</button></div>
+              <div id="advancedTournamentStandings" class="mini-report"><p class="hint">Standings will appear here.</p></div>
+            </details>
           </details>
 
           <div class="list-heading"><span>Moves</span><span id="moveCount" class="setting-value">0 plies</span></div>
@@ -286,10 +297,30 @@
 
           <details class="file-card opening-database-card">
             <summary><span>Opening database &amp; repertoire lab</span><span id="openingDatabaseCount" class="setting-value">0 database games</span></summary>
-            <p class="hint">Import PGN collections as a local reference database, detect repertoire gaps, and reinforce lines that have produced poor results.</p>
+            <p class="hint">Import PGN collections into a disk-backed local index, search players/years/structures, inspect moves from the current position, detect repertoire gaps, and reinforce lines that have produced poor results.</p>
             <div class="row two compact-row"><button id="openingDatabaseImportBtn" class="secondary">Import reference PGN…</button><button id="refreshRepertoireGapsBtn" class="secondary">Find repertoire gaps</button></div>
             <input id="openingDatabaseInput" type="file" accept=".pgn,application/x-chess-pgn,text/plain" multiple hidden>
+            <div class="recent-games-tools indexed-library-tools">
+              <input id="openingDatabaseSearch" type="search" placeholder="Try: Sicilian games with an IQP since 2020" aria-label="Natural-language reference database search">
+              <div class="row two compact-row library-filters"><div><label for="openingDatabasePlayer">Player</label><input id="openingDatabasePlayer" type="search" placeholder="Name"></div><div><label for="openingDatabaseStructure">Structure</label><select id="openingDatabaseStructure"><option value="">Any structure</option><option value="IQP">Isolated queen pawn</option><option value="Carlsbad structure">Carlsbad</option><option value="hanging pawns">Hanging pawns</option><option value="Maroczy bind">Maroczy bind</option><option value="opposite-side castling">Opposite-side castling</option><option value="rook endgame">Rook endgame</option><option value="bishop vs knight">Bishop vs knight</option><option value="passed pawn on sixth rank">Passed pawn on sixth</option></select></div></div>
+              <div class="row three compact-row library-filters"><div><label for="openingDatabaseYearFrom">From year</label><input id="openingDatabaseYearFrom" type="number" min="1000" max="2200" placeholder="Any"></div><div><label for="openingDatabaseYearTo">To year</label><input id="openingDatabaseYearTo" type="number" min="1000" max="2200" placeholder="Any"></div><div><label for="openingDatabaseMinElo">Min Elo</label><input id="openingDatabaseMinElo" type="number" min="0" max="4000" step="50" placeholder="Any"></div></div>
+              <div class="row two compact-row"><button id="openingDatabaseSearchBtn" class="secondary">Search database</button><button id="openingDatabaseExplorerBtn" class="secondary">Moves here</button></div>
+            </div>
+            <div class="setting-heading"><span class="label">Indexed results</span><span id="openingDatabaseSearchCount" class="setting-value">0 matches</span></div>
+            <div id="openingDatabaseResults" class="compact-list"></div>
+            <div id="openingDatabaseExplorer" class="mini-report"></div>
+            <div class="row three compact-row">
+              <div><label for="autoRepertoireSide">Build repertoire</label><select id="autoRepertoireSide"><option value="white">My White games</option><option value="black">My Black games</option></select></div>
+              <div><label for="autoRepertoireFrequency">Min frequency</label><input id="autoRepertoireFrequency" type="number" min="1" max="20" value="2"></div>
+              <button id="buildRepertoireBtn" class="secondary align-end">Create repertoire</button>
+            </div>
             <div id="repertoireGapReport" class="mini-report"><p class="hint">Add a repertoire study and library games to detect missing responses.</p></div>
+            <details class="inline-details opening-book-card">
+              <summary><span>Editable opening book</span><span id="openingBookCount" class="setting-value">0 moves</span></summary>
+              <div class="row three compact-row"><input id="openingBookMove" type="text" maxlength="5" placeholder="e2e4" aria-label="Opening book UCI move"><input id="openingBookWeight" type="number" min="0" max="65535" value="10" aria-label="Opening book weight"><button id="addOpeningBookMoveBtn" class="secondary">Add current</button></div>
+              <div class="row two compact-row"><input id="polyglotPathInput" type="text" placeholder="/path/to/book.bin" aria-label="Polyglot opening book path"><button id="importPolyglotBtn" class="secondary">Import for indexed positions</button></div>
+              <div id="openingBookMoves" class="compact-list"><p class="hint">Book moves for the current position will appear here.</p></div>
+            </details>
           </details>
 
           <details class="file-card study-library-card" open>
@@ -513,6 +544,16 @@
             <div class="setting-heading"><span class="label">Principal variation</span><span id="searchScore" class="setting-value">—</span></div>
             <code id="pvLine">No completed search yet.</code>
           </div>
+          <div class="opening-explorer-card quality-timeline-card">
+            <div class="setting-heading"><span class="label">Game-quality timeline</span><span id="qualityTimelineMeta" class="setting-value">Analyze a game</span></div>
+            <p class="hint">Evaluation loss, time usage, phase and tactical motifs share one clickable move timeline.</p>
+            <div id="qualityTimeline" class="quality-timeline"><p class="hint">Whole-game analysis will populate this timeline.</p></div>
+          </div>
+          <div class="opening-explorer-card alternatives-card">
+            <div class="setting-heading"><span class="label">Move alternatives</span><button id="refreshAlternativesBtn" class="text-button" type="button">Refresh</button></div>
+            <p class="hint">Compare the played move with the engine's top alternatives, their evaluation, tactical idea, and resulting plan.</p>
+            <div id="moveAlternatives" class="mini-report"><p class="hint">Select a live/review position and refresh alternatives.</p></div>
+          </div>
           <div class="eval-breakdown-card">
             <div class="setting-heading"><span class="label">Evaluation breakdown</span><span id="breakdownTotal" class="setting-value">—</span></div>
             <div class="eval-breakdown-grid">
@@ -552,6 +593,7 @@
             <div class="setting-heading"><span class="label">Strategic intelligence</span><button id="refreshInsightsBtn" class="text-button" type="button">Refresh</button></div>
             <div class="row two compact-row"><label class="analysis-auto"><input id="threatMapToggle" type="checkbox"> <span><strong>Threat map</strong><small>Mark attacked and loose squares.</small></span></label><label class="analysis-auto"><input id="heatMapToggle" type="checkbox"> <span><strong>Move heatmap</strong><small>Shade candidate destinations.</small></span></label></div>
             <div id="humanPlanList" class="mini-report"><p class="hint">Strategic plans for the current position will appear here.</p></div>
+            <div id="positionFeatureGrid" class="profile-grid position-feature-grid"><p class="hint">Refresh to inspect material, pawn structure, weak squares, files, piece activity, and king safety.</p></div>
             <div id="tacticalMotifs" class="tag-row"></div>
           </div>
           <details class="advanced-details tablebase-card">
@@ -567,7 +609,8 @@
             <div class="advanced-body">
               <label for="externalEnginePath">Engine executable</label><div class="row two compact-row"><input id="externalEnginePath" type="text" placeholder="/path/to/uci-engine"><button id="chooseExternalEngineBtn" class="secondary">Choose…</button></div>
               <div class="row two compact-row"><select id="externalEngineSelect"><option value="">Saved engines…</option></select><button id="saveExternalEngineBtn" class="secondary">Save engine</button></div>
-              <div class="row two compact-row"><div><label for="externalEngineBudget">Move time (ms)</label><input id="externalEngineBudget" type="number" min="50" max="5000" step="50" value="300"></div><button id="compareExternalEngineBtn" class="secondary align-end">Compare engines</button></div>
+              <div class="row two compact-row"><div><label for="externalEngineBudget">Move time (ms)</label><input id="externalEngineBudget" type="number" min="50" max="5000" step="50" value="300"></div><div><label for="externalEngineLines">Candidate lines</label><select id="externalEngineLines"><option value="1">1</option><option value="3" selected>3</option><option value="5">5</option></select></div></div>
+              <button id="compareExternalEngineBtn" class="secondary full">Compare engines</button>
               <div id="externalEngineResult" class="mini-report"><p class="hint">FunChessEngine and the selected local UCI engine will analyze the same position independently.</p></div>
             </div>
           </details>
@@ -599,6 +642,13 @@
               <input id="budgetInput" type="number" min="10" step="50" placeholder="Automatic">
               <p class="hint">Leave blank to use the engine's normal clock-aware time manager.</p>
               <div class="advanced-stat"><span>Aspiration re-searches</span><strong id="researches">0</strong></div>
+              <div class="search-telemetry-grid">
+                <div><span>TT hits</span><strong id="ttHits">0</strong></div>
+                <div><span>Beta cutoffs</span><strong id="betaCutoffs">0</strong></div>
+                <div><span>Q-nodes</span><strong id="quiescenceNodes">0</strong></div>
+                <div><span>Allocated</span><strong id="searchBudget">—</strong></div>
+                <div><span>PV changed</span><strong id="pvChanged">—</strong></div>
+              </div>
               <div class="devlab-section">
                 <div class="setting-heading"><span class="label">Engine development lab</span><span id="devLabStatus" class="setting-value">Ready</span></div>
                 <p class="hint">Run isolated regression benchmarks. A/B games execute agent.py from the source checkout and the comparison folder you provide.</p>
@@ -642,6 +692,7 @@
                 <button id="trainerHintBtn" class="secondary">Hint</button>
                 <button id="trainerExitBtn" class="secondary">End session</button>
               </div>
+              <div id="trainerChoices" class="trainer-choices" hidden></div>
               <button id="trainerNextBtn" class="primary full" hidden>Next position</button>
             </div>
           </div>
@@ -664,6 +715,8 @@
             <div class="setting-heading"><span class="label">Puzzle creator</span><span class="setting-value">Current position</span></div>
             <div class="row two compact-row"><div><label for="customPuzzleTitle">Title</label><input id="customPuzzleTitle" type="text" maxlength="60" placeholder="My puzzle"></div><div><label for="customPuzzleMove">Solution UCI</label><input id="customPuzzleMove" type="text" maxlength="5" placeholder="e2e4"></div></div>
             <div class="row two compact-row"><button id="suggestPuzzleMoveBtn" class="secondary">Use engine best</button><button id="savePuzzleBtn" class="secondary">Save puzzle</button></div>
+            <button id="generateLibraryPuzzlesBtn" class="secondary full">Generate tactical puzzles from analyzed games</button>
+            <p id="puzzleGenerationMeta" class="hint">Large analyzed mistakes with a concrete tactical solution can become training cards.</p>
           </div>
           <div class="trainer-card">
             <div class="setting-heading"><span class="label">Visualization &amp; coordinates</span><span id="coordinateScore" class="setting-value">0 / 0</span></div>
@@ -673,20 +726,35 @@
           <div class="trainer-card repertoire-trainer-card">
             <div class="setting-heading"><span class="label">Opening book trainer</span><span id="repertoireTrainerCount" class="setting-value">0 lines</span></div>
             <p class="hint">Turn saved repertoire branches into spaced-repetition “what would you play?” cards. Confidence rises when you answer correctly and falls after misses.</p>
-            <div class="row two compact-row"><select id="repertoireTrainerSelect"><option value="">Choose repertoire…</option></select><button id="startRepertoireTrainerBtn" class="secondary">Train repertoire</button></div>
+            <div class="row three compact-row"><select id="repertoireTrainerSelect"><option value="">Choose repertoire…</option></select><select id="repertoireColorSelect"><option value="white">Train White</option><option value="black">Train Black</option></select><button id="startRepertoireTrainerBtn" class="secondary">Train due lines</button></div>
+            <p id="repertoireDueMeta" class="hint">Choose a repertoire to see scheduled review lines.</p>
           </div>
           <div class="trainer-card flashcard-card">
             <div class="setting-heading"><span class="label">Study flashcards &amp; lessons</span><span id="lessonCount" class="setting-value">0 lessons</span></div>
             <div class="row two compact-row"><input id="lessonTitleInput" type="text" maxlength="60" placeholder="Lesson title"><button id="addFlashcardBtn" class="secondary">Add current position</button></div>
             <textarea id="lessonNoteInput" rows="2" maxlength="240" placeholder="Teaching note or question"></textarea>
+            <label class="analysis-auto"><input id="lessonMultipleChoiceToggle" type="checkbox" checked> <span><strong>Multiple-choice alternatives</strong><small>Store candidate moves and branch feedback with each new card.</small></span></label>
             <div class="row two compact-row"><button id="saveLessonBtn" class="secondary">Save lesson</button><button id="studyFlashcardsBtn" class="secondary">Study due cards</button></div>
             <div id="lessonList" class="compact-list"></div>
+          </div>
+          <div class="trainer-card session-goals-card">
+            <div class="setting-heading"><span class="label">Today's training goals</span><span id="sessionGoalsStatus" class="setting-value">0%</span></div>
+            <div class="row four compact-row session-goal-inputs">
+              <div><label for="goalTactics">Tactics</label><input id="goalTactics" type="number" min="0" max="200" value="20"></div>
+              <div><label for="goalRepertoire">Repertoire</label><input id="goalRepertoire" type="number" min="0" max="200" value="10"></div>
+              <div><label for="goalEndgames">Endgames</label><input id="goalEndgames" type="number" min="0" max="50" value="1"></div>
+              <div><label for="goalLosses">Losses</label><input id="goalLosses" type="number" min="0" max="50" value="1"></div>
+            </div>
+            <div class="row two compact-row"><button id="saveSessionGoalsBtn" class="secondary">Save goals</button><button id="reviewNextLossBtn" class="secondary">Review next loss</button></div>
+            <div id="sessionGoalsProgress" class="mini-report"></div>
           </div>
           <div class="trainer-card performance-card">
             <div class="setting-heading"><span class="label">Performance &amp; rating history</span><span id="performanceRating" class="setting-value">Unrated</span></div>
             <div id="timeControlPerformance" class="profile-grid"></div>
             <canvas id="ratingHistoryGraph" class="eval-graph" height="110" role="img" aria-label="Estimated local rating history"></canvas>
-            <button id="calibrateEngineBtn" class="secondary full">Calibrate strength from recent games</button>
+            <div class="row three compact-row"><select id="calibrationEngineSelect"><option value="">External engine…</option></select><input id="calibrationOpponentElo" type="number" min="400" max="3500" value="1600" aria-label="Opponent Elo"><input id="calibrationGames" type="number" min="2" max="12" step="2" value="4" aria-label="Calibration games"></div>
+            <button id="calibrateEngineBtn" class="secondary full">Run measured UCI calibration match</button>
+            <div id="calibrationResult" class="mini-report"><p class="hint">Select a saved UCI engine with UCI_Elo support for a measured local calibration.</p></div>
           </div>
         </div>
 

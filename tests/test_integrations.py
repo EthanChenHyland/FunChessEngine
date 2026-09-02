@@ -37,6 +37,63 @@ class OptionalIntegrationTests(unittest.TestCase):
                 result = engine.bestmove(chess.STARTING_FEN, movetime_ms=20)
             self.assertEqual(result.move, "e2e4")
 
+    def test_external_uci_client_parses_identity_options_and_multipv(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "fake-multipv.py"
+            script.write_text(
+                textwrap.dedent(
+                    """\
+                    #!/usr/bin/env python3
+                    import sys
+                    for raw in sys.stdin:
+                        line = raw.strip()
+                        if line == "uci":
+                            print("id name Fake MultiPV", flush=True)
+                            print("option name MultiPV type spin default 1 min 1 max 4", flush=True)
+                            print(
+                                "option name UCI_LimitStrength type check default false",
+                                flush=True,
+                            )
+                            print(
+                                "option name UCI_Elo type spin default 1500 min 800 max 2500",
+                                flush=True,
+                            )
+                            print("uciok", flush=True)
+                        elif line == "isready": print("readyok", flush=True)
+                        elif line.startswith("go "):
+                            print(
+                                "info depth 8 seldepth 10 multipv 1 score cp 24 "
+                                "nodes 1000 nps 50000 pv e2e4 e7e5",
+                                flush=True,
+                            )
+                            print(
+                                "info depth 8 multipv 2 score cp 14 nodes 900 "
+                                "nps 45000 pv d2d4 d7d5",
+                                flush=True,
+                            )
+                            print(
+                                "info depth 8 multipv 3 score mate 5 nodes 800 "
+                                "pv g1f3 d7d5",
+                                flush=True,
+                            )
+                            print("bestmove e2e4", flush=True)
+                        elif line == "quit": break
+                    """
+                ),
+                encoding="utf-8",
+            )
+            script.chmod(0o755)
+            with ExternalUCIEngine(script) as engine:
+                result = engine.analyze(chess.STARTING_FEN, movetime_ms=20, multipv=3)
+                self.assertEqual(engine.engine_name, "Fake MultiPV")
+                self.assertEqual(engine.options["MultiPV"].maximum, 4)
+                self.assertEqual(engine.options["UCI_Elo"].minimum, 800)
+            self.assertEqual(result.move, "e2e4")
+            self.assertEqual([line.move for line in result.lines], ["e2e4", "d2d4", "g1f3"])
+            self.assertEqual(result.lines[0].score_cp, 24)
+            self.assertEqual(result.lines[0].depth, 8)
+            self.assertEqual(result.lines[2].mate, 5)
+
     def test_calibration_score_is_bounded(self) -> None:
         self.assertEqual(calibration_score([]), 1200)
         self.assertGreater(calibration_score([1, 1, 0.5]), calibration_score([0, 0, 0.5]))

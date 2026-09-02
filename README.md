@@ -54,7 +54,15 @@ make release-build
 `desktop-build`/`release-build` also verify the produced Apple Silicon application and bundled backend
 are both arm64 and smoke the frozen backend API from inside the packaged `.app`.
 
-Open the built app:
+## Electron app location
+
+After `make desktop-build` or `make release-build`, the macOS Electron application bundle is located at:
+
+```text
+desktop/dist/mac-arm64/FunChessEngine.app
+```
+
+Open the built app directly with:
 
 ```bash
 open desktop/dist/mac-arm64/FunChessEngine.app
@@ -64,8 +72,8 @@ The release artifacts are written to:
 
 ```text
 desktop/dist/mac-arm64/FunChessEngine.app
-desktop/dist/FunChessEngine-1.0.0-arm64.dmg
-desktop/dist/FunChessEngine-1.0.0-arm64.zip
+desktop/dist/FunChessEngine-1.1.0-arm64.dmg
+desktop/dist/FunChessEngine-1.1.0-arm64.zip
 ```
 
 For faster development without producing release artifacts:

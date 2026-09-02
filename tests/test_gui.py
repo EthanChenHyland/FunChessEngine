@@ -3,6 +3,7 @@ from __future__ import annotations
 import http.client
 import io
 import json
+import tempfile
 import threading
 import time
 import unittest
@@ -656,17 +657,72 @@ class GameSessionTests(unittest.TestCase):
         motifs = _detect_tactical_motifs(board, move)
         self.assertIn("capture", motifs)
 
+        discovered = chess.Board("q3k3/8/8/8/8/8/N7/R3K3 w - - 0 1")
+        discovered_motifs = _detect_tactical_motifs(
+            discovered,
+            chess.Move.from_uci("a2c3"),
+        )
+        self.assertIn("discovered attack", discovered_motifs)
+        self.assertIn("clearance", discovered_motifs)
+
+        back_rank = chess.Board("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1")
+        mate_motifs = _detect_tactical_motifs(back_rank, chess.Move.from_uci("a1a8"))
+        self.assertIn("mate", mate_motifs)
+        self.assertIn("back-rank mate", mate_motifs)
+
         insights = self.game.position_insights(chess.STARTING_FEN)
         self.assertEqual(insights["phase"], "opening")
         self.assertTrue(insights["plans"])
         self.assertIn("white", insights["attacks"])
         self.assertIn("black", insights["passed_pawns"])
+        self.assertIn("balance", insights["material"])
+        self.assertIn("white", insights["pawn_structure"])
+        self.assertIn("open", insights["files"])
+        self.assertIn("white", insights["weak_squares"])
+        self.assertIn("white", insights["king_safety"])
+        self.assertIn("white", insights["piece_activity"])
         self.assertTrue(self.game.state()["plans"])
+
+        structure = self.game.position_insights(
+            "4k3/p7/8/8/2P1P3/8/8/4K3 w - - 0 1"
+        )
+        self.assertIn("Maroczy bind", structure["structure_tags"])
 
     def test_tablebase_probe_is_optional_and_local(self) -> None:
         result = self.game.tablebase_probe("8/8/8/8/8/3k4/8/3K4 w - - 0 1", "/no/such/path")
         self.assertFalse(result["available"])
         self.assertIn("Syzygy", result["reason"])
+
+    def test_tablebase_probe_ranks_moves_and_identifies_only_winning_move(self) -> None:
+        class FakeTablebase:
+            def __enter__(self) -> FakeTablebase:
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def probe_wdl(self, board: chess.Board) -> int:
+                if not board.move_stack:
+                    return 2
+                return -2 if board.peek().uci() == "d1e1" else 0
+
+            def probe_dtz(self, board: chess.Board) -> int:
+                if not board.move_stack:
+                    return 5
+                return -1 if board.peek().uci() == "d1e1" else 0
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch("gui.server.chess.syzygy.open_tablebase", return_value=FakeTablebase()),
+        ):
+            result = self.game.tablebase_probe(
+                "8/8/8/8/8/3k4/8/2RK4 w - - 0 1",
+                directory,
+            )
+        self.assertTrue(result["available"])
+        self.assertEqual(result["result"], "win")
+        self.assertEqual(result["only_winning_move"], "d1e1")
+        self.assertEqual(result["optimal_moves"][0]["uci"], "d1e1")
 
     def test_time_management_coaching_uses_recorded_clocks_and_analysis(self) -> None:
         self.game.reset(clock_ms=60_000, increment_ms=1_000)

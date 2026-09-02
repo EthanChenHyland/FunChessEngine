@@ -20,6 +20,10 @@ const LESSONS_KEY = "funChessEngine.lessons.v1";
 const ENGINE_PRESETS_KEY = "funChessEngine.enginePresets.v1";
 const PLUGINS_KEY = "funChessEngine.plugins.v1";
 const EXTERNAL_ENGINES_KEY = "funChessEngine.externalEngines.v1";
+const SESSION_GOALS_KEY = "funChessEngine.sessionGoals.v1";
+const CALIBRATION_HISTORY_KEY = "funChessEngine.calibrationHistory.v1";
+const EXTERNAL_COMPARE_HISTORY_KEY = "funChessEngine.externalCompareHistory.v1";
+const REGRESSION_HISTORY_KEY = "funChessEngine.regressionHistory.v1";
 const DURABLE_DB_NAME = "FunChessEngine.LocalData";
 const DURABLE_DB_VERSION = 1;
 const DURABLE_STORE = "metadata";
@@ -136,9 +140,14 @@ let lessonDraftCards = [];
 let enginePresets = loadEnginePresets();
 let pluginManifests = loadPluginManifests();
 let externalEngines = loadExternalEngines();
+let sessionGoals = loadSessionGoals();
+let calibrationHistory = loadCalibrationHistory();
+let externalCompareHistory = loadExternalCompareHistory();
+let regressionHistory = loadRegressionHistory();
 let positionInsightsData = null;
 let positionInsightsBusy = false;
 let lanInfo = { running: false };
+let indexedLibraryStatus = { games: 0, positions: 0 };
 
 const $ = (id) => document.getElementById(id);
 
@@ -607,6 +616,61 @@ function loadExternalEngines() {
   }
 }
 
+function todayKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function loadSessionGoals() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SESSION_GOALS_KEY) || "null");
+    const normalized = saved && typeof saved === "object" ? saved : {};
+    if (normalized.date !== todayKey()) {
+      normalized.date = todayKey();
+      normalized.progress = { tactics: 0, repertoire: 0, endgames: 0, losses: 0 };
+    }
+    normalized.targets = {
+      tactics: Math.max(0, Math.min(200, Number(normalized.targets?.tactics || 20))),
+      repertoire: Math.max(0, Math.min(200, Number(normalized.targets?.repertoire || 10))),
+      endgames: Math.max(0, Math.min(50, Number(normalized.targets?.endgames || 1))),
+      losses: Math.max(0, Math.min(50, Number(normalized.targets?.losses || 1))),
+    };
+    normalized.progress = {
+      tactics: Math.max(0, Number(normalized.progress?.tactics || 0)),
+      repertoire: Math.max(0, Number(normalized.progress?.repertoire || 0)),
+      endgames: Math.max(0, Number(normalized.progress?.endgames || 0)),
+      losses: Math.max(0, Number(normalized.progress?.losses || 0)),
+    };
+    return normalized;
+  } catch (_) {
+    return {
+      date: todayKey(),
+      targets: { tactics: 20, repertoire: 10, endgames: 1, losses: 1 },
+      progress: { tactics: 0, repertoire: 0, endgames: 0, losses: 0 },
+    };
+  }
+}
+
+function loadCalibrationHistory() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(CALIBRATION_HISTORY_KEY) || "[]");
+    return Array.isArray(saved) ? saved.slice(0, 20) : [];
+  } catch (_) { return []; }
+}
+
+function loadExternalCompareHistory() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(EXTERNAL_COMPARE_HISTORY_KEY) || "[]");
+    return Array.isArray(saved) ? saved.slice(0, 30) : [];
+  } catch (_) { return []; }
+}
+
+function loadRegressionHistory() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(REGRESSION_HISTORY_KEY) || "[]");
+    return Array.isArray(saved) ? saved.slice(0, 30) : [];
+  } catch (_) { return []; }
+}
+
 function saveLessons() {
   lessons = lessons.slice(0, 100);
   persistDurableValue(LESSONS_KEY, lessons);
@@ -625,6 +689,25 @@ function savePluginManifests() {
 function saveExternalEngines() {
   externalEngines = externalEngines.slice(0, 12);
   persistDurableValue(EXTERNAL_ENGINES_KEY, externalEngines);
+}
+
+function saveSessionGoals() {
+  localStorage.setItem(SESSION_GOALS_KEY, JSON.stringify(sessionGoals));
+}
+
+function saveCalibrationHistory() {
+  calibrationHistory = calibrationHistory.slice(0, 20);
+  persistDurableValue(CALIBRATION_HISTORY_KEY, calibrationHistory);
+}
+
+function saveExternalCompareHistory() {
+  externalCompareHistory = externalCompareHistory.slice(0, 30);
+  persistDurableValue(EXTERNAL_COMPARE_HISTORY_KEY, externalCompareHistory);
+}
+
+function saveRegressionHistory() {
+  regressionHistory = regressionHistory.slice(0, 30);
+  persistDurableValue(REGRESSION_HISTORY_KEY, regressionHistory);
 }
 
 function loadPositionAnalysisCache() {
@@ -659,10 +742,47 @@ function saveBenchmarkHistory() {
 function loadVariationWorkspaces() {
   try {
     const saved = JSON.parse(localStorage.getItem(VARIATIONS_KEY) || "{}");
-    return saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
+    if (!saved || typeof saved !== "object" || Array.isArray(saved)) return {};
+    return Object.fromEntries(
+      Object.entries(saved)
+        .map(([key, workspace]) => [key, normalizeVariationWorkspace(workspace)])
+        .filter(([, workspace]) => workspace?.root && workspace?.nodes?.[workspace.root]),
+    );
   } catch (_) {
     return {};
   }
+}
+
+function normalizeVariationWorkspace(workspace) {
+  if (!workspace || typeof workspace !== "object" || Array.isArray(workspace)) return null;
+  if (!workspace.nodes || typeof workspace.nodes !== "object") return workspace;
+  workspace.edges = workspace.edges && typeof workspace.edges === "object" ? workspace.edges : {};
+  for (const node of Object.values(workspace.nodes)) {
+    if (!node || typeof node !== "object") continue;
+    node.children = Array.isArray(node.children) ? [...new Set(node.children)] : [];
+    node.parents = Array.isArray(node.parents) ? [...new Set(node.parents)] : [];
+    if (node.parent && !node.parents.includes(node.parent)) node.parents.unshift(node.parent);
+  }
+  for (const [parentId, parent] of Object.entries(workspace.nodes)) {
+    for (const childId of parent?.children || []) {
+      const child = workspace.nodes[childId];
+      if (!child) continue;
+      if (!child.parents.includes(parentId)) child.parents.push(parentId);
+      if (!child.parent) child.parent = parentId;
+      const edgeKey = `${parentId}>${childId}`;
+      if (!workspace.edges[edgeKey]) {
+        workspace.edges[edgeKey] = {
+          move_uci: child.move_uci || "",
+          move_san: child.move_san || child.move_uci || "Move",
+        };
+      }
+    }
+  }
+  if (workspace.root && workspace.nodes[workspace.root]) {
+    workspace.nodes[workspace.root].parent = null;
+    workspace.nodes[workspace.root].parents = [];
+  }
+  return workspace;
 }
 
 function loadPositionBookmarks() {
@@ -681,6 +801,8 @@ function savePositionBookmarks() {
 
 function persistVariationWorkspaces() {
   const entries = Object.entries(savedVariationWorkspaces)
+    .map(([key, workspace]) => [key, normalizeVariationWorkspace(workspace)])
+    .filter(([, workspace]) => workspace)
     .sort(([, left], [, right]) => String(right?.updated_at || "").localeCompare(String(left?.updated_at || "")))
     .slice(0, 20);
   savedVariationWorkspaces = Object.fromEntries(entries);
@@ -695,6 +817,7 @@ function variationStorageKey(originPly) {
 
 function saveCurrentVariationWorkspace() {
   if (!variationWorkspace?.storage_key || !variationWorkspace.root) return;
+  normalizeVariationWorkspace(variationWorkspace);
   variationWorkspace.name = String(variationWorkspace.name || defaultStudyName(variationWorkspace.origin_ply)).slice(0, 80);
   variationWorkspace.kind = variationWorkspace.kind === "repertoire" ? "repertoire" : "study";
   variationWorkspace.last_node = variationNodeId;
@@ -716,6 +839,7 @@ function cacheCurrentAnalysis() {
   if (existing >= 0) {
     recentGames[existing] = { ...recentGames[existing], analysis: gameAnalysis };
     saveRecentGames();
+    void learnOpeningBookFromGame(recentGames[existing]);
   }
   persistRecoverySnapshot();
 }
@@ -738,6 +862,7 @@ function ingestTrainerFromAnalysis() {
       classification: result.classification,
       cpl,
       phase: result.phase || "middlegame",
+      motifs: Array.isArray(result.motifs) ? result.motifs.slice(0, 12) : [],
       explanation: result.explanation || "",
       source,
       created_at: new Date().toISOString(),
@@ -822,6 +947,27 @@ function archiveCurrentGame(allowIncomplete = false) {
   recentGames.unshift(snapshot);
   trimRecentGames();
   saveRecentGames();
+  if (snapshot.analysis?.results?.length) void learnOpeningBookFromGame(snapshot);
+}
+
+async function learnOpeningBookFromGame(snapshot) {
+  const score = personalGameScore(snapshot);
+  if (score === null || !Array.isArray(snapshot.analysis?.results)) return;
+  const profile = snapshot.engine_profile || state?.engine_profile || "default";
+  for (const result of snapshot.analysis.results.slice(0, 30)) {
+    if (!result?.fen_before || !result?.played_uci) continue;
+    try {
+      await api("/api/opening-book", {
+        action: "learn",
+        fen: result.fen_before,
+        move: result.played_uci,
+        score,
+        profile,
+      });
+    } catch (_) {
+      // Learning only affects book entries that already exist for this profile.
+    }
+  }
 }
 
 function archiveCompletedGame() {
@@ -1070,18 +1216,26 @@ async function importPgnCollectionFiles(files) {
 async function importOpeningDatabaseFiles(files) {
   const list = [...(files || [])];
   if (!list.length) return;
-  let added = 0;
+  let imported = 0;
+  let duplicates = 0;
+  let positions = 0;
   for (const file of list) {
     assertBrowserFileSize(file, MAX_PGN_BYTES, file.name || "Opening database PGN");
-    added += await importPgnCollectionText(
-      await file.text(),
-      file.name || "Opening database",
-      true,
-    );
+    const result = await api("/api/library-db/import", {
+      pgn: await file.text(),
+      source: file.name || "Opening database",
+      max_games: 10000,
+    });
+    imported += Number(result.imported || 0);
+    duplicates += Number(result.duplicates || 0);
+    positions += Number(result.positions || 0);
   }
-  renderOpeningDatabase();
+  await refreshOpeningDatabaseStatus();
   renderRepertoireGaps();
-  setStatus(`Imported ${added} new reference game${added === 1 ? "" : "s"}.`, "success");
+  setStatus(
+    `Indexed ${imported} new reference game${imported === 1 ? "" : "s"} and ${positions} positions${duplicates ? ` · ${duplicates} duplicate${duplicates === 1 ? "" : "s"} skipped` : ""}.`,
+    "success",
+  );
 }
 
 function queueableLibraryGames() {
@@ -2134,7 +2288,53 @@ function variationNode() {
 
 function newVariationNode(snapshot, parent = null, moveUci = null, moveSan = "Root") {
   const id = globalThis.crypto?.randomUUID?.() || `v-${Date.now()}-${Math.random()}`;
-  return { id, parent, move_uci: moveUci, move_san: moveSan, snapshot, children: [], comment: "", nag: "" };
+  return {
+    id,
+    parent,
+    parents: parent ? [parent] : [],
+    move_uci: moveUci,
+    move_san: moveSan,
+    snapshot,
+    children: [],
+    comment: "",
+    nag: "",
+  };
+}
+
+function variationEdge(parentId, childId) {
+  const child = variationWorkspace?.nodes?.[childId];
+  return workspaceEdge(variationWorkspace, parentId, childId) || {
+    move_uci: child?.move_uci || "",
+    move_san: child?.move_san || child?.move_uci || "Move",
+  };
+}
+
+function workspaceEdge(workspace, parentId, childId) {
+  const child = workspace?.nodes?.[childId];
+  if (!child) return null;
+  return workspace?.edges?.[`${parentId}>${childId}`] || {
+    move_uci: child.move_uci || "",
+    move_san: child.move_san || child.move_uci || "Move",
+  };
+}
+
+function variationParentFor(node) {
+  if (!node) return null;
+  const parents = Array.isArray(node.parents) ? node.parents : (node.parent ? [node.parent] : []);
+  if (node.last_parent && parents.includes(node.last_parent)) return node.last_parent;
+  return parents[0] || null;
+}
+
+function variationAncestorIds(startId = variationNodeId) {
+  const result = new Set();
+  let node = variationWorkspace?.nodes?.[startId];
+  while (node) {
+    if (result.has(node.id)) break;
+    result.add(node.id);
+    const parentId = variationParentFor(node);
+    node = parentId ? variationWorkspace.nodes[parentId] : null;
+  }
+  return result;
 }
 
 async function startVariationWorkspace() {
@@ -2149,7 +2349,7 @@ async function startVariationWorkspace() {
   const storageKey = variationStorageKey(originPly);
   const restored = savedVariationWorkspaces[storageKey];
   if (restored?.root && restored?.nodes?.[restored.root]) {
-    variationWorkspace = restored;
+    variationWorkspace = normalizeVariationWorkspace(restored);
     variationWorkspace.storage_key = storageKey;
     variationNodeId = restored.nodes[restored.last_node] ? restored.last_node : restored.root;
     variationMode = true;
@@ -2168,6 +2368,7 @@ async function startVariationWorkspace() {
     kind: "study",
     favorite: false,
     nodes: { [root.id]: root },
+    edges: {},
   };
   variationNodeId = root.id;
   variationMode = true;
@@ -2239,9 +2440,36 @@ async function playVariationMove(move) {
   }
   try {
     const childSnapshot = await api("/api/variation-move", { fen: snapshot.fen, move });
+    const childKey = fenPositionKey(childSnapshot.fen);
+    const ancestors = variationAncestorIds(node.id);
+    const transposition = Object.values(variationWorkspace.nodes).find((candidate) => (
+      candidate?.id !== node.id
+      && !ancestors.has(candidate?.id)
+      && fenPositionKey(candidate?.snapshot?.fen) === childKey
+    ));
+    if (transposition) {
+      if (!node.children.includes(transposition.id)) node.children.push(transposition.id);
+      transposition.parents = Array.isArray(transposition.parents) ? transposition.parents : [];
+      if (!transposition.parents.includes(node.id)) transposition.parents.push(node.id);
+      transposition.last_parent = node.id;
+      variationWorkspace.edges[`${node.id}>${transposition.id}`] = {
+        move_uci: move,
+        move_san: childSnapshot.move_san || move,
+      };
+      variationNodeId = transposition.id;
+      saveCurrentVariationWorkspace();
+      render();
+      scheduleAutoPositionAnalysis();
+      setStatus("Linked this line to an existing transposition in the study.", "success");
+      return true;
+    }
     const child = newVariationNode(childSnapshot, node.id, move, childSnapshot.move_san || move);
     variationWorkspace.nodes[child.id] = child;
     node.children.push(child.id);
+    variationWorkspace.edges[`${node.id}>${child.id}`] = {
+      move_uci: move,
+      move_san: childSnapshot.move_san || move,
+    };
     variationNodeId = child.id;
     saveCurrentVariationWorkspace();
     playUiSound("move");
@@ -2254,8 +2482,10 @@ async function playVariationMove(move) {
   }
 }
 
-function navigateVariation(id) {
+function navigateVariation(id, fromParent = null) {
   if (!variationWorkspace?.nodes[id]) return;
+  const node = variationWorkspace.nodes[id];
+  if (fromParent && node.parents?.includes(fromParent)) node.last_parent = fromParent;
   variationNodeId = id;
   selected = null;
   saveCurrentVariationWorkspace();
@@ -2265,21 +2495,34 @@ function navigateVariation(id) {
 
 function variationBack() {
   const node = variationNode();
-  if (node?.parent) navigateVariation(node.parent);
+  const parentId = variationParentFor(node);
+  if (parentId) navigateVariation(parentId);
 }
 
 function deleteVariationBranch() {
   const node = variationNode();
-  if (!node?.parent || !variationWorkspace) return;
-  const parent = variationWorkspace.nodes[node.parent];
+  const parentId = variationParentFor(node);
+  if (!parentId || !variationWorkspace) return;
+  const parent = variationWorkspace.nodes[parentId];
   if (parent) parent.children = parent.children.filter((id) => id !== node.id);
-  const remove = (id) => {
+  delete variationWorkspace.edges?.[`${parentId}>${node.id}`];
+  node.parents = (node.parents || []).filter((id) => id !== parentId);
+  if (node.parent === parentId) node.parent = node.parents[0] || null;
+  const removeOrphans = (id) => {
     const item = variationWorkspace.nodes[id];
-    for (const child of item?.children || []) remove(child);
+    if (!item || id === variationWorkspace.root || (item.parents || []).length) return;
+    for (const childId of item.children || []) {
+      const child = variationWorkspace.nodes[childId];
+      if (child) {
+        child.parents = (child.parents || []).filter((value) => value !== id);
+        if (child.parent === id) child.parent = child.parents[0] || null;
+      }
+      delete variationWorkspace.edges?.[`${id}>${childId}`];
+      removeOrphans(childId);
+    }
     delete variationWorkspace.nodes[id];
   };
-  const parentId = node.parent;
-  remove(node.id);
+  removeOrphans(node.id);
   variationNodeId = parentId;
   saveCurrentVariationWorkspace();
   render();
@@ -2288,8 +2531,9 @@ function deleteVariationBranch() {
 
 function promoteVariationBranch() {
   const node = variationNode();
-  if (!node?.parent || !variationWorkspace) return;
-  const parent = variationWorkspace.nodes[node.parent];
+  const parentId = variationParentFor(node);
+  if (!parentId || !variationWorkspace) return;
+  const parent = variationWorkspace.nodes[parentId];
   if (!parent?.children?.includes(node.id)) return;
   parent.children = [node.id, ...parent.children.filter((id) => id !== node.id)];
   saveCurrentVariationWorkspace();
@@ -2302,7 +2546,8 @@ function variationPath() {
   let node = variationNode();
   while (node) {
     path.unshift(node);
-    node = node.parent ? variationWorkspace.nodes[node.parent] : null;
+    const parentId = variationParentFor(node);
+    node = parentId ? variationWorkspace.nodes[parentId] : null;
   }
   return path;
 }
@@ -2353,6 +2598,7 @@ function resetVariationWorkspace() {
     kind: variationWorkspace.kind,
     favorite: variationWorkspace.favorite,
     nodes: { [root.id]: root },
+    edges: {},
   };
   variationNodeId = root.id;
   selected = null;
@@ -2391,9 +2637,10 @@ function renderVariationWorkspace() {
   if ($("studyFolderInput") && document.activeElement !== $("studyFolderInput")) $("studyFolderInput").value = variationWorkspace?.folder || "";
   if ($("studyTagsInput") && document.activeElement !== $("studyTagsInput")) $("studyTagsInput").value = (variationWorkspace?.tags || []).join(", ");
   if ($("studyFavoriteBtn")) $("studyFavoriteBtn").textContent = variationWorkspace?.favorite ? "★ Bookmarked study" : "☆ Bookmark study";
-  $("variationBackBtn").disabled = !node?.parent;
-  $("variationPromoteBtn").disabled = !node?.parent;
-  $("variationDeleteBtn").disabled = !node?.parent;
+  const activeParentId = variationParentFor(node);
+  $("variationBackBtn").disabled = !activeParentId;
+  $("variationPromoteBtn").disabled = !activeParentId;
+  $("variationDeleteBtn").disabled = !activeParentId;
   $("variationNag").value = node?.nag || "";
   $("variationComment").value = node?.comment || "";
   const breadcrumb = $("variationBreadcrumb");
@@ -2402,33 +2649,38 @@ function renderVariationWorkspace() {
     const button = document.createElement("button");
     button.type = "button";
     button.classList.toggle("current", item.id === variationNodeId);
-    button.textContent = index === 0 ? "Root" : `${item.move_san}${item.nag || ""}`;
-    button.addEventListener("click", () => navigateVariation(item.id));
+    const parent = index > 0 ? path[index - 1] : null;
+    const edge = parent ? variationEdge(parent.id, item.id) : null;
+    button.textContent = index === 0 ? "Root" : `${edge?.move_san || item.move_san}${item.nag || ""}`;
+    button.addEventListener("click", () => navigateVariation(item.id, parent?.id || null));
     breadcrumb.appendChild(button);
   });
   const tree = $("variationTree");
   tree.innerHTML = "";
-  const fenCounts = new Map();
-  Object.values(variationWorkspace.nodes).forEach((item) => {
-    const key = fenPositionKey(item?.snapshot?.fen);
-    if (key) fenCounts.set(key, (fenCounts.get(key) || 0) + 1);
-  });
-  const appendTreeNode = (id, depth = 0) => {
+  const renderedIds = new Set();
+  const appendTreeNode = (id, depth = 0, parentId = null) => {
     const item = variationWorkspace.nodes[id];
     if (!item || depth > 40) return;
+    const alreadyRendered = renderedIds.has(id);
+    renderedIds.add(id);
     const row = document.createElement("button");
     row.type = "button";
     row.className = "variation-tree-row";
     row.classList.toggle("current", id === variationNodeId);
     row.style.setProperty("--tree-depth", String(depth));
-    const label = id === variationWorkspace.root ? "Root" : `${item.move_san || item.move_uci || "Move"}${item.nag || ""}`;
-    const key = fenPositionKey(item.snapshot?.fen);
-    const transposes = key && Number(fenCounts.get(key) || 0) > 1;
+    const edge = parentId ? variationEdge(parentId, id) : null;
+    const label = id === variationWorkspace.root
+      ? "Root"
+      : `${edge?.move_san || item.move_san || item.move_uci || "Move"}${item.nag || ""}`;
+    const transposes = Number(item.parents?.length || 0) > 1 || alreadyRendered;
     row.textContent = `${label}${item.comment ? " · ✎" : ""}${transposes ? " · ↔" : ""}`;
-    row.title = transposes ? "This position also appears elsewhere in the study." : (item.comment || label);
-    row.addEventListener("click", () => navigateVariation(id));
+    row.title = transposes
+      ? "Shared position reached by more than one move order."
+      : (item.comment || label);
+    row.addEventListener("click", () => navigateVariation(id, parentId));
     tree.appendChild(row);
-    for (const childId of item.children || []) appendTreeNode(childId, depth + 1);
+    if (alreadyRendered) return;
+    for (const childId of item.children || []) appendTreeNode(childId, depth + 1, id);
   };
   appendTreeNode(variationWorkspace.root);
   const children = $("variationChildren");
@@ -2436,10 +2688,11 @@ function renderVariationWorkspace() {
   for (const childId of node?.children || []) {
     const child = variationWorkspace.nodes[childId];
     if (!child) continue;
+    const edge = variationEdge(node.id, childId);
     const button = document.createElement("button");
     button.type = "button";
-    button.textContent = `${child.move_san}${child.nag || ""}`;
-    button.addEventListener("click", () => navigateVariation(child.id));
+    button.textContent = `${edge.move_san || child.move_san}${child.nag || ""}${child.parents?.length > 1 ? " ↔" : ""}`;
+    button.addEventListener("click", () => navigateVariation(child.id, node.id));
     children.appendChild(button);
   }
   if (!node?.children?.length) {
@@ -2485,6 +2738,60 @@ async function loadTrainerItem(index) {
   trainerMode = true;
   render();
   return true;
+}
+
+function trainerGoalCategory(item) {
+  const source = String(item?.source || "");
+  if (source.startsWith("repertoire:")) return "repertoire";
+  if (item?.phase === "endgame" || source.includes("endgame")) return "endgames";
+  return "tactics";
+}
+
+function recordSessionGoal(category) {
+  if (!sessionGoals?.progress || !(category in sessionGoals.progress)) return;
+  sessionGoals.progress[category] = Number(sessionGoals.progress[category] || 0) + 1;
+  saveSessionGoals();
+  renderSessionGoals();
+}
+
+function gradeTrainerMove(move) {
+  const item = trainerItems[trainerItemIndex];
+  if (!trainerMode || !item || trainerAwaitingNext) return false;
+  item.attempts = Number(item.attempts || 0) + 1;
+  item.ease = Math.max(1.3, Math.min(3.0, Number(item.ease || 2.3)));
+  item.confidence = Math.max(0, Math.min(100, Number(item.confidence ?? 50)));
+  trainerRevealBest = true;
+  trainerAwaitingNext = true;
+  const correct = move === item.best_uci;
+  if (correct) {
+    item.solved = Number(item.solved || 0) + 1;
+    item.streak = Number(item.streak || 0) + 1;
+    item.ease = Math.min(3.0, item.ease + 0.08);
+    item.confidence = Math.min(100, item.confidence + 12);
+    trainerSessionSolved += 1;
+    trainerSessionStreak += 1;
+    const baseDays = Math.max(1, Number(item.interval_days || 1));
+    const intervalDays = Math.min(60, Math.max(1, Math.round(baseDays * item.ease)));
+    item.interval_days = intervalDays;
+    item.due_at = Date.now() + intervalDays * 86_400_000;
+    $("trainerPrompt").textContent = `Correct — ${item.best_san || item.best_uci}. Next review in ${intervalDays} day${intervalDays === 1 ? "" : "s"}.`;
+    recordSessionGoal(trainerGoalCategory(item));
+    playUiSound("success");
+  } else {
+    item.lapses = Number(item.lapses || 0) + 1;
+    item.streak = 0;
+    item.ease = Math.max(1.3, item.ease - 0.2);
+    item.confidence = Math.max(0, item.confidence - 18);
+    item.interval_days = 1;
+    trainerSessionStreak = 0;
+    item.due_at = Date.now() + 15 * 60_000;
+    $("trainerPrompt").textContent = `Not quite. The engine preferred ${item.best_san || item.best_uci}. This line returns to the queue soon.`;
+    playUiSound("error");
+  }
+  saveTrainerItems();
+  renderBoard();
+  renderTrainerPanel();
+  return correct;
 }
 
 async function startTrainer(focus = "due") {
@@ -2543,26 +2850,7 @@ async function trainerSquareClick(square) {
   }
   trainerSelected = null;
   selected = null;
-  item.attempts = Number(item.attempts || 0) + 1;
-  trainerRevealBest = true;
-  trainerAwaitingNext = true;
-  if (move === item.best_uci) {
-    item.solved = Number(item.solved || 0) + 1;
-    trainerSessionSolved += 1;
-    trainerSessionStreak += 1;
-    const intervalDays = Math.min(30, Math.max(1, 2 ** Math.min(5, item.solved - 1)));
-    item.due_at = Date.now() + intervalDays * 86_400_000;
-    $("trainerPrompt").textContent = `Correct — ${item.best_san || item.best_uci}. Next review in ${intervalDays} day${intervalDays === 1 ? "" : "s"}.`;
-    playUiSound("success");
-  } else {
-    trainerSessionStreak = 0;
-    item.due_at = Date.now() + 15 * 60_000;
-    $("trainerPrompt").textContent = `Not quite. The engine preferred ${item.best_san || item.best_uci}.`;
-    playUiSound("error");
-  }
-  saveTrainerItems();
-  renderBoard();
-  renderTrainerPanel();
+  gradeTrainerMove(move);
 }
 
 async function nextTrainerItem() {
@@ -2619,11 +2907,28 @@ function renderTrainerPanel() {
   $("trainerFocusBtn").disabled = trainerItems.length === 0 || trainerMode;
   $("trainerSession").hidden = !trainerMode;
   $("trainerNextBtn").hidden = !trainerMode || !trainerAwaitingNext;
+  const choices = $("trainerChoices");
+  if (choices) {
+    choices.innerHTML = "";
+    choices.hidden = true;
+  }
   if (trainerMode) {
     const item = trainerItems[trainerItemIndex];
     $("trainerLabel").textContent = `${capitalize(item?.classification || "Training")} · ${capitalize(item?.phase || "position")}`;
     $("trainerProgress").textContent = `${trainerSessionSolved} solved`;
     if (!trainerRevealBest) $("trainerPrompt").textContent = `You played ${item?.played_san || "a weaker move"}. Find a better move.`;
+    if (choices && Array.isArray(item?.choices) && item.choices.length >= 2 && !trainerAwaitingNext) {
+      choices.hidden = false;
+      item.choices.slice(0, 4).forEach((choice) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "secondary compact";
+        button.textContent = choice.san || choice.move;
+        button.title = choice.feedback || "Choose this move";
+        button.addEventListener("click", () => gradeTrainerMove(choice.move));
+        choices.appendChild(button);
+      });
+    }
   }
   const attempts = trainerItems.reduce((sum, item) => sum + Number(item.attempts || 0), 0);
   const correct = trainerItems.reduce((sum, item) => sum + Number(item.solved || 0), 0);
@@ -2652,7 +2957,8 @@ function renderTrainerPanel() {
     const title = document.createElement("strong");
     title.textContent = `${item.classification || "Position"} · ${item.cpl || 0} CPL`;
     const meta = document.createElement("span");
-    meta.textContent = `${capitalize(item.phase || "middlegame")} · best ${item.best_san || item.best_uci}`;
+    const confidence = Number.isFinite(Number(item.confidence)) ? ` · ${Math.round(Number(item.confidence))}% confidence` : "";
+    meta.textContent = `${capitalize(item.phase || "middlegame")} · best ${item.best_san || item.best_uci}${confidence}`;
     info.append(title, meta);
     const open = document.createElement("button");
     open.className = "secondary compact";
@@ -2693,6 +2999,22 @@ function renderWeaknessProfile() {
     row.innerHTML = `<strong>${capitalize(phase)}</strong><span class="weakness-bar"><i style="width:${averages[phase] * 100 / max}%"></i></span><span>${averages[phase] ? averages[phase].toFixed(0) : "—"}</span>`;
     target.appendChild(row);
   }
+  const motifCounts = new Map();
+  trainerItems.forEach((item) => {
+    for (const motif of item.motifs || []) {
+      const name = String(motif || "").trim();
+      if (name) motifCounts.set(name, (motifCounts.get(name) || 0) + 1);
+    }
+  });
+  [...motifCounts.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, 5)
+    .forEach(([motif, count]) => {
+      const row = document.createElement("div");
+      row.className = "weakness-row motif-weakness-row";
+      row.innerHTML = `<strong>${capitalize(motif)}</strong><span class="weakness-bar"><i style="width:${Math.min(100, count * 20)}%"></i></span><span>${count}</span>`;
+      target.appendChild(row);
+    });
 }
 
 function renderTrainingVisualization() {
@@ -4530,6 +4852,15 @@ function render() {
   $("pvLine").textContent = pv.length ? pv.join(" ") : "No completed search yet.";
   const researches = Number(state.last_engine_researches || 0);
   $("researches").textContent = String(researches);
+  $("ttHits").textContent = Number(state.last_engine_tt_hits || 0).toLocaleString();
+  $("betaCutoffs").textContent = Number(state.last_engine_beta_cutoffs || 0).toLocaleString();
+  $("quiescenceNodes").textContent = Number(state.last_engine_quiescence_nodes || 0).toLocaleString();
+  $("searchBudget").textContent = state.last_engine_budget_ms
+    ? `${Number(state.last_engine_budget_ms)} ms`
+    : "—";
+  $("pvChanged").textContent = state.last_engine_pv?.length
+    ? (state.last_engine_pv_changed ? "Yes" : "No")
+    : "—";
   const analysisRunning = gameAnalysis
     ? gameAnalysis.status === "running"
     : state.analysis_status === "running";
@@ -4771,6 +5102,87 @@ function renderAnalysisNotation() {
   }
 }
 
+function approximateThinkMsForPly(ply) {
+  const after = state?.recorded_clock_history?.[ply - 1];
+  const before = ply <= 2
+    ? state?.recorded_initial_clocks
+    : state?.recorded_clock_history?.[ply - 3];
+  const sideIndex = ply % 2 === 1 ? 0 : 1;
+  const beforeMs = Array.isArray(before) ? Number(before[sideIndex]) : NaN;
+  const afterMs = Array.isArray(after) ? Number(after[sideIndex]) : NaN;
+  if (!Number.isFinite(beforeMs) || !Number.isFinite(afterMs)) return null;
+  const increment = state?.clock_mode === "increment" ? Number(state.increment_ms || 0) : 0;
+  return Math.max(0, beforeMs + increment - afterMs);
+}
+
+function renderGameQualityTimeline() {
+  const target = $("qualityTimeline");
+  const meta = $("qualityTimelineMeta");
+  if (!target || !meta) return;
+  const rows = Array.isArray(gameAnalysis?.results) ? gameAnalysis.results : [];
+  target.innerHTML = "";
+  meta.textContent = rows.length ? `${rows.length} analyzed plies` : "Analyze a game";
+  if (!rows.length) {
+    target.innerHTML = '<p class="hint">Whole-game analysis will populate this timeline.</p>';
+    return;
+  }
+  rows.forEach((row) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `quality-timeline-row grade-${String(row.classification || "").toLowerCase()}`;
+    const think = approximateThinkMsForPly(Number(row.ply || 0));
+    const motif = Array.isArray(row.motifs) && row.motifs.length ? row.motifs.slice(0, 2).join(", ") : "no motif";
+    button.innerHTML = `<strong>${row.ply}. ${row.played_san || row.played_uci || "Move"}</strong><span>${Number(row.cpl || 0)} CPL · ${capitalize(row.phase || "middlegame")} · ${motif}${think === null ? "" : ` · ~${(think / 1000).toFixed(1)}s`}</span><i style="--loss:${Math.min(100, Math.max(3, Number(row.cpl || 0) / 4))}%"></i>`;
+    button.title = `Review ply ${row.ply}: ${row.classification || "Move"}`;
+    button.addEventListener("click", () => enterReviewMode(Number(row.ply)));
+    target.appendChild(button);
+  });
+}
+
+async function refreshMoveAlternatives() {
+  const target = $("moveAlternatives");
+  if (!target || !state) return;
+  target.innerHTML = '<p class="hint">Comparing candidate plans…</p>';
+  try {
+    const selectedPly = reviewMode ? Number(reviewSnapshot?.ply || 0) : Number(state.moves_uci?.length || 0);
+    const insight = selectedPly > 0 ? analysisResultForPly(selectedPly) : null;
+    const base = insight
+      ? await api("/api/review", { ply: Math.max(0, selectedPly - 1) })
+      : (currentBoardView() || state);
+    const result = await api("/api/multipv", { fen: base.fen, lines: 4, budget_ms: 450 });
+    const lines = Array.isArray(result.lines) ? result.lines.slice(0, 4) : [];
+    target.innerHTML = "";
+    if (insight) {
+      const played = document.createElement("div");
+      played.className = "prep-row alternatives-played";
+      played.innerHTML = `<strong>Played · ${insight.played_san || insight.played_uci}</strong><span>${Number(insight.cpl || 0)} CPL · ${richMoveExplanation(insight)}</span>`;
+      target.appendChild(played);
+    }
+    for (const [index, line] of lines.entries()) {
+      let motifText = "positional";
+      let planText = "Compare the resulting activity and piece placement.";
+      try {
+        const [motifs, child] = await Promise.all([
+          api("/api/tactical-motifs", { fen: base.fen, move: line.move }),
+          api("/api/variation-move", { fen: base.fen, move: line.move }),
+        ]);
+        if (motifs.motifs?.length) motifText = motifs.motifs.slice(0, 2).join(", ");
+        const plans = await api("/api/position-insights", { fen: child.fen });
+        if (plans.plans?.length) planText = plans.plans[0];
+      } catch (_) {
+        // The candidate still has useful score/PV data if explanatory enrichment fails.
+      }
+      const row = document.createElement("div");
+      row.className = "prep-row alternative-row";
+      row.innerHTML = `<strong>${index === 0 ? "Best" : `Alternative ${index}`} · ${line.san || line.move}</strong><span>${scoreText(line.score || 0)} · ${motifText} · ${planText}</span>`;
+      target.appendChild(row);
+    }
+    if (!lines.length) target.innerHTML = '<p class="hint">No candidate lines are available for this position.</p>';
+  } catch (error) {
+    target.innerHTML = `<p class="hint">${error.message}</p>`;
+  }
+}
+
 function analysisErrorPlies() {
   const notable = new Set(["Inaccuracy", "Mistake", "Blunder"]);
   return (Array.isArray(gameAnalysis?.results) ? gameAnalysis.results : [])
@@ -4990,6 +5402,7 @@ function renderAnalysisPanel() {
   $("retryMoveBtn").hidden = retryMode || !insight;
   $("retryBackBtn").hidden = !retryMode;
   if (failed && gameAnalysis?.error) $("statusLine").textContent = gameAnalysis.error;
+  renderGameQualityTimeline();
 }
 
 function richMoveExplanation(insight) {
@@ -5321,8 +5734,105 @@ function estimatedLocalRating(game) {
 function renderOpeningDatabase() {
   const target = $("openingDatabaseCount");
   if (!target) return;
-  const count = recentGames.filter((game) => game.reference_database).length;
+  const count = Number(indexedLibraryStatus.games || 0);
   target.textContent = `${count} database game${count === 1 ? "" : "s"}`;
+}
+
+async function refreshOpeningDatabaseStatus() {
+  try {
+    indexedLibraryStatus = await api("/api/library-db/status", {});
+    renderOpeningDatabase();
+  } catch (error) {
+    setStatus(error.message, "error");
+  }
+}
+
+function openingDatabaseFilters() {
+  const filters = {};
+  const player = $("openingDatabasePlayer")?.value.trim();
+  const structure = $("openingDatabaseStructure")?.value;
+  const yearFrom = Number($("openingDatabaseYearFrom")?.value);
+  const yearTo = Number($("openingDatabaseYearTo")?.value);
+  const minElo = Number($("openingDatabaseMinElo")?.value);
+  if (player) filters.player = player;
+  if (structure) filters.structure = structure;
+  if (Number.isFinite(yearFrom) && yearFrom > 0) filters.year_from = yearFrom;
+  if (Number.isFinite(yearTo) && yearTo > 0) filters.year_to = yearTo;
+  if (Number.isFinite(minElo) && minElo > 0) filters.min_elo = minElo;
+  return filters;
+}
+
+async function openIndexedGame(gameId) {
+  const result = await api("/api/library-db/game", { id: Number(gameId) });
+  const pgn = result.game?.pgn;
+  if (!pgn) throw new Error("Indexed game PGN is unavailable.");
+  await loadPgnText(pgn);
+}
+
+async function searchOpeningDatabase() {
+  const target = $("openingDatabaseResults");
+  const count = $("openingDatabaseSearchCount");
+  if (!target || !count) return;
+  target.innerHTML = '<p class="hint">Searching indexed reference games…</p>';
+  try {
+    const result = await api("/api/library-db/search", {
+      query: $("openingDatabaseSearch")?.value.trim() || "",
+      filters: openingDatabaseFilters(),
+      limit: 50,
+    });
+    const games = Array.isArray(result.games) ? result.games : [];
+    count.textContent = `${Number(result.total || 0)} match${Number(result.total || 0) === 1 ? "" : "es"}`;
+    target.innerHTML = "";
+    games.forEach((game) => {
+      const button = document.createElement("button");
+      button.className = "compact-list-row";
+      const title = document.createElement("strong");
+      title.textContent = `${game.white || "White"} – ${game.black || "Black"} · ${game.result || "*"}`;
+      const meta = document.createElement("span");
+      const ratings = [game.white_elo, game.black_elo].filter((value) => Number(value) > 0);
+      const avg = ratings.length
+        ? Math.round(ratings.reduce((sum, value) => sum + Number(value), 0) / ratings.length)
+        : null;
+      meta.textContent = `${game.eco || "—"} ${game.opening || "Unclassified"}${game.year ? ` · ${game.year}` : ""}${avg ? ` · avg ${avg}` : ""}`;
+      button.append(title, meta);
+      button.addEventListener("click", () => openIndexedGame(game.id).catch((error) => setStatus(error.message, "error")));
+      target.appendChild(button);
+    });
+    if (!games.length) target.innerHTML = '<p class="hint">No indexed reference games match these filters.</p>';
+  } catch (error) {
+    target.innerHTML = `<p class="hint">${error.message}</p>`;
+  }
+}
+
+async function exploreOpeningDatabase() {
+  const target = $("openingDatabaseExplorer");
+  const fen = currentBoardView()?.fen || state?.fen;
+  if (!target || !fen) return;
+  target.innerHTML = '<p class="hint">Looking up indexed moves from this position…</p>';
+  try {
+    const result = await api("/api/library-db/explorer", {
+      fen,
+      filters: openingDatabaseFilters(),
+      limit: 20,
+    });
+    const moves = Array.isArray(result.moves) ? result.moves : [];
+    target.innerHTML = "";
+    moves.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "prep-row";
+      const title = document.createElement("strong");
+      title.textContent = item.move_san || item.move_uci;
+      const meta = document.createElement("span");
+      const total = Math.max(1, Number(item.games || 0));
+      const score = (Number(item.wins || 0) + Number(item.draws || 0) * 0.5) / total * 100;
+      meta.textContent = `${total} games · ${score.toFixed(0)}% mover score${item.avg_elo ? ` · avg Elo ${item.avg_elo}` : ""}`;
+      row.append(title, meta);
+      target.appendChild(row);
+    });
+    if (!moves.length) target.innerHTML = '<p class="hint">No indexed reference games contain this position.</p>';
+  } catch (error) {
+    target.innerHTML = `<p class="hint">${error.message}</p>`;
+  }
 }
 
 function repertoirePreparedMoves() {
@@ -5476,7 +5986,8 @@ function searchSimilarGames() {
 function renderStrategicInsights() {
   const plans = $("humanPlanList");
   const motifs = $("tacticalMotifs");
-  if (!plans || !motifs) return;
+  const features = $("positionFeatureGrid");
+  if (!plans || !motifs || !features) return;
   plans.innerHTML = "";
   const planList = positionInsightsData?.plans || state?.plans || [];
   if (!planList.length) plans.innerHTML = '<p class="hint">Refresh strategic intelligence for this position.</p>';
@@ -5486,6 +5997,66 @@ function renderStrategicInsights() {
     row.textContent = plan;
     plans.appendChild(row);
   });
+  features.innerHTML = "";
+  const data = positionInsightsData;
+  if (!data) {
+    features.innerHTML = '<p class="hint">Refresh strategic intelligence to inspect structural features.</p>';
+  } else {
+    const appendFeature = (label, value) => {
+      const cell = document.createElement("div");
+      const caption = document.createElement("span");
+      caption.textContent = label;
+      const strong = document.createElement("strong");
+      strong.textContent = value || "—";
+      cell.append(caption, strong);
+      features.appendChild(cell);
+    };
+    const material = Number(data.material?.balance || 0);
+    appendFeature("Material", `${material >= 0 ? "+" : ""}${material} White`);
+    const pawnSummary = (color) => {
+      const structure = data.pawn_structure?.[color] || {};
+      const pieces = [];
+      if (structure.isolated?.length) pieces.push(`${structure.isolated.length} isolated`);
+      if (structure.doubled_files?.length) pieces.push(`doubled ${structure.doubled_files.join(",")}`);
+      if (structure.passed?.length) pieces.push(`${structure.passed.length} passed`);
+      return pieces.join(" · ") || "healthy";
+    };
+    appendFeature("White pawns", pawnSummary("white"));
+    appendFeature("Black pawns", pawnSummary("black"));
+    const openFiles = data.files?.open || [];
+    appendFeature("Open files", openFiles.length ? openFiles.join(", ") : "none");
+    const semiWhite = data.files?.semi_open?.white || [];
+    const semiBlack = data.files?.semi_open?.black || [];
+    appendFeature(
+      "Semi-open",
+      `White ${semiWhite.join(",") || "—"} · Black ${semiBlack.join(",") || "—"}`,
+    );
+    appendFeature(
+      "Weak squares",
+      `W ${(data.weak_squares?.white || []).slice(0, 3).join(",") || "—"} · B ${(data.weak_squares?.black || []).slice(0, 3).join(",") || "—"}`,
+    );
+    appendFeature(
+      "Outposts",
+      `W ${(data.knight_outposts?.white || []).join(",") || "—"} · B ${(data.knight_outposts?.black || []).join(",") || "—"}`,
+    );
+    appendFeature(
+      "King safety",
+      `W ${data.king_safety?.white?.shield ?? 0}/${data.king_safety?.white?.enemy_pressure ?? 0} · B ${data.king_safety?.black?.shield ?? 0}/${data.king_safety?.black?.enemy_pressure ?? 0}`,
+    );
+    appendFeature(
+      "Space",
+      `White ${data.space?.white ?? 0} · Black ${data.space?.black ?? 0}`,
+    );
+    appendFeature(
+      "Pawn breaks",
+      [...(data.pawn_breaks?.white || []), ...(data.pawn_breaks?.black || [])].slice(0, 5).join(", ") || "none",
+    );
+    appendFeature(
+      "Piece activity",
+      `W best ${data.piece_activity?.white?.best || "—"}/worst ${data.piece_activity?.white?.worst || "—"} · B best ${data.piece_activity?.black?.best || "—"}/worst ${data.piece_activity?.black?.worst || "—"}`,
+    );
+    appendFeature("Structures", (data.structure_tags || []).join(" · ") || "none detected");
+  }
   motifs.innerHTML = "";
   const ply = reviewMode ? Number(reviewSnapshot?.ply || 0) : Number(state?.moves_uci?.length || 0);
   const insight = ply > 0 ? analysisResultForPly(ply) : null;
@@ -5529,7 +6100,34 @@ async function probeTablebase() {
     if (!result.available) target.innerHTML = `<p class="hint">${result.reason || "Tablebase directory unavailable."}</p>`;
     else if (!result.eligible) target.innerHTML = `<p class="hint">${result.piece_count} pieces · exact Syzygy probing starts at seven pieces or fewer.</p>`;
     else if (result.missing) target.innerHTML = `<p class="hint">This position is not present in the selected tablebase set.</p>`;
-    else target.innerHTML = `<div class="prep-row"><strong>${capitalize(result.result || "unknown")}</strong><span>WDL ${result.wdl}${result.dtz == null ? "" : ` · DTZ ${result.dtz}`}</span></div>`;
+    else {
+      target.innerHTML = "";
+      const summary = document.createElement("div");
+      summary.className = "prep-row";
+      const title = document.createElement("strong");
+      title.textContent = capitalize(result.result || "unknown");
+      const meta = document.createElement("span");
+      meta.textContent = `WDL ${result.wdl}${result.dtz == null ? "" : ` · DTZ ${result.dtz}`}`;
+      summary.append(title, meta);
+      target.appendChild(summary);
+      if (result.only_winning_move) {
+        const only = document.createElement("p");
+        only.className = "tablebase-only-move";
+        const row = (result.optimal_moves || []).find((item) => item.uci === result.only_winning_move);
+        only.textContent = `Only winning move: ${row?.san || result.only_winning_move}`;
+        target.appendChild(only);
+      }
+      (result.optimal_moves || []).slice(0, 5).forEach((item, index) => {
+        const row = document.createElement("div");
+        row.className = "prep-row";
+        const name = document.createElement("strong");
+        name.textContent = `${index + 1}. ${item.san || item.uci}`;
+        const detail = document.createElement("span");
+        detail.textContent = `WDL ${item.wdl}${item.dtz == null ? "" : ` · DTZ ${item.dtz}`}`;
+        row.append(name, detail);
+        target.appendChild(row);
+      });
+    }
   } catch (error) {
     target.innerHTML = `<p class="hint">${error.message}</p>`;
   }
@@ -5590,11 +6188,70 @@ async function compareExternalEngine() {
   }
   const fen = currentBoardView()?.fen || state?.fen;
   const budget = Math.max(50, Math.min(5000, Number($("externalEngineBudget").value) || 300));
+  const lines = Math.max(1, Math.min(5, Number($("externalEngineLines").value) || 3));
   const target = $("externalEngineResult");
   target.innerHTML = '<p class="hint">Comparing engines…</p>';
   try {
-    const result = await api("/api/external-uci", { executable, fen, budget_ms: budget });
-    target.innerHTML = `<div class="prep-row"><strong>FunChessEngine</strong><span>${result.funchess?.san || result.funchess?.move || "—"} · depth ${result.funchess?.depth ?? "—"}</span></div><div class="prep-row"><strong>External UCI</strong><span>${result.external?.san || result.external?.move || "—"} · ${result.external?.elapsed_ms ?? 0} ms</span></div><p class="hint">${result.agree ? "Both engines chose the same move." : "The engines disagree on the top move."}</p>`;
+    const result = await api("/api/external-uci", { executable, fen, budget_ms: budget, lines });
+    target.innerHTML = "";
+    const verdict = document.createElement("p");
+    verdict.className = result.agree ? "hint" : "engine-disagreement";
+    verdict.textContent = result.agree
+      ? "Both engines chose the same top move."
+      : `Disagreement: FunChessEngine chose ${result.funchess?.san || result.funchess?.move || "—"}; ${result.external?.name || "external UCI"} chose ${result.external?.san || result.external?.move || "—"}.`;
+    target.appendChild(verdict);
+    const scoreText = (line) => {
+      if (Number.isFinite(Number(line?.mate))) return `M${line.mate}`;
+      if (Number.isFinite(Number(line?.score_cp))) {
+        const value = Number(line.score_cp) / 100;
+        return `${value >= 0 ? "+" : ""}${value.toFixed(2)}`;
+      }
+      if (Number.isFinite(Number(line?.score))) {
+        const value = Number(line.score) / 100;
+        return `${value >= 0 ? "+" : ""}${value.toFixed(2)}`;
+      }
+      return "—";
+    };
+    const addEngineLines = (name, rows, meta = "") => {
+      const heading = document.createElement("div");
+      heading.className = "setting-heading external-engine-heading";
+      const label = document.createElement("span");
+      label.className = "label";
+      label.textContent = name;
+      const detail = document.createElement("span");
+      detail.className = "setting-value";
+      detail.textContent = meta;
+      heading.append(label, detail);
+      target.appendChild(heading);
+      (rows || []).slice(0, lines).forEach((line, index) => {
+        const row = document.createElement("div");
+        row.className = "prep-row external-engine-line";
+        const title = document.createElement("strong");
+        title.textContent = `${index + 1}. ${line.san || line.move || "—"}`;
+        const text = document.createElement("span");
+        const pv = (line.pv_san || line.pv || []).slice(0, 5).join(" ");
+        text.textContent = `${scoreText(line)}${line.depth == null ? "" : ` · d${line.depth}`}${pv ? ` · ${pv}` : ""}`;
+        row.append(title, text);
+        target.appendChild(row);
+      });
+    };
+    addEngineLines(
+      "FunChessEngine",
+      result.funchess?.lines,
+      `depth ${result.funchess?.depth ?? "—"}`,
+    );
+    addEngineLines(
+      result.external?.name || "External UCI",
+      result.external?.lines,
+      `${result.external?.elapsed_ms ?? 0} ms`,
+    );
+    const saved = externalEngines.find((engine) => engine.path === executable);
+    if (saved && result.external?.name && saved.name !== result.external.name) {
+      saved.name = String(result.external.name).slice(0, 80);
+      saved.options = result.external.options || {};
+      saveExternalEngines();
+      renderExternalEngines();
+    }
   } catch (error) {
     target.innerHTML = `<p class="hint">${error.message}</p>`;
   }
@@ -5727,20 +6384,110 @@ function renderPerformanceHistory() {
   context.stroke();
 }
 
-async function calibrateEngineFromHistory() {
-  const ratings = recentGames.map(estimatedLocalRating).filter((value) => value !== null);
-  if (!ratings.length) {
-    setStatus("Analyze some games before calibrating engine strength.", "error");
+function renderCalibrationEngines() {
+  const select = $("calibrationEngineSelect");
+  if (!select) return;
+  const current = select.value;
+  select.innerHTML = '<option value="">External engine…</option>';
+  externalEngines.forEach((engine, index) => {
+    const option = document.createElement("option");
+    option.value = String(index);
+    option.textContent = engine.name || engine.path.split(/[\\/]/).pop() || `Engine ${index + 1}`;
+    select.appendChild(option);
+  });
+  if ([...select.options].some((option) => option.value === current)) select.value = current;
+  const latest = calibrationHistory[0];
+  if (latest && $("calibrationResult")) {
+    $("calibrationResult").innerHTML = `<div class="prep-row"><strong>~${latest.estimated_elo}</strong><span>${latest.games} games vs ~${latest.opponent_elo} · ${(Number(latest.score || 0) * 100).toFixed(0)}% score · interval ~${latest.elo_interval?.[0] ?? "—"}–${latest.elo_interval?.[1] ?? "—"}</span></div>`;
+  }
+}
+
+async function runMeasuredCalibration() {
+  const index = Number($("calibrationEngineSelect")?.value);
+  const engine = Number.isInteger(index) ? externalEngines[index] : null;
+  if (!engine?.path) {
+    setStatus("Save and select an external UCI engine before running calibration.", "error");
     return;
   }
-  const estimate = ratings.slice(-12).reduce((sum, value) => sum + value, 0) / Math.min(12, ratings.length);
-  const targets = [[20, 800], [40, 1200], [60, 1600], [70, 1900], [85, 2200], [100, 2600]];
-  const [skill, label] = targets.reduce((best, item) => Math.abs(item[1] - estimate) < Math.abs(best[1] - estimate) ? item : best, targets[0]);
-  const config = await api("/api/engine-config", { profile: engineProfileForSkill(skill), skill });
-  state.engine_profile = config.profile;
-  state.engine_skill = config.skill;
-  renderEngineStrength();
-  setStatus(`Engine calibrated near your ~${Math.round(estimate / 50) * 50} local estimate using the ${label} target.`, "success");
+  const opponentElo = Math.max(400, Math.min(3500, Number($("calibrationOpponentElo")?.value) || 1600));
+  const games = Math.max(2, Math.min(12, Number($("calibrationGames")?.value) || 4));
+  setStatus(`Running ${games} measured calibration games against ${engine.name || "the selected UCI engine"}…`, "loading");
+  try {
+    const result = await api("/api/uci-calibration", {
+      executable: engine.path,
+      opponent_elo: opponentElo,
+      games,
+      movetime_ms: 80,
+    });
+    const record = { ...result, engine_name: engine.name || engine.path, created_at: new Date().toISOString() };
+    calibrationHistory.unshift(record);
+    saveCalibrationHistory();
+    renderCalibrationEngines();
+    const targets = [[20, 800], [40, 1200], [60, 1600], [70, 1900], [85, 2200], [100, 2600]];
+    const [skill] = targets.reduce((best, item) => (
+      Math.abs(item[1] - Number(result.estimated_elo || 1600)) < Math.abs(best[1] - Number(result.estimated_elo || 1600)) ? item : best
+    ), targets[0]);
+    const config = await api("/api/engine-config", { profile: engineProfileForSkill(skill), skill });
+    state.engine_profile = config.profile;
+    state.engine_skill = config.skill;
+    renderEngineStrength();
+    setStatus(`Measured local estimate ~${result.estimated_elo} from ${result.games} calibration games.`, "success");
+  } catch (error) {
+    setStatus(error.message, "error");
+  }
+}
+
+function renderSessionGoals() {
+  if (!$("sessionGoalsProgress")) return;
+  if (sessionGoals.date !== todayKey()) sessionGoals = loadSessionGoals();
+  for (const [id, key] of [["goalTactics", "tactics"], ["goalRepertoire", "repertoire"], ["goalEndgames", "endgames"], ["goalLosses", "losses"]]) {
+    if ($(id) && document.activeElement !== $(id)) $(id).value = String(sessionGoals.targets[key] || 0);
+  }
+  const target = $("sessionGoalsProgress");
+  target.innerHTML = "";
+  let completed = 0;
+  let total = 0;
+  for (const [key, label] of [["tactics", "Tactics"], ["repertoire", "Repertoire"], ["endgames", "Endgames"], ["losses", "Reviewed losses"]]) {
+    const goal = Number(sessionGoals.targets[key] || 0);
+    const progress = Number(sessionGoals.progress[key] || 0);
+    if (goal > 0) {
+      total += goal;
+      completed += Math.min(goal, progress);
+    }
+    const row = document.createElement("div");
+    row.className = "prep-row";
+    row.innerHTML = `<strong>${label}</strong><span>${progress} / ${goal}${goal && progress >= goal ? " · ✓" : ""}</span>`;
+    target.appendChild(row);
+  }
+  $("sessionGoalsStatus").textContent = total ? `${Math.round(completed * 100 / total)}%` : "No goals";
+}
+
+function saveSessionGoalTargets() {
+  sessionGoals.date = todayKey();
+  sessionGoals.targets = {
+    tactics: Math.max(0, Math.min(200, Number($("goalTactics")?.value) || 0)),
+    repertoire: Math.max(0, Math.min(200, Number($("goalRepertoire")?.value) || 0)),
+    endgames: Math.max(0, Math.min(50, Number($("goalEndgames")?.value) || 0)),
+    losses: Math.max(0, Math.min(50, Number($("goalLosses")?.value) || 0)),
+  };
+  saveSessionGoals();
+  renderSessionGoals();
+  setStatus("Today's training goals saved locally.", "success");
+}
+
+async function reviewNextLoss() {
+  const candidate = recentGames
+    .map((game, index) => ({ game, index }))
+    .find(({ game }) => personalGameScore(game) === 0);
+  if (!candidate) {
+    setStatus("No personal loss is available in the saved game library.", "error");
+    return;
+  }
+  await openRecentGame(candidate.index);
+  const firstError = (candidate.game.analysis?.results || []).find((row) => Number(row.cpl || 0) >= 80);
+  if (firstError?.ply) await enterReviewMode(Number(firstError.ply));
+  recordSessionGoal("losses");
+  setStatus("Opened a saved loss for review.", "success");
 }
 
 function repertoireEntries() {
@@ -5762,6 +6509,18 @@ function renderRepertoireTrainer() {
   });
   if ([...select.options].some((option) => option.value === current)) select.value = current;
   $("repertoireTrainerCount").textContent = `${lines} line${lines === 1 ? "" : "s"}`;
+  const workspace = savedVariationWorkspaces[select.value];
+  const color = $("repertoireColorSelect")?.value || workspace?.repertoire_side || "white";
+  const due = trainerItems.filter((item) => (
+    String(item.source || "").startsWith(`repertoire:${select.value}:`)
+    && item.repertoire_color === color
+    && Number(item.due_at || 0) <= Date.now()
+  )).length;
+  if ($("repertoireDueMeta")) {
+    $("repertoireDueMeta").textContent = workspace
+      ? `${due} ${color} line${due === 1 ? "" : "s"} due now · shared transpositions are trained once.`
+      : "Choose a repertoire to see scheduled review lines.";
+  }
 }
 
 function startRepertoireTraining() {
@@ -5771,22 +6530,39 @@ function startRepertoireTraining() {
     setStatus("Choose a saved repertoire first.", "error");
     return;
   }
+  normalizeVariationWorkspace(workspace);
+  const color = $("repertoireColorSelect")?.value || workspace.repertoire_side || "white";
   let added = 0;
   Object.values(workspace.nodes || {}).forEach((node) => {
-    const child = workspace.nodes?.[node?.children?.[0]];
-    if (!node?.snapshot?.fen || !child?.move_uci) return;
-    const itemKey = `repertoire:${key}:${node.id}:${child.move_uci}`;
-    if (trainerItems.some((item) => item.key === itemKey)) return;
+    if (!node?.snapshot?.fen || node.snapshot.turn !== color || !node.children?.length) return;
+    const childId = node.children[0];
+    const child = workspace.nodes?.[childId];
+    const edge = workspaceEdge(workspace, node.id, childId);
+    if (!child || !edge?.move_uci) return;
+    const itemKey = `repertoire:${key}:${node.id}:${edge.move_uci}`;
+    const existing = trainerItems.find((item) => item.key === itemKey);
+    if (existing) {
+      existing.confidence = Math.max(0, Math.min(100, Number(existing.confidence ?? child.confidence ?? 50)));
+      existing.repertoire_color = color;
+      return;
+    }
     trainerItems.unshift({
       key: itemKey,
       fen: node.snapshot.fen,
-      best_uci: child.move_uci,
-      best_san: child.move_san || child.move_uci,
+      best_uci: edge.move_uci,
+      best_san: edge.move_san || edge.move_uci,
       classification: "Repertoire",
       cpl: Math.max(0, 100 - Number(child.confidence || 50)),
       phase: "opening",
       explanation: child.comment || `Recall the prepared move from ${workspace.name || "your repertoire"}.`,
-      source: `repertoire:${workspace.name || key}`,
+      source: `repertoire:${key}:${workspace.name || "repertoire"}`,
+      repertoire_key: key,
+      repertoire_node: node.id,
+      repertoire_color: color,
+      confidence: Math.max(0, Math.min(100, Number(child.confidence ?? 50))),
+      ease: 2.2,
+      interval_days: 1,
+      lapses: 0,
       created_at: new Date().toISOString(),
       attempts: 0,
       solved: 0,
@@ -5796,26 +6572,292 @@ function startRepertoireTraining() {
   });
   saveTrainerItems();
   renderTrainerPanel();
-  startTrainer("opening");
-  setStatus(`Added ${added} repertoire card${added === 1 ? "" : "s"} to training.`, "success");
+  const due = trainerItems
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => item.repertoire_key === key && item.repertoire_color === color && Number(item.due_at || 0) <= Date.now());
+  if (due.length) {
+    trainerFocusMode = "opening";
+    startTrainer("opening");
+  }
+  renderRepertoireTrainer();
+  setStatus(`Prepared ${due.length} due ${color} repertoire line${due.length === 1 ? "" : "s"}${added ? ` · ${added} newly added` : ""}.`, "success");
+}
+
+async function buildAutomaticRepertoire() {
+  const side = $("autoRepertoireSide")?.value === "black" ? "black" : "white";
+  const minimum = Math.max(1, Math.min(20, Number($("autoRepertoireFrequency")?.value) || 2));
+  const analyzed = recentGames.filter((game) => (
+    !game.reference_database
+    && Array.isArray(game.analysis?.results)
+    && game.analysis.results.length
+    && (game.initial_fen || STARTING_FEN) === STARTING_FEN
+  ));
+  if (!analyzed.length) {
+    setStatus("Analyze some personal games before building an automatic repertoire.", "error");
+    return;
+  }
+  setStatus(`Building a ${side} repertoire from ${analyzed.length} analyzed games…`, "loading");
+  const positions = new Map();
+  analyzed.forEach((game) => {
+    const gameScore = personalGameScore(game);
+    for (const result of game.analysis.results || []) {
+      if (!result.fen_before || !result.played_uci || Number(result.ply || 0) > 24) continue;
+      const key = fenPositionKey(result.fen_before);
+      const byMove = positions.get(key) || new Map();
+      const entry = byMove.get(result.played_uci) || {
+        move: result.played_uci,
+        san: result.played_san || result.played_uci,
+        mover: result.mover,
+        count: 0,
+        cpl: 0,
+        score: 0,
+        scored: 0,
+      };
+      entry.count += 1;
+      entry.cpl += Number(result.cpl || 0);
+      if (gameScore !== null) {
+        entry.score += Number(gameScore);
+        entry.scored += 1;
+      }
+      byMove.set(result.played_uci, entry);
+      positions.set(key, byMove);
+    }
+  });
+  const rootSnapshot = await api("/api/position", { fen: STARTING_FEN });
+  const root = newVariationNode(rootSnapshot);
+  const storageKey = `auto-repertoire:${globalThis.crypto?.randomUUID?.() || Date.now()}`;
+  const workspace = {
+    root: root.id,
+    origin_ply: 0,
+    storage_key: storageKey,
+    name: `My ${capitalize(side)} repertoire · ${new Date().toLocaleDateString()}`.slice(0, 80),
+    kind: "repertoire",
+    repertoire_side: side,
+    favorite: false,
+    folder: "Auto repertoires",
+    tags: [side, "generated", "personal games"],
+    nodes: { [root.id]: root },
+    edges: {},
+    updated_at: new Date().toISOString(),
+  };
+  const canonical = new Map([[fenPositionKey(rootSnapshot.fen), root.id]]);
+  const queue = [root.id];
+  while (queue.length && Object.keys(workspace.nodes).length < 120) {
+    const nodeId = queue.shift();
+    const node = workspace.nodes[nodeId];
+    const choices = [...(positions.get(fenPositionKey(node.snapshot.fen))?.values() || [])]
+      .filter((entry) => entry.count >= minimum)
+      .sort((left, right) => {
+        const leftQuality = left.count * 50 - left.cpl / Math.max(1, left.count) + (left.score / Math.max(1, left.scored)) * 20;
+        const rightQuality = right.count * 50 - right.cpl / Math.max(1, right.count) + (right.score / Math.max(1, right.scored)) * 20;
+        return rightQuality - leftQuality;
+      });
+    if (!choices.length) continue;
+    const selectedChoices = node.snapshot.turn === side ? choices.slice(0, 1) : choices.slice(0, 3);
+    for (const choice of selectedChoices) {
+      if (Object.keys(workspace.nodes).length >= 120) break;
+      try {
+        const childSnapshot = await api("/api/variation-move", { fen: node.snapshot.fen, move: choice.move });
+        const childKey = fenPositionKey(childSnapshot.fen);
+        let childId = canonical.get(childKey);
+        let child = childId ? workspace.nodes[childId] : null;
+        if (!child) {
+          child = newVariationNode(childSnapshot, nodeId, choice.move, choice.san);
+          child.confidence = Math.max(20, Math.min(95, Math.round(
+            45 + Math.min(35, choice.count * 5) - choice.cpl / Math.max(1, choice.count) / 8,
+          )));
+          workspace.nodes[child.id] = child;
+          canonical.set(childKey, child.id);
+          childId = child.id;
+          queue.push(child.id);
+        } else {
+          child.parents = Array.isArray(child.parents) ? child.parents : [];
+          if (!child.parents.includes(nodeId)) child.parents.push(nodeId);
+        }
+        if (!node.children.includes(childId)) node.children.push(childId);
+        workspace.edges[`${nodeId}>${childId}`] = { move_uci: choice.move, move_san: choice.san };
+      } catch (_) {
+        // Ignore an isolated stale analysis edge; the rest of the repertoire remains usable.
+      }
+    }
+  }
+  normalizeVariationWorkspace(workspace);
+  savedVariationWorkspaces[storageKey] = workspace;
+  persistVariationWorkspaces();
+  renderStudyLibrary();
+  renderRepertoireTrainer();
+  $("repertoireTrainerSelect").value = storageKey;
+  $("repertoireColorSelect").value = side;
+  renderRepertoireTrainer();
+  setStatus(`Created “${workspace.name}” with ${studyNodeCount(workspace)} shared positions.`, "success");
+}
+
+async function generateLibraryPuzzles() {
+  const candidates = [];
+  recentGames.forEach((game) => {
+    if (game.reference_database) return;
+    for (const result of game.analysis?.results || []) {
+      if (
+        Number(result.cpl || 0) >= 120
+        && result.fen_before
+        && result.best_uci
+        && result.best_uci !== result.played_uci
+      ) candidates.push({ game, result });
+    }
+  });
+  if (!candidates.length) {
+    setStatus("No analyzed tactical misses are available for puzzle generation yet.", "error");
+    return;
+  }
+  const concrete = new Set([
+    "fork", "skewer", "pin", "deflection", "attraction", "overload", "interference",
+    "discovered attack", "clearance", "zwischenzug", "back-rank mate", "mating net",
+    "trapped piece", "removal of defender", "mate",
+  ]);
+  let added = 0;
+  for (const { game, result } of candidates.slice(0, 80)) {
+    const key = `library-puzzle:${result.fen_before}|${result.best_uci}`;
+    if (trainerItems.some((item) => item.key === key)) continue;
+    try {
+      const detected = await api("/api/tactical-motifs", {
+        fen: result.fen_before,
+        move: result.best_uci,
+      });
+      const motifs = (detected.motifs || []).filter((motif) => concrete.has(motif));
+      if (!motifs.length) continue;
+      trainerItems.unshift({
+        key,
+        fen: result.fen_before,
+        best_uci: result.best_uci,
+        best_san: result.best_san || detected.san || result.best_uci,
+        played_san: result.played_san,
+        classification: "Puzzle",
+        cpl: Number(result.cpl || 0),
+        phase: result.phase || "middlegame",
+        motifs,
+        explanation: `Find the ${motifs.slice(0, 2).join(" / ")} idea missed in this game.`,
+        source: `library-puzzle:${game.recent_id || game.saved_at || "game"}`,
+        created_at: new Date().toISOString(),
+        attempts: 0,
+        solved: 0,
+        confidence: 40,
+        ease: 2.3,
+        interval_days: 1,
+        lapses: 0,
+        due_at: Date.now(),
+      });
+      added += 1;
+    } catch (_) {
+      // Skip a stale/corrupt analyzed position while continuing the bounded batch.
+    }
+  }
+  trainerItems = trainerItems.slice(0, 250);
+  saveTrainerItems();
+  renderTrainerPanel();
+  $("puzzleGenerationMeta").textContent = `${added} motif-backed puzzle${added === 1 ? "" : "s"} added from analyzed games.`;
+  setStatus(`Generated ${added} tactical puzzle${added === 1 ? "" : "s"}.`, added ? "success" : "info");
+}
+
+async function refreshOpeningBook() {
+  if (!$("openingBookMoves")) return;
+  const fen = currentBoardView()?.fen || state?.fen || STARTING_FEN;
+  const profile = state?.engine_profile || "default";
+  try {
+    const [stats, result] = await Promise.all([
+      api("/api/opening-book", { action: "stats", profile }),
+      api("/api/opening-book", { action: "query", fen, depth_limit: 40, profile }),
+    ]);
+    $("openingBookCount").textContent = `${profile} · ${stats.moves || 0} move${Number(stats.moves || 0) === 1 ? "" : "s"}`;
+    const target = $("openingBookMoves");
+    target.innerHTML = "";
+    (result.moves || []).forEach((row) => {
+      const line = document.createElement("div");
+      line.className = "compact-list-row static-row";
+      const info = document.createElement("div");
+      info.innerHTML = `<strong>${row.san || row.move}</strong><span>weight ${row.weight} · learn ${row.learn} · ${row.source || "local"}</span>`;
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "text-button compact";
+      remove.textContent = "Remove";
+      remove.addEventListener("click", async () => {
+        await api("/api/opening-book", { action: "remove", fen, move: row.move, profile });
+        await refreshOpeningBook();
+      });
+      line.append(info, remove);
+      target.appendChild(line);
+    });
+    if (!(result.moves || []).length) target.innerHTML = '<p class="hint">No local book moves saved for this position.</p>';
+  } catch (error) {
+    $("openingBookMoves").innerHTML = `<p class="hint">${error.message}</p>`;
+  }
+}
+
+async function addCurrentOpeningBookMove() {
+  const fen = currentBoardView()?.fen || state?.fen;
+  const move = String($("openingBookMove")?.value || "").trim().toLowerCase();
+  if (!fen || !move) {
+    setStatus("Enter a legal UCI move for the current position.", "error");
+    return;
+  }
+  try {
+    await api("/api/opening-book", {
+      action: "add",
+      fen,
+      move,
+      profile: state?.engine_profile || "default",
+      weight: Math.max(0, Math.min(65535, Number($("openingBookWeight")?.value) || 1)),
+    });
+    $("openingBookMove").value = "";
+    await refreshOpeningBook();
+    setStatus("Opening-book move saved locally.", "success");
+  } catch (error) { setStatus(error.message, "error"); }
+}
+
+async function importPolyglotBook() {
+  const path = String($("polyglotPathInput")?.value || "").trim();
+  if (!path) {
+    setStatus("Enter the path to a local Polyglot .bin book.", "error");
+    return;
+  }
+  try {
+    const result = await api("/api/opening-book", {
+      action: "import_polyglot",
+      path,
+      profile: state?.engine_profile || "default",
+      position_limit: 100000,
+    });
+    await refreshOpeningBook();
+    setStatus(`Imported ${result.imported || 0} Polyglot move entries across ${result.positions || 0} indexed positions.`, "success");
+  } catch (error) { setStatus(error.message, "error"); }
 }
 
 async function addCurrentFlashcard() {
   const fen = currentBoardView()?.fen || state?.fen;
   if (!fen) return;
-  let move = multiPvData?.fen === fen ? multiPvData.lines?.[0]?.move : null;
-  let san = multiPvData?.fen === fen ? multiPvData.lines?.[0]?.san : null;
-  if (!move) {
-    const result = await api("/api/multipv", { fen, lines: 1, budget_ms: 200 });
-    move = result.lines?.[0]?.move;
-    san = result.lines?.[0]?.san;
-  }
+  const wantChoices = Boolean($("lessonMultipleChoiceToggle")?.checked);
+  const cachedLines = multiPvData?.fen === fen ? multiPvData.lines || [] : [];
+  const result = cachedLines.length >= (wantChoices ? 3 : 1)
+    ? { lines: cachedLines }
+    : await api("/api/multipv", { fen, lines: wantChoices ? 3 : 1, budget_ms: 250 });
+  const lines = Array.isArray(result.lines) ? result.lines : [];
+  const move = lines[0]?.move;
+  const san = lines[0]?.san;
   if (!move) throw new Error("Could not determine a solution move for this flashcard.");
+  const choices = wantChoices ? lines.slice(0, 3).map((line, index) => ({
+    move: line.move,
+    san: line.san || line.move,
+    score: Number(line.score || 0),
+    feedback: index === 0
+      ? "Best engine continuation."
+      : `${line.san || line.move} is an alternative, evaluated ${scoreText(line.score || 0)}.`,
+  })) : [];
   lessonDraftCards.push({
     fen,
     best_uci: move,
     best_san: san || move,
     note: $("lessonNoteInput").value.trim().slice(0, 240),
+    choices,
+    annotations: JSON.parse(JSON.stringify(currentAnnotations())),
     due_at: Date.now(),
     solved: 0,
   });
@@ -5868,6 +6910,14 @@ function studyDueFlashcards() {
         phase: "middlegame",
         explanation: card.note || `Recall this card from ${lesson.title}.`,
         source: `lesson:${lesson.title}`,
+        choices: Array.isArray(card.choices) ? card.choices.slice(0, 4) : [],
+        annotations: card.annotations && typeof card.annotations === "object"
+          ? JSON.parse(JSON.stringify(card.annotations))
+          : { squares: {}, arrows: [] },
+        confidence: 50,
+        ease: 2.3,
+        interval_days: 1,
+        lapses: 0,
         created_at: new Date().toISOString(),
         attempts: 0,
         solved: 0,
@@ -7054,6 +8104,11 @@ $("openingDatabaseInput").addEventListener("change", async (event) => {
     setStatus(error.message, "error");
   }
 });
+$("openingDatabaseSearchBtn").addEventListener("click", searchOpeningDatabase);
+$("openingDatabaseExplorerBtn").addEventListener("click", exploreOpeningDatabase);
+$("openingDatabaseSearch").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") searchOpeningDatabase();
+});
 $("refreshRepertoireGapsBtn").addEventListener("click", renderRepertoireGaps);
 $("refreshPrepBtn").addEventListener("click", () => { renderOpeningPrepReport(); renderPlayerProfile(); });
 $("copyFenBtn").addEventListener("click", copyFen);
@@ -7609,6 +8664,7 @@ api("/api/state").then(async (value) => {
   previousHumanSide = $("humanSide").value;
   syncTimeControlsFromState();
   render();
+  void refreshOpeningDatabaseStatus();
   setLauncherVisible(true);
   setEngineStatus("Engine ready");
   setTimeout(() => showOnboarding(false), 250);

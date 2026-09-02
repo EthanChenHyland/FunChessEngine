@@ -657,6 +657,33 @@ h2 { margin: 0; font-size: 19px; letter-spacing: -.025em; }
 .profile-grid strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .profile-grid span { color: var(--muted); font-size: 8px; text-transform: uppercase; letter-spacing: .05em; }
 .profile-grid strong { margin-top: 3px; font: 750 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.search-telemetry-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin: 9px 0 12px;
+}
+.search-telemetry-grid > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 9px;
+}
+.search-telemetry-grid strong { color: var(--text); }
+.position-feature-grid { margin-top: 9px; }
+.position-feature-grid .hint { grid-column: 1 / -1; }
+.position-feature-grid strong { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
+.tablebase-only-move,
+.engine-disagreement { margin: 7px 0; font-size: 10px; font-weight: 780; }
+.tablebase-only-move { color: var(--accent); }
+.engine-disagreement { color: var(--text); }
+.external-engine-heading { margin-top: 10px; }
+.external-engine-line span { overflow-wrap: anywhere; }
 .variation-tree {
   max-height: 230px;
   margin: 9px 0;

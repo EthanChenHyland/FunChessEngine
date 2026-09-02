@@ -185,6 +185,10 @@ class SearchInfo:
     nodes: int = 0
     elapsed_ms: int = 0
     aspiration_researches: int = 0
+    tt_hits: int = 0
+    beta_cutoffs: int = 0
+    quiescence_nodes: int = 0
+    budget_ms: int = 0
     pv: tuple[str, ...] = ()
 
 
@@ -201,6 +205,9 @@ SEEN_POSITIONS: dict[object, int] = {}
 
 DEADLINE_NS = 0
 NODES = 0
+QUIESCENCE_NODES = 0
+TT_HITS = 0
+BETA_CUTOFFS = 0
 LAST_SEARCH_INFO = SearchInfo()
 
 
@@ -258,7 +265,7 @@ def _opening_book_move(board: chess.Board, time_left_ms: int) -> chess.Move | No
 def reset_game_state() -> None:
     """Clear persistent search state (useful for local tools/new GUI games)."""
 
-    global DEADLINE_NS, LAST_SEARCH_INFO, NODES
+    global BETA_CUTOFFS, DEADLINE_NS, LAST_SEARCH_INFO, NODES, QUIESCENCE_NODES, TT_HITS
     TT.clear()
     EVAL_CACHE.clear()
     HISTORY.clear()
@@ -268,6 +275,9 @@ def reset_game_state() -> None:
         killers[1] = None
     DEADLINE_NS = 0
     NODES = 0
+    QUIESCENCE_NODES = 0
+    TT_HITS = 0
+    BETA_CUTOFFS = 0
     LAST_SEARCH_INFO = SearchInfo()
 
 
@@ -512,7 +522,10 @@ def _ordered_moves(
 
 
 def quiescence(board: chess.Board, alpha: int, beta: int, ply: int) -> int:
+    global BETA_CUTOFFS, QUIESCENCE_NODES
+
     _check_time()
+    QUIESCENCE_NODES += 1
     terminal = _terminal_score(board, ply)
     if terminal is not None:
         return terminal
@@ -527,6 +540,7 @@ def quiescence(board: chess.Board, alpha: int, beta: int, ply: int) -> int:
             score = -quiescence(board, -beta, -alpha, ply + 1)
             board.pop()
             if score >= beta:
+                BETA_CUTOFFS += 1
                 return score
             if score > best:
                 best = score
@@ -536,6 +550,7 @@ def quiescence(board: chess.Board, alpha: int, beta: int, ply: int) -> int:
 
     stand_pat = evaluate(board)
     if stand_pat >= beta:
+        BETA_CUTOFFS += 1
         return stand_pat
     if stand_pat > alpha:
         alpha = stand_pat
@@ -553,6 +568,7 @@ def quiescence(board: chess.Board, alpha: int, beta: int, ply: int) -> int:
         score = -quiescence(board, -beta, -alpha, ply + 1)
         board.pop()
         if score >= beta:
+            BETA_CUTOFFS += 1
             return score
         if score > alpha:
             alpha = score
@@ -567,6 +583,8 @@ def negamax(
     ply: int,
     check_extensions: int = 0,
 ) -> int:
+    global BETA_CUTOFFS, TT_HITS
+
     _check_time()
     terminal = _terminal_score(board, ply)
     if terminal is not None:
@@ -587,6 +605,7 @@ def negamax(
     tt_move = entry.move if entry is not None else None
     original_alpha = alpha
     if entry is not None and entry.depth >= depth:
+        TT_HITS += 1
         entry_score = _score_from_tt(entry.score, ply)
         if entry.flag == EXACT:
             return entry_score
@@ -637,6 +656,7 @@ def negamax(
         if score > alpha:
             alpha = score
         if alpha >= beta:
+            BETA_CUTOFFS += 1
             if quiet and ply < MAX_PLY:
                 first = KILLERS[ply][0]
                 if move != first:
@@ -664,6 +684,8 @@ def _search_root(
 ) -> tuple[int, chess.Move]:
     """Search one complete root pass within the supplied score window."""
 
+    global BETA_CUTOFFS
+
     best_move = preferred_move
     best_score = -INF
     for move in _ordered_moves(board, preferred_move, 0):
@@ -683,6 +705,7 @@ def _search_root(
         if score > alpha:
             alpha = score
         if alpha >= beta:
+            BETA_CUTOFFS += 1
             break
     return best_score, best_move
 
@@ -765,7 +788,7 @@ def _board_from_fen(fen: str) -> chess.Board:
 def get_move(fen: str, time_left_ms: int) -> str:
     """Return a legal UCI move before the game clock expires."""
 
-    global DEADLINE_NS, LAST_SEARCH_INFO, NODES
+    global BETA_CUTOFFS, DEADLINE_NS, LAST_SEARCH_INFO, NODES, QUIESCENCE_NODES, TT_HITS
 
     board = _board_from_fen(fen)
     legal = list(board.legal_moves)
@@ -807,6 +830,9 @@ def get_move(fen: str, time_left_ms: int) -> str:
     margin_ms = min(25, max(3, budget_ms // 12))
     DEADLINE_NS = time.monotonic_ns() + max(1, budget_ms - margin_ms) * 1_000_000
     NODES = 0
+    QUIESCENCE_NODES = 0
+    TT_HITS = 0
+    BETA_CUTOFFS = 0
     started_ns = time.monotonic_ns()
 
     # Always have a legal fallback, preferably the previous hash move.
@@ -866,6 +892,10 @@ def get_move(fen: str, time_left_ms: int) -> str:
             nodes=NODES,
             elapsed_ms=int(elapsed_ms),
             aspiration_researches=aspiration_researches,
+            tt_hits=TT_HITS,
+            beta_cutoffs=BETA_CUTOFFS,
+            quiescence_nodes=QUIESCENCE_NODES,
+            budget_ms=budget_ms,
             pv=_principal_variation(board),
         )
 
@@ -885,6 +915,10 @@ def get_move(fen: str, time_left_ms: int) -> str:
             nodes=NODES,
             elapsed_ms=int(elapsed_ms),
             aspiration_researches=aspiration_researches,
+            tt_hits=TT_HITS,
+            beta_cutoffs=BETA_CUTOFFS,
+            quiescence_nodes=QUIESCENCE_NODES,
+            budget_ms=budget_ms,
             pv=(best_move.uci(),),
         )
     return best_move.uci()

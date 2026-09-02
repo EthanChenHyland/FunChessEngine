@@ -120,7 +120,8 @@ class FrontendTransitionContractTests(unittest.TestCase):
             self.assertIn(f'id="{control}"', self.html)
         self.assert_function_contains("renderOpeningPrepReport", "openingCpl")
         self.assert_function_contains("renderPlayerProfile", "training")
-        self.assert_function_contains("renderVariationWorkspace", "fenCounts")
+        self.assert_function_contains("renderVariationWorkspace", "renderedIds")
+        self.assert_function_contains("renderVariationWorkspace", "parents")
         self.assert_function_contains("startEndgameDrill", "ENDGAME_DRILLS")
         self.assert_function_contains("saveCustomPuzzle", 'api("/api/variation-move"')
         self.assertIn(':root[data-vision-mode="blindfold"] .piece', self.css)
@@ -400,15 +401,20 @@ class FrontendTransitionContractTests(unittest.TestCase):
             "threatMapToggle",
             "heatMapToggle",
             "humanPlanList",
+            "positionFeatureGrid",
             "tacticalMotifs",
             "syzygyPathInput",
             "externalEnginePath",
             "externalEngineSelect",
+            "externalEngineLines",
         ):
             self.assertIn(f'id="{control}"', self.html)
         self.assert_function_contains("refreshPositionInsights", 'api("/api/position-insights"')
         self.assert_function_contains("probeTablebase", 'api("/api/tablebase"')
         self.assert_function_contains("compareExternalEngine", 'api("/api/external-uci"')
+        self.assert_function_contains("compareExternalEngine", "lines })")
+        self.assert_function_contains("renderStrategicInsights", '$("positionFeatureGrid")')
+        self.assert_function_contains("probeTablebase", "only_winning_move")
         self.assert_function_contains("renderBoard", 'button.classList.add("engine-heat")')
         self.assertIn(
             'openEngine: () => ipcRenderer.invoke("file:open-engine")',
@@ -420,6 +426,11 @@ class FrontendTransitionContractTests(unittest.TestCase):
         for control in (
             "similarGameResults",
             "openingDatabaseInput",
+            "openingDatabaseSearch",
+            "openingDatabasePlayer",
+            "openingDatabaseStructure",
+            "openingDatabaseResults",
+            "openingDatabaseExplorer",
             "repertoireGapReport",
             "repertoireTrainerSelect",
             "lessonList",
@@ -429,6 +440,9 @@ class FrontendTransitionContractTests(unittest.TestCase):
         ):
             self.assertIn(f'id="{control}"', self.html)
         self.assert_function_contains("searchSimilarGames", "positionSimilarity")
+        self.assert_function_contains("importOpeningDatabaseFiles", 'api("/api/library-db/import"')
+        self.assert_function_contains("searchOpeningDatabase", 'api("/api/library-db/search"')
+        self.assert_function_contains("exploreOpeningDatabase", 'api("/api/library-db/explorer"')
         self.assert_function_contains("renderRepertoireGaps", "repertoirePreparedMoves")
         self.assert_function_contains("learnRepertoireConfidence", "child.confidence")
         self.assert_function_contains("startRepertoireTraining", "trainerItems.unshift")

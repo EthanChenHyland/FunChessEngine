@@ -41,8 +41,15 @@ import chess.syzygy
 import agent
 from harness import benchmark as benchmark_harness
 from harness.referee import FAILED_TERMINATIONS, play_match
+from harness.regression import compare_runs as compare_regression_runs
+from harness.regression import run_suite as run_regression_suite
 from harness.sandbox import local
+from harness.selfplay_data import generate_dataset as generate_selfplay_dataset
+from harness.tuner import coordinate_tune
+from integrations.tournament import calibrate_against_uci, run_tournament
 from integrations.uci_client import ExternalUCIEngine
+from librarydb import LibraryDatabase, parse_library_query
+from openingbook import OpeningBook
 from reporting.generator import annotated_pgn, html_report
 
 if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
@@ -58,6 +65,26 @@ LAN_LOCK = threading.RLock()
 LAN_SERVER: ThreadingHTTPServer | None = None
 LAN_THREAD: threading.Thread | None = None
 LAN_TOKEN = ""
+LIBRARY_DB_LOCK = threading.Lock()
+LIBRARY_DB: LibraryDatabase | None = None
+OPENING_BOOK_LOCK = threading.Lock()
+OPENING_BOOK_STORE: OpeningBook | None = None
+
+
+def _library_database() -> LibraryDatabase:
+    global LIBRARY_DB
+    with LIBRARY_DB_LOCK:
+        if LIBRARY_DB is None:
+            LIBRARY_DB = LibraryDatabase()
+        return LIBRARY_DB
+
+
+def _opening_book() -> OpeningBook:
+    global OPENING_BOOK_STORE
+    with OPENING_BOOK_LOCK:
+        if OPENING_BOOK_STORE is None:
+            OPENING_BOOK_STORE = OpeningBook()
+        return OPENING_BOOK_STORE
 
 
 def _board_from_fen(fen: str, *, chess960: bool = False) -> chess.Board:
@@ -272,12 +299,26 @@ def _detect_tactical_motifs(board: chess.Board, move: chess.Move) -> list[str]:
         for square, piece in board.piece_map().items()
         if piece.color != mover and board.is_pinned(piece.color, square)
     }
+    before_slider_targets: set[tuple[int, int]] = set()
+    for square, piece in board.piece_map().items():
+        if piece.color != mover or piece.piece_type not in {chess.BISHOP, chess.ROOK, chess.QUEEN}:
+            continue
+        for target_square in board.attacks(square):
+            target = board.piece_at(target_square)
+            if target is not None and target.color != mover and target.piece_type in {
+                chess.ROOK,
+                chess.QUEEN,
+                chess.KING,
+            }:
+                before_slider_targets.add((square, target_square))
     child = board.copy(stack=False)
     child.push(move)
     if child.is_checkmate():
         motifs.append("mate")
     elif child.is_check():
         motifs.append("check")
+        if len(list(child.legal_moves)) <= 2:
+            motifs.append("mating net")
     moved_piece = child.piece_at(move.to_square)
     if moved_piece is not None:
         attacked_targets = []
@@ -295,6 +336,65 @@ def _detect_tactical_motifs(board: chess.Board, move: chess.Move) -> list[str]:
                 and child.is_check()
             ):
                 motifs.append("back-rank pressure")
+                if child.is_checkmate():
+                    motifs.append("back-rank mate")
+        if moved_piece.piece_type in {chess.BISHOP, chess.ROOK, chess.QUEEN}:
+            directions = (
+                (1, 0),
+                (-1, 0),
+                (0, 1),
+                (0, -1),
+                (1, 1),
+                (1, -1),
+                (-1, 1),
+                (-1, -1),
+            )
+            allowed = directions
+            if moved_piece.piece_type == chess.BISHOP:
+                allowed = directions[4:]
+            elif moved_piece.piece_type == chess.ROOK:
+                allowed = directions[:4]
+            origin_file = chess.square_file(move.to_square)
+            origin_rank = chess.square_rank(move.to_square)
+            for file_step, rank_step in allowed:
+                occupied: list[chess.Piece] = []
+                file_index = origin_file + file_step
+                rank_index = origin_rank + rank_step
+                while 0 <= file_index < 8 and 0 <= rank_index < 8:
+                    target = child.piece_at(chess.square(file_index, rank_index))
+                    if target is not None:
+                        occupied.append(target)
+                        if len(occupied) == 2:
+                            break
+                    file_index += file_step
+                    rank_index += rank_step
+                if (
+                    len(occupied) == 2
+                    and occupied[0].color != mover
+                    and occupied[1].color != mover
+                    and occupied[0].piece_type in {chess.KING, chess.QUEEN, chess.ROOK}
+                    and PIECE_VALUES.get(occupied[0].piece_type, 99)
+                    > PIECE_VALUES.get(occupied[1].piece_type, 0)
+                ):
+                    motifs.append("skewer")
+                    break
+        attacked_enemy_squares = [
+            square
+            for square in child.attacks(move.to_square)
+            if child.color_at(square) == (not mover)
+        ]
+        for target_square in attacked_enemy_squares:
+            target = child.piece_at(target_square)
+            if target is None or target.piece_type in {chess.PAWN, chess.KING}:
+                continue
+            escapes = [
+                candidate
+                for candidate in child.legal_moves
+                if candidate.from_square == target_square
+            ]
+            if not escapes:
+                motifs.append("trapped piece")
+                break
     after_pins = {
         square
         for square, piece in child.piece_map().items()
@@ -302,6 +402,24 @@ def _detect_tactical_motifs(board: chess.Board, move: chess.Move) -> list[str]:
     }
     if after_pins - before_pins:
         motifs.append("pin")
+    after_slider_targets: set[tuple[int, int]] = set()
+    for square, piece in child.piece_map().items():
+        if (
+            piece.color != mover
+            or square == move.to_square
+            or piece.piece_type not in {chess.BISHOP, chess.ROOK, chess.QUEEN}
+        ):
+            continue
+        for target_square in child.attacks(square):
+            target = child.piece_at(target_square)
+            if target is not None and target.color != mover and target.piece_type in {
+                chess.ROOK,
+                chess.QUEEN,
+                chess.KING,
+            }:
+                after_slider_targets.add((square, target_square))
+    if after_slider_targets - before_slider_targets:
+        motifs.extend(["discovered attack", "clearance"])
     if board.is_capture(move):
         captured_square = move.to_square
         if board.is_en_passant(move):
@@ -309,7 +427,37 @@ def _detect_tactical_motifs(board: chess.Board, move: chess.Move) -> list[str]:
         captured = board.piece_at(captured_square)
         if captured is not None and not board.is_attacked_by(captured.color, captured_square):
             motifs.append("hanging piece")
-    return motifs
+        if captured is not None:
+            defended_before = {
+                square
+                for square in board.attacks(captured_square)
+                if board.color_at(square) == captured.color and square != captured_square
+            }
+            newly_loose = [
+                square
+                for square in defended_before
+                if child.piece_at(square) is not None
+                and not child.is_attacked_by(not mover, square)
+                and child.is_attacked_by(mover, square)
+            ]
+            if newly_loose:
+                motifs.extend(["deflection", "removal of defender"])
+    if child.is_check() and not board.is_capture(move) and any(
+        board.is_capture(candidate) for candidate in board.legal_moves
+    ):
+        motifs.append("zwischenzug")
+    if child.is_check() and moved_piece is not None:
+        enemy_king = child.king(not mover)
+        if (
+            enemy_king is not None
+            and chess.square_distance(enemy_king, move.to_square) == 1
+            and any(
+                candidate.from_square == enemy_king and candidate.to_square == move.to_square
+                for candidate in child.legal_moves
+            )
+        ):
+            motifs.append("attraction")
+    return list(dict.fromkeys(motifs))
 
 
 def _passed_pawns(board: chess.Board, color: chess.Color) -> list[str]:
@@ -336,6 +484,236 @@ def _passed_pawns(board: chess.Board, color: chess.Color) -> list[str]:
         if not blocked:
             result.append(chess.square_name(square))
     return result
+
+
+PIECE_VALUES = {
+    chess.PAWN: 1,
+    chess.KNIGHT: 3,
+    chess.BISHOP: 3,
+    chess.ROOK: 5,
+    chess.QUEEN: 9,
+}
+
+
+def _pawn_structure(board: chess.Board, color: chess.Color) -> dict[str, Any]:
+    pawns = sorted(board.pieces(chess.PAWN, color))
+    by_file: dict[int, list[int]] = {}
+    for square in pawns:
+        by_file.setdefault(chess.square_file(square), []).append(square)
+    isolated: list[str] = []
+    for square in pawns:
+        file_index = chess.square_file(square)
+        if not any(adjacent in by_file for adjacent in (file_index - 1, file_index + 1)):
+            isolated.append(chess.square_name(square))
+    doubled = [
+        chr(ord("a") + file_index)
+        for file_index, squares in by_file.items()
+        if len(squares) > 1
+    ]
+    occupied_files = sorted(by_file)
+    islands = 0
+    previous: int | None = None
+    for file_index in occupied_files:
+        if previous is None or file_index != previous + 1:
+            islands += 1
+        previous = file_index
+    return {
+        "isolated": isolated,
+        "doubled_files": doubled,
+        "islands": islands,
+        "passed": _passed_pawns(board, color),
+    }
+
+
+def _file_features(board: chess.Board) -> dict[str, Any]:
+    white_files = {chess.square_file(square) for square in board.pieces(chess.PAWN, chess.WHITE)}
+    black_files = {chess.square_file(square) for square in board.pieces(chess.PAWN, chess.BLACK)}
+    open_files = [
+        chr(ord("a") + file_index)
+        for file_index in range(8)
+        if file_index not in white_files and file_index not in black_files
+    ]
+    return {
+        "open": open_files,
+        "semi_open": {
+            "white": [
+                chr(ord("a") + file_index)
+                for file_index in range(8)
+                if file_index not in white_files and file_index in black_files
+            ],
+            "black": [
+                chr(ord("a") + file_index)
+                for file_index in range(8)
+                if file_index not in black_files and file_index in white_files
+            ],
+        },
+    }
+
+
+def _weak_squares(board: chess.Board, color: chess.Color) -> list[str]:
+    enemy = not color
+    candidates: list[tuple[int, int]] = []
+    for square in chess.SQUARES:
+        rank = chess.square_rank(square)
+        if color == chess.WHITE and rank < 2:
+            continue
+        if color == chess.BLACK and rank > 5:
+            continue
+        enemy_attackers = len(board.attackers(enemy, square))
+        defenders = len(board.attackers(color, square))
+        if enemy_attackers <= defenders or enemy_attackers == 0:
+            continue
+        center_bonus = (
+            2 if chess.square_file(square) in {2, 3, 4, 5} and rank in {2, 3, 4, 5} else 0
+        )
+        candidates.append((enemy_attackers - defenders + center_bonus, square))
+    candidates.sort(reverse=True)
+    return [chess.square_name(square) for _, square in candidates[:8]]
+
+
+def _knight_outposts(board: chess.Board, color: chess.Color) -> list[str]:
+    result: list[str] = []
+    enemy_pawns = board.pieces(chess.PAWN, not color)
+    own_pawns = board.pieces(chess.PAWN, color)
+    for square in board.pieces(chess.KNIGHT, color):
+        rank = chess.square_rank(square)
+        if (color == chess.WHITE and rank < 3) or (color == chess.BLACK and rank > 4):
+            continue
+        if not any(square in board.attacks(pawn) for pawn in own_pawns):
+            continue
+        if any(square in board.attacks(pawn) for pawn in enemy_pawns):
+            continue
+        result.append(chess.square_name(square))
+    return result
+
+
+def _bishop_quality(board: chess.Board, color: chess.Color) -> list[dict[str, Any]]:
+    own_pawns = board.pieces(chess.PAWN, color)
+    rows: list[dict[str, Any]] = []
+    for square in board.pieces(chess.BISHOP, color):
+        square_color = (chess.square_file(square) + chess.square_rank(square)) % 2
+        same_color_pawns = sum(
+            1
+            for pawn in own_pawns
+            if (chess.square_file(pawn) + chess.square_rank(pawn)) % 2 == square_color
+        )
+        mobility = sum(1 for target in board.attacks(square) if board.color_at(target) != color)
+        rows.append(
+            {
+                "square": chess.square_name(square),
+                "quality": "bad" if same_color_pawns >= 4 and mobility <= 5 else "good",
+                "same_color_pawns": same_color_pawns,
+                "mobility": mobility,
+            }
+        )
+    return rows
+
+
+def _king_safety(board: chess.Board, color: chess.Color) -> dict[str, int]:
+    king = board.king(color)
+    if king is None:
+        return {"shield": 0, "enemy_pressure": 0}
+    king_file = chess.square_file(king)
+    king_rank = chess.square_rank(king)
+    forward = 1 if color == chess.WHITE else -1
+    shield = 0
+    for file_index in range(max(0, king_file - 1), min(7, king_file + 1) + 1):
+        rank = king_rank + forward
+        if 0 <= rank <= 7 and board.piece_at(chess.square(file_index, rank)) == chess.Piece(
+            chess.PAWN, color
+        ):
+            shield += 1
+    zone = set(board.attacks(king)) | {king}
+    pressure = sum(len(board.attackers(not color, square)) for square in zone)
+    return {"shield": shield, "enemy_pressure": pressure}
+
+
+def _space_score(board: chess.Board, color: chess.Color) -> int:
+    score = 0
+    for square in chess.SQUARES:
+        rank = chess.square_rank(square)
+        enemy_half = rank >= 4 if color == chess.WHITE else rank <= 3
+        if enemy_half and board.is_attacked_by(color, square):
+            score += 1
+    return score
+
+
+def _candidate_pawn_breaks(board: chess.Board, color: chess.Color) -> list[str]:
+    result: list[str] = []
+    if board.turn != color:
+        board = board.copy(stack=False)
+        board.turn = color
+    for move in board.legal_moves:
+        piece = board.piece_at(move.from_square)
+        if piece is None or piece.piece_type != chess.PAWN or board.is_capture(move):
+            continue
+        child = board.copy(stack=False)
+        child.push(move)
+        moved = child.piece_at(move.to_square)
+        if moved is None:
+            continue
+        if any(
+            child.piece_at(target) == chess.Piece(chess.PAWN, not color)
+            for target in child.attacks(move.to_square)
+        ):
+            result.append(board.san(move))
+    return result[:6]
+
+
+def _piece_activity(board: chess.Board, color: chess.Color) -> dict[str, str | None]:
+    ranked: list[tuple[int, int]] = []
+    for square, piece in board.piece_map().items():
+        if piece.color != color or piece.piece_type in {chess.PAWN, chess.KING}:
+            continue
+        mobility = sum(1 for target in board.attacks(square) if board.color_at(target) != color)
+        file_index = chess.square_file(square)
+        rank = chess.square_rank(square)
+        center = 2 if file_index in {2, 3, 4, 5} and rank in {2, 3, 4, 5} else 0
+        ranked.append((mobility + center, square))
+    ranked.sort()
+    return {
+        "worst": chess.square_name(ranked[0][1]) if ranked else None,
+        "best": chess.square_name(ranked[-1][1]) if ranked else None,
+    }
+
+
+def _structure_tags(board: chess.Board) -> list[str]:
+    tags: list[str] = []
+    white = _pawn_structure(board, chess.WHITE)
+    black = _pawn_structure(board, chess.BLACK)
+    if "d" in {square[0] for square in white["isolated"]}:
+        tags.append("white IQP")
+    if "d" in {square[0] for square in black["isolated"]}:
+        tags.append("black IQP")
+    white_pawns = {chess.square_name(square) for square in board.pieces(chess.PAWN, chess.WHITE)}
+    black_pawns = {chess.square_name(square) for square in board.pieces(chess.PAWN, chess.BLACK)}
+    if {"c4", "d4"}.issubset(white_pawns) and not ({"b4", "e4"} & white_pawns):
+        tags.append("white hanging pawns")
+    if {"c5", "d5"}.issubset(black_pawns) and not ({"b5", "e5"} & black_pawns):
+        tags.append("black hanging pawns")
+    if {"c4", "e4"}.issubset(white_pawns):
+        tags.append("Maroczy bind")
+    white_king = board.king(chess.WHITE)
+    black_king = board.king(chess.BLACK)
+    if white_king is not None and black_king is not None:
+        white_file = chess.square_file(white_king)
+        black_file = chess.square_file(black_king)
+        if (white_file <= 2 and black_file >= 5) or (white_file >= 5 and black_file <= 2):
+            tags.append("opposite-side castling")
+    heavy = board.pieces(chess.QUEEN, chess.WHITE) | board.pieces(chess.QUEEN, chess.BLACK)
+    if not heavy:
+        rooks = board.pieces(chess.ROOK, chess.WHITE) | board.pieces(chess.ROOK, chess.BLACK)
+        minors = (
+            board.pieces(chess.BISHOP, chess.WHITE)
+            | board.pieces(chess.BISHOP, chess.BLACK)
+            | board.pieces(chess.KNIGHT, chess.WHITE)
+            | board.pieces(chess.KNIGHT, chess.BLACK)
+        )
+        if rooks and not minors:
+            tags.append("rook endgame")
+    if any(square[1] in {"3", "6"} for square in white["passed"] + black["passed"]):
+        tags.append("advanced passed pawn")
+    return tags
 
 
 def _human_plan(board: chess.Board) -> list[str]:
@@ -385,15 +763,68 @@ def _position_insights(board: chess.Board) -> dict[str, Any]:
                 attacks[color_name].append(name)
         if piece.piece_type != chess.KING and not board.is_attacked_by(piece.color, square):
             loose.append(chess.square_name(square))
+    material = {
+        "white": {
+            chess.piece_name(piece_type): len(board.pieces(piece_type, chess.WHITE))
+            for piece_type in PIECE_VALUES
+        },
+        "black": {
+            chess.piece_name(piece_type): len(board.pieces(piece_type, chess.BLACK))
+            for piece_type in PIECE_VALUES
+        },
+    }
+    white_total = sum(
+        PIECE_VALUES[piece_type] * len(board.pieces(piece_type, chess.WHITE))
+        for piece_type in PIECE_VALUES
+    )
+    black_total = sum(
+        PIECE_VALUES[piece_type] * len(board.pieces(piece_type, chess.BLACK))
+        for piece_type in PIECE_VALUES
+    )
     return {
         "fen": board.fen(),
         "plans": _human_plan(board),
         "attacks": attacks,
         "loose_pieces": loose,
+        "material": {**material, "balance": white_total - black_total},
+        "pawn_structure": {
+            "white": _pawn_structure(board, chess.WHITE),
+            "black": _pawn_structure(board, chess.BLACK),
+        },
+        "files": _file_features(board),
+        "weak_squares": {
+            "white": _weak_squares(board, chess.WHITE),
+            "black": _weak_squares(board, chess.BLACK),
+        },
+        "knight_outposts": {
+            "white": _knight_outposts(board, chess.WHITE),
+            "black": _knight_outposts(board, chess.BLACK),
+        },
+        "bishops": {
+            "white": _bishop_quality(board, chess.WHITE),
+            "black": _bishop_quality(board, chess.BLACK),
+        },
+        "king_safety": {
+            "white": _king_safety(board, chess.WHITE),
+            "black": _king_safety(board, chess.BLACK),
+        },
+        "space": {
+            "white": _space_score(board, chess.WHITE),
+            "black": _space_score(board, chess.BLACK),
+        },
         "passed_pawns": {
             "white": _passed_pawns(board, chess.WHITE),
             "black": _passed_pawns(board, chess.BLACK),
         },
+        "pawn_breaks": {
+            "white": _candidate_pawn_breaks(board, chess.WHITE),
+            "black": _candidate_pawn_breaks(board, chess.BLACK),
+        },
+        "piece_activity": {
+            "white": _piece_activity(board, chess.WHITE),
+            "black": _piece_activity(board, chess.BLACK),
+        },
+        "structure_tags": _structure_tags(board),
         "phase": _phase_name(board),
     }
 
@@ -415,6 +846,33 @@ def _tablebase_probe(fen: str, path: str = "") -> dict[str, Any]:
                 dtz = int(tablebase.probe_dtz(board))
             except KeyError:
                 dtz = None
+            move_rows: list[dict[str, Any]] = []
+            for move in board.legal_moves:
+                san = board.san(move)
+                child = board.copy(stack=False)
+                child.push(move)
+                if child.is_checkmate():
+                    mover_wdl = 2
+                    child_dtz: int | None = None
+                elif child.is_stalemate() or child.is_insufficient_material():
+                    mover_wdl = 0
+                    child_dtz = 0
+                else:
+                    mover_wdl = -int(tablebase.probe_wdl(child))
+                    try:
+                        child_dtz = -int(tablebase.probe_dtz(child))
+                    except KeyError:
+                        child_dtz = None
+                move_rows.append(
+                    {
+                        "uci": board.uci(move),
+                        "san": san,
+                        "wdl": mover_wdl,
+                        "dtz": child_dtz,
+                    }
+                )
+            best_wdl = max((int(row["wdl"]) for row in move_rows), default=wdl)
+            optimal_moves = [row for row in move_rows if int(row["wdl"]) == best_wdl]
     except (KeyError, OSError) as exc:
         return {
             "available": True,
@@ -431,6 +889,13 @@ def _tablebase_probe(fen: str, path: str = "") -> dict[str, Any]:
         "wdl": wdl,
         "result": labels.get(wdl, str(wdl)),
         "dtz": dtz,
+        "moves": move_rows,
+        "optimal_moves": optimal_moves,
+        "only_winning_move": (
+            optimal_moves[0]["uci"]
+            if wdl > 0 and len(optimal_moves) == 1 and best_wdl > 0
+            else None
+        ),
     }
 
 
@@ -678,6 +1143,45 @@ def _run_benchmark_worker(payload: dict[str, Any]) -> None:
     print(json.dumps(result, separators=(",", ":")), flush=True)
 
 
+def _run_regression_worker(payload: dict[str, Any]) -> None:
+    scale = max(0.1, min(5.0, float(payload.get("clock_scale", 0.5))))
+    rows = run_regression_suite(scale)
+    result: dict[str, Any] = {"clock_scale": scale, "rows": rows}
+    baseline = payload.get("baseline")
+    if isinstance(baseline, list):
+        safe_baseline = [item for item in baseline if isinstance(item, dict)][:100]
+        result["comparison"] = compare_regression_runs(rows, safe_baseline)
+    print(json.dumps(result, separators=(",", ":")), flush=True)
+
+
+def _run_selfplay_worker(payload: dict[str, Any]) -> None:
+    games = max(1, min(20, int(payload.get("games", 2))))
+    clock_ms = max(500, min(30_000, int(payload.get("clock_ms", 4_000))))
+    rows = generate_selfplay_dataset(games, clock_ms)
+    positions = sum(len(row.get("positions", [])) for row in rows)
+    print(
+        json.dumps(
+            {"games": games, "clock_ms": clock_ms, "positions": positions, "rows": rows},
+            separators=(",", ":"),
+        ),
+        flush=True,
+    )
+
+
+def _run_tuner_worker(payload: dict[str, Any]) -> None:
+    raw = payload.get("parameters")
+    parameters = [str(item) for item in raw] if isinstance(raw, list) else None
+    print(json.dumps(coordinate_tune(parameters), separators=(",", ":")), flush=True)
+
+
+def _run_tournament_worker(payload: dict[str, Any]) -> None:
+    print(json.dumps(run_tournament(payload), separators=(",", ":")), flush=True)
+
+
+def _run_calibration_worker(payload: dict[str, Any]) -> None:
+    print(json.dumps(calibrate_against_uci(payload), separators=(",", ":")), flush=True)
+
+
 def _run_arena_worker(payload: dict[str, Any]) -> None:
     """Run a paired source-checkout A/B match and return aggregate results."""
 
@@ -756,6 +1260,11 @@ class GameSession:
         self.last_engine_score: int | None = None
         self.last_engine_pv: tuple[str, ...] = ()
         self.last_engine_researches = 0
+        self.last_engine_tt_hits = 0
+        self.last_engine_beta_cutoffs = 0
+        self.last_engine_quiescence_nodes = 0
+        self.last_engine_budget_ms = 0
+        self.last_engine_pv_changed = False
         self.engine_profile = "maximum"
         self.engine_skill = 100
         self.engine_move_time_cap_ms = 2_500
@@ -860,6 +1369,11 @@ class GameSession:
             self.last_engine_score = None
             self.last_engine_pv = ()
             self.last_engine_researches = 0
+            self.last_engine_tt_hits = 0
+            self.last_engine_beta_cutoffs = 0
+            self.last_engine_quiescence_nodes = 0
+            self.last_engine_budget_ms = 0
+            self.last_engine_pv_changed = False
             self.history.clear()
             self.recorded_initial_clocks = (self.white_base_clock_ms, self.black_base_clock_ms)
             self.recorded_clocks.clear()
@@ -1042,6 +1556,23 @@ class GameSession:
             raise ValueError("Position insights require a valid board.")
         return _position_insights(board)
 
+    def tactical_motifs(self, fen: str, move_uci: str) -> dict[str, Any]:
+        board = _board_from_fen(fen, chess960=self.chess960)
+        if not board.is_valid():
+            raise ValueError("Tactical motif detection requires a valid board.")
+        try:
+            move = board.parse_uci(move_uci)
+        except ValueError as exc:
+            raise ValueError("Tactical motif move must be legal UCI.") from exc
+        if move not in board.legal_moves:
+            raise ValueError("Tactical motif move must be legal UCI.")
+        return {
+            "fen": board.fen(),
+            "move": board.uci(move),
+            "san": board.san(move),
+            "motifs": _detect_tactical_motifs(board, move),
+        }
+
     def tablebase_probe(self, fen: str, path: str = "") -> dict[str, Any]:
         return _tablebase_probe(fen, path)
 
@@ -1050,32 +1581,48 @@ class GameSession:
         executable: str,
         fen: str,
         budget_ms: int = 300,
+        lines: int = 3,
     ) -> dict[str, Any]:
         """Compare FunChessEngine with a user-selected local UCI executable."""
 
         budget = max(50, min(5_000, int(budget_ms)))
+        line_count = max(1, min(5, int(lines)))
         board = _board_from_fen(fen, chess960=self.chess960)
         if not board.is_valid() or board.is_game_over(claim_draw=True):
             raise ValueError("Engine comparison requires a valid non-terminal position.")
-        ours = self.multipv_fen(board.fen(), 1, budget)
+        ours = self.multipv_fen(board.fen(), line_count, budget)
         with ExternalUCIEngine(executable, timeout_s=max(3.0, budget / 1_000 + 2.0)) as external:
             external.new_game(chess960=self.chess960)
-            theirs = external.bestmove(board.fen(), budget, chess960=self.chess960)
+            theirs = external.analyze(
+                board.fen(),
+                budget,
+                chess960=self.chess960,
+                multipv=line_count,
+            )
         our_line = ours.get("lines", [{}])[0] if ours.get("lines") else {}
         return {
             "fen": board.fen(),
             "budget_ms": budget,
+            "lines": line_count,
             "funchess": {
                 "move": our_line.get("move"),
                 "san": our_line.get("san"),
                 "score": our_line.get("score"),
                 "depth": ours.get("depth"),
                 "nodes": ours.get("nodes"),
+                "lines": list(ours.get("lines", [])),
             },
             "external": {
                 "move": theirs.move,
                 "san": board.san(board.parse_uci(theirs.move)),
+                "name": theirs.engine_name,
                 "elapsed_ms": theirs.elapsed_ms,
+                "lines": [asdict(line) for line in theirs.lines],
+                "options": {
+                    name: asdict(option)
+                    for name, option in external.options.items()
+                    if name in {"MultiPV", "UCI_Elo", "UCI_LimitStrength", "Skill Level"}
+                },
                 "info": list(theirs.info[-20:]),
             },
             "agree": our_line.get("move") == theirs.move,
@@ -1296,6 +1843,11 @@ class GameSession:
             self.last_engine_score = None
             self.last_engine_pv = ()
             self.last_engine_researches = 0
+            self.last_engine_tt_hits = 0
+            self.last_engine_beta_cutoffs = 0
+            self.last_engine_quiescence_nodes = 0
+            self.last_engine_budget_ms = 0
+            self.last_engine_pv_changed = False
             self.history = history if history else [
                 (self.white_ms, self.black_ms) for _ in moves
             ]
@@ -1527,6 +2079,11 @@ class GameSession:
             self.last_engine_score = None
             self.last_engine_pv = ()
             self.last_engine_researches = 0
+            self.last_engine_tt_hits = 0
+            self.last_engine_beta_cutoffs = 0
+            self.last_engine_quiescence_nodes = 0
+            self.last_engine_budget_ms = 0
+            self.last_engine_pv_changed = False
             self.history = [(self.base_clock_ms, self.base_clock_ms) for _ in moves]
             self.paused = True
             self.manual_result = result if result in {"1-0", "0-1", "1/2-1/2"} else None
@@ -1901,6 +2458,46 @@ class GameSession:
         # position, but leave ample headroom for 12 positions plus a comparison.
         return self._run_json_worker("--benchmark-worker", payload, timeout=45.0)
 
+    def regression_engine(
+        self,
+        baseline: list[dict[str, Any]] | None = None,
+        clock_scale: float = 0.5,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"clock_scale": max(0.1, min(5.0, float(clock_scale)))}
+        if baseline is not None:
+            payload["baseline"] = baseline[:100]
+        return self._run_json_worker("--regression-worker", payload, timeout=35.0)
+
+    def selfplay_dataset(self, games: int = 2, clock_ms: int = 4_000) -> dict[str, Any]:
+        count = max(1, min(20, int(games)))
+        clock = max(500, min(30_000, int(clock_ms)))
+        return self._run_json_worker(
+            "--selfplay-worker",
+            {"games": count, "clock_ms": clock},
+            timeout=max(30.0, count * 45.0),
+        )
+
+    def tune_parameters(self, parameters: list[str] | None = None) -> dict[str, Any]:
+        payload = {"parameters": list(parameters or [])}
+        return self._run_json_worker("--tuner-worker", payload, timeout=120.0)
+
+    def uci_tournament(self, payload: dict[str, Any]) -> dict[str, Any]:
+        participants = payload.get("participants", [])
+        count = len(participants) if isinstance(participants, list) else 0
+        return self._run_json_worker(
+            "--uci-tournament-worker",
+            payload,
+            timeout=max(60.0, min(900.0, count * 120.0)),
+        )
+
+    def uci_calibration(self, payload: dict[str, Any]) -> dict[str, Any]:
+        games = max(2, min(12, int(payload.get("games", 4))))
+        return self._run_json_worker(
+            "--uci-calibration-worker",
+            payload,
+            timeout=max(60.0, min(900.0, games * 75.0)),
+        )
+
     def arena_compare(
         self,
         opponent_path: str,
@@ -2103,6 +2700,11 @@ class GameSession:
                 "last_engine_score": self.last_engine_score,
                 "last_engine_pv": self.last_engine_pv,
                 "last_engine_researches": self.last_engine_researches,
+                "last_engine_tt_hits": self.last_engine_tt_hits,
+                "last_engine_beta_cutoffs": self.last_engine_beta_cutoffs,
+                "last_engine_quiescence_nodes": self.last_engine_quiescence_nodes,
+                "last_engine_budget_ms": self.last_engine_budget_ms,
+                "last_engine_pv_changed": self.last_engine_pv_changed,
                 "engine_profile": self.engine_profile,
                 "engine_skill": self.engine_skill,
                 "engine_move_time_cap_ms": self.engine_move_time_cap_ms,
@@ -2200,6 +2802,7 @@ class GameSession:
             info = agent.LAST_SEARCH_INFO
             self.last_engine_nodes = int(info.nodes)
             self.last_engine_depth = int(info.depth)
+            previous_pv = self.last_engine_pv
             if uci == searched_uci:
                 self.last_engine_score = int(info.score)
                 self.last_engine_pv = tuple(info.pv)
@@ -2211,6 +2814,13 @@ class GameSession:
                 )
                 self.last_engine_pv = (uci,)
             self.last_engine_researches = int(info.aspiration_researches)
+            self.last_engine_tt_hits = int(info.tt_hits)
+            self.last_engine_beta_cutoffs = int(info.beta_cutoffs)
+            self.last_engine_quiescence_nodes = int(info.quiescence_nodes)
+            self.last_engine_budget_ms = int(info.budget_ms)
+            self.last_engine_pv_changed = bool(
+                previous_pv and self.last_engine_pv and previous_pv[0] != self.last_engine_pv[0]
+            )
             self.turn_started_ns = time.monotonic_ns()
             remaining = self.white_ms if color == chess.WHITE else self.black_ms
             if remaining <= 0:
@@ -2373,9 +2983,20 @@ class Handler(SimpleHTTPRequestHandler):
             if self.__class__.__name__ == "LanHandler" and self.path in {
                 "/api/external-uci",
                 "/api/tablebase",
+                "/api/opening-book",
                 "/api/dev-benchmark",
                 "/api/dev-arena",
+                "/api/dev-regression",
+                "/api/dev-selfplay",
+                "/api/dev-tuner",
+                "/api/uci-tournament",
+                "/api/uci-calibration",
                 "/api/lan",
+                "/api/library-db/status",
+                "/api/library-db/import",
+                "/api/library-db/search",
+                "/api/library-db/game",
+                "/api/library-db/explorer",
             }:
                 raise ValueError("This host-local action is unavailable to LAN guests.")
             if self.path == "/api/move":
@@ -2449,6 +3070,109 @@ class Handler(SimpleHTTPRequestHandler):
                     str(payload.get("pgn", "")),
                     int(payload.get("budget_ms", 100)),
                 )
+                self._json(result)
+                return
+            elif self.path == "/api/library-db/status":
+                self._json(_library_database().stats())
+                return
+            elif self.path == "/api/library-db/import":
+                self._json(
+                    _library_database().import_pgn_text(
+                        str(payload.get("pgn", "")),
+                        source=str(payload.get("source", "reference")),
+                        max_games=int(payload.get("max_games", 10_000)),
+                    )
+                )
+                return
+            elif self.path == "/api/library-db/search":
+                filters = payload.get("filters", {})
+                if not isinstance(filters, dict):
+                    raise ValueError("Library filters must be a JSON object.")
+                query = str(payload.get("query", "")).strip()
+                parsed = parse_library_query(query) if query else {}
+                merged = {**parsed, **filters}
+                result = _library_database().search_games(
+                    merged,
+                    limit=int(payload.get("limit", 50)),
+                    offset=int(payload.get("offset", 0)),
+                )
+                self._json({**result, "filters": merged})
+                return
+            elif self.path == "/api/library-db/game":
+                game = _library_database().game(int(payload.get("id", 0)))
+                if game is None:
+                    raise ValueError("Indexed game was not found.")
+                self._json({"game": game})
+                return
+            elif self.path == "/api/library-db/explorer":
+                filters = payload.get("filters", {})
+                if not isinstance(filters, dict):
+                    raise ValueError("Explorer filters must be a JSON object.")
+                self._json(
+                    _library_database().opening_moves(
+                        str(payload.get("fen", chess.STARTING_FEN)),
+                        filters,
+                        limit=int(payload.get("limit", 20)),
+                    )
+                )
+                return
+            elif self.path == "/api/opening-book":
+                action = str(payload.get("action", "query")).strip().lower()
+                book = _opening_book()
+                profile = str(payload.get("profile", "default")).strip()[:48] or "default"
+                if action == "stats":
+                    result = book.stats(profile)
+                elif action == "query":
+                    result = {
+                        "moves": book.moves(
+                            str(payload.get("fen", chess.STARTING_FEN)),
+                            depth_limit=(
+                                int(payload["depth_limit"])
+                                if payload.get("depth_limit") is not None
+                                else None
+                            ),
+                            profile=profile,
+                        )
+                    }
+                elif action == "add":
+                    result = book.add_move(
+                        str(payload.get("fen", chess.STARTING_FEN)),
+                        str(payload.get("move", "")),
+                        weight=int(payload.get("weight", 1)),
+                        learn=int(payload.get("learn", 0)),
+                        profile=profile,
+                    )
+                elif action == "remove":
+                    result = {
+                        "removed": book.remove_move(
+                            str(payload.get("fen", chess.STARTING_FEN)),
+                            str(payload.get("move", "")),
+                            profile=profile,
+                        )
+                    }
+                elif action == "learn":
+                    result = {
+                        "updated": book.learn_result(
+                            str(payload.get("fen", chess.STARTING_FEN)),
+                            str(payload.get("move", "")),
+                            float(payload.get("score", 0.5)),
+                            profile=profile,
+                        )
+                    }
+                elif action == "import_polyglot":
+                    positions = _library_database().distinct_fens(
+                        int(payload.get("position_limit", 100_000))
+                    )
+                    result = book.import_polyglot_for_positions(
+                        str(payload.get("path", "")),
+                        positions,
+                        profile=profile,
+                    )
+                else:
+                    raise ValueError(
+                        "Opening-book action must be stats, query, add, remove, learn, "
+                        "or import_polyglot."
+                    )
                 self._json(result)
                 return
             elif self.path == "/api/export-pgn":
@@ -2532,6 +3256,14 @@ class Handler(SimpleHTTPRequestHandler):
                     SESSION.position_insights(str(payload.get("fen", chess.STARTING_FEN)))
                 )
                 return
+            elif self.path == "/api/tactical-motifs":
+                self._json(
+                    SESSION.tactical_motifs(
+                        str(payload.get("fen", chess.STARTING_FEN)),
+                        str(payload.get("move", "")),
+                    )
+                )
+                return
             elif self.path == "/api/tablebase":
                 self._json(
                     SESSION.tablebase_probe(
@@ -2546,6 +3278,7 @@ class Handler(SimpleHTTPRequestHandler):
                         str(payload.get("executable", "")),
                         str(payload.get("fen", chess.STARTING_FEN)),
                         int(payload.get("budget_ms", 300)),
+                        int(payload.get("lines", 3)),
                     )
                 )
                 return
@@ -2561,6 +3294,39 @@ class Handler(SimpleHTTPRequestHandler):
                         str(payload.get("compare_path", "")),
                     )
                 )
+                return
+            elif self.path == "/api/dev-regression":
+                baseline = payload.get("baseline")
+                if baseline is not None and not isinstance(baseline, list):
+                    raise ValueError("Regression baseline must be a list of prior case results.")
+                self._json(
+                    SESSION.regression_engine(
+                        baseline=baseline,
+                        clock_scale=float(payload.get("clock_scale", 0.5)),
+                    )
+                )
+                return
+            elif self.path == "/api/dev-selfplay":
+                self._json(
+                    SESSION.selfplay_dataset(
+                        int(payload.get("games", 2)),
+                        int(payload.get("clock_ms", 4_000)),
+                    )
+                )
+                return
+            elif self.path == "/api/dev-tuner":
+                raw_parameters = payload.get("parameters")
+                if raw_parameters is not None and not isinstance(raw_parameters, list):
+                    raise ValueError("Tuner parameters must be a list.")
+                self._json(
+                    SESSION.tune_parameters([str(item) for item in raw_parameters or []])
+                )
+                return
+            elif self.path == "/api/uci-tournament":
+                self._json(SESSION.uci_tournament(payload))
+                return
+            elif self.path == "/api/uci-calibration":
+                self._json(SESSION.uci_calibration(payload))
                 return
             elif self.path == "/api/dev-arena":
                 self._json(
@@ -2753,6 +3519,11 @@ def main() -> None:
     parser.add_argument("--multipv-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--benchmark-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--arena-worker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--regression-worker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--selfplay-worker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--tuner-worker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--uci-tournament-worker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--uci-calibration-worker", action="store_true", help=argparse.SUPPRESS)
     arguments = parser.parse_args()
 
     if arguments.analysis_worker:
@@ -2794,6 +3565,25 @@ def main() -> None:
             if not isinstance(payload, dict):
                 raise ValueError("Arena worker input must be an object.")
             _run_arena_worker(payload)
+        except Exception as exc:
+            print(json.dumps({"error": str(exc)}), flush=True)
+            raise SystemExit(1) from exc
+        return
+
+    for enabled, worker, label in (
+        (arguments.regression_worker, _run_regression_worker, "Regression"),
+        (arguments.selfplay_worker, _run_selfplay_worker, "Self-play"),
+        (arguments.tuner_worker, _run_tuner_worker, "Tuner"),
+        (arguments.uci_tournament_worker, _run_tournament_worker, "Tournament"),
+        (arguments.uci_calibration_worker, _run_calibration_worker, "Calibration"),
+    ):
+        if not enabled:
+            continue
+        try:
+            payload = json.load(sys.stdin)
+            if not isinstance(payload, dict):
+                raise ValueError(f"{label} worker input must be an object.")
+            worker(payload)
         except Exception as exc:
             print(json.dumps({"error": str(exc)}), flush=True)
             raise SystemExit(1) from exc
