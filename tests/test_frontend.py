@@ -102,7 +102,7 @@ class FrontendTransitionContractTests(unittest.TestCase):
         ):
             self.assertIn(f'id="{control}"', self.html)
         self.assert_function_contains("importPgnCollectionText", 'api("/api/parse-pgn-batch"')
-        self.assert_function_contains("runLibraryAnalysisQueue", 'api("/api/analyze-pgn"')
+        self.assert_function_contains("runLibraryAnalysisQueue", 'runBackgroundJob("analyze-pgn"')
         self.assert_function_contains("renderPositionSearch", "fenPositionKey")
         self.assert_function_contains("openRecentGame", 'api("/api/load-pgn"')
 
@@ -327,7 +327,7 @@ class FrontendTransitionContractTests(unittest.TestCase):
         self.assertIn("globalThis.indexedDB", self.source)
         self.assert_function_contains("persistDurableValue", "writeDurableValue")
         self.assert_function_contains("hydrateDurableMetadata", "readDurableValue")
-        self.assertIn("void hydrateDurableMetadata();", self.source)
+        self.assertIn("hydrateDesktopPreferences().then(hydrateDurableMetadata)", self.source)
 
     def test_browser_imports_are_bounded_before_file_contents_are_read(self) -> None:
         self.assert_function_contains("assertBrowserFileSize", "file.size > maxBytes")
@@ -440,7 +440,9 @@ class FrontendTransitionContractTests(unittest.TestCase):
         ):
             self.assertIn(f'id="{control}"', self.html)
         self.assert_function_contains("searchSimilarGames", "positionSimilarity")
-        self.assert_function_contains("importOpeningDatabaseFiles", 'api("/api/library-db/import"')
+        self.assert_function_contains(
+            "importOpeningDatabaseFiles", 'runBackgroundJob("reference-import"'
+        )
         self.assert_function_contains("searchOpeningDatabase", 'api("/api/library-db/search"')
         self.assert_function_contains("exploreOpeningDatabase", 'api("/api/library-db/explorer"')
         self.assert_function_contains("renderRepertoireGaps", "repertoirePreparedMoves")
@@ -448,6 +450,56 @@ class FrontendTransitionContractTests(unittest.TestCase):
         self.assert_function_contains("startRepertoireTraining", "trainerItems.unshift")
         self.assert_function_contains("renderPerformanceHistory", "timeControlBucket")
         self.assertIn("LESSONS_KEY", self.source)
+
+    def test_visible_advanced_controls_are_bound_to_their_implemented_workflows(self) -> None:
+        bindings = (
+            (
+                '$("calibrateEngineBtn").addEventListener("click", runMeasuredCalibration)',
+                "runMeasuredCalibration",
+            ),
+            ('$("buildRepertoireBtn").addEventListener("click"', "buildAutomaticRepertoire"),
+            ('$("generateLibraryPuzzlesBtn").addEventListener("click"', "generateLibraryPuzzles"),
+            (
+                '$("saveSessionGoalsBtn").addEventListener("click", saveSessionGoalTargets)',
+                "saveSessionGoalTargets",
+            ),
+            ('$("reviewNextLossBtn").addEventListener("click"', "reviewNextLoss"),
+            ('$("refreshAlternativesBtn").addEventListener("click"', "refreshMoveAlternatives"),
+            ('$("addOpeningBookMoveBtn").addEventListener("click"', "addCurrentOpeningBookMove"),
+            ('$("importPolyglotBtn").addEventListener("click"', "importPolyglotBook"),
+        )
+        for binding, function_name in bindings:
+            self.assertIn(binding, self.source)
+            self.assertRegex(
+                self.source,
+                rf"(?:async\s+)?function\s+{re.escape(function_name)}\b",
+                f"missing frontend function {function_name}",
+            )
+        self.assert_function_contains("render", "renderCalibrationEngines()")
+        self.assert_function_contains("render", "renderSessionGoals()")
+        self.assert_function_contains("activateTab", 'nextTab === "position"')
+        self.assert_function_contains("activateTab", "refreshOpeningBook()")
+        self.assertNotIn("calibrateEngineFromHistory", self.source)
+
+    def test_privileged_desktop_ipc_requires_the_trusted_renderer(self) -> None:
+        self.assertIn("function assertTrustedRenderer(event, action)", self.desktop_main)
+        for channel in (
+            "file:open-fen",
+            "file:open-pgn",
+            "file:open-png",
+            "file:open-engine",
+            "file:save-text",
+            "file:save-pgn",
+            "file:save-binary",
+            "file:open-bundle",
+            "file:save-bundle",
+            "backend:restart",
+        ):
+            match = re.search(
+                rf'ipcMain\.handle\("{re.escape(channel)}"[\s\S]{{0,260}}?assertTrustedRenderer\(event,',
+                self.desktop_main,
+            )
+            self.assertIsNotNone(match, f"{channel} must reject untrusted renderer senders")
 
     def test_reports_image_import_share_editor_and_encrypted_sync_are_local(self) -> None:
         for control in (

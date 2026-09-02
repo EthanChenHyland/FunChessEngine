@@ -1309,3 +1309,8 @@ html[data-desktop="true"] .board-stage {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .001ms !important; animation-duration: .001ms !important; }
 }
+
+.experiment-output { max-height: 280px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
+.background-jobs { max-width: 1280px; margin: 16px auto; padding: 0 20px; }
+.background-jobs:has(#backgroundJobs:empty) { display: none; }
+#tunerParameters { display: grid; gap: 8px; margin: 12px 0; }

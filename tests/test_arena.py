@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -44,10 +45,18 @@ class ArenaTests(unittest.TestCase):
         self.assertGreater(high, 0.5)
 
     def test_agent_stderr_tail_is_memory_bounded(self) -> None:
-        agent = Agent(["unused"])
-        chunk = b"x" * (STDERR_TAIL_CAP + 123)
-        agent._keep(type("Key", (), {"fileobj": None})(), chunk)  # type: ignore[arg-type]
-        self.assertEqual(len(agent._tail), STDERR_TAIL_CAP)
+        code = (
+            "import sys; "
+            f"sys.stderr.write('x' * {STDERR_TAIL_CAP + 123}); sys.stderr.flush(); "
+            "print('{\"ready\":true}', flush=True); sys.stdin.read()"
+        )
+        agent = Agent([sys.executable, "-u", "-c", code])
+        try:
+            agent.start(2)
+        finally:
+            agent.stop()
+        self.assertEqual(len(agent.stderr_tail), STDERR_TAIL_CAP)
+
 
 
 if __name__ == "__main__":

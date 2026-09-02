@@ -28,11 +28,19 @@ TUNABLES = {
 def objective(clock_scale: float = 0.35) -> dict[str, Any]:
     rows = run_suite(clock_scale)
     legal = sum(bool(row["legal"]) for row in rows)
+    expected = sum(bool(row["expected"]) for row in rows)
     depth = sum(cast(int, row["depth"]) for row in rows)
     elapsed = sum(cast(int, row["elapsed_ms"]) for row in rows)
-    # Legality dominates, then completed depth; shorter equal-depth runs win ties.
-    score = legal * 100_000 + depth * 1_000 - elapsed
-    return {"score": score, "legal": legal, "depth": depth, "elapsed_ms": elapsed, "rows": rows}
+    # Legality and known tactical answers dominate depth; elapsed time breaks ties.
+    score = legal * 100_000_000 + expected * 1_000_000 + depth * 1_000 - elapsed
+    return {
+        "score": score,
+        "legal": legal,
+        "expected": expected,
+        "depth": depth,
+        "elapsed_ms": elapsed,
+        "rows": rows,
+    }
 
 
 def coordinate_tune(names: list[str] | None = None) -> dict[str, Any]:
@@ -44,6 +52,7 @@ def coordinate_tune(names: list[str] | None = None) -> dict[str, Any]:
     best_values = dict(original)
     baseline = objective()
     best_score = int(baseline["score"])
+    best_correctness = (int(baseline["legal"]), int(baseline["expected"]))
     trials: list[dict[str, Any]] = []
     try:
         for name in selected:
@@ -62,7 +71,9 @@ def coordinate_tune(names: list[str] | None = None) -> dict[str, Any]:
                 result = objective()
                 row = {"parameter": name, "value": candidate, **result}
                 trials.append(row)
-                if int(result["score"]) > best_score:
+                correctness = (int(result["legal"]), int(result["expected"]))
+                if correctness >= best_correctness and int(result["score"]) > best_score:
+                    best_correctness = correctness
                     best_score = int(result["score"])
                     local_best = candidate
             best_values[name] = local_best

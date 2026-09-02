@@ -24,6 +24,7 @@ No third-party chess engine code or native binary is used or shipped.
 from __future__ import annotations
 
 import time
+from collections import deque
 from dataclasses import dataclass
 
 import chess
@@ -202,6 +203,8 @@ EVAL_CACHE: dict[object, int] = {}
 HISTORY: dict[tuple[bool, int, int], int] = {}
 KILLERS: list[list[chess.Move | None]] = [[None, None] for _ in range(MAX_PLY)]
 SEEN_POSITIONS: dict[object, int] = {}
+OBSERVED_POSITIONS: deque[object] = deque()
+LAST_OBSERVED_CHILD: object | None = None
 
 DEADLINE_NS = 0
 NODES = 0
@@ -266,6 +269,9 @@ def reset_game_state() -> None:
     """Clear persistent search state (useful for local tools/new GUI games)."""
 
     global BETA_CUTOFFS, DEADLINE_NS, LAST_SEARCH_INFO, NODES, QUIESCENCE_NODES, TT_HITS
+    global LAST_OBSERVED_CHILD
+    LAST_OBSERVED_CHILD = None
+    OBSERVED_POSITIONS.clear()
     TT.clear()
     EVAL_CACHE.clear()
     HISTORY.clear()
@@ -279,6 +285,31 @@ def reset_game_state() -> None:
     TT_HITS = 0
     BETA_CUTOFFS = 0
     LAST_SEARCH_INFO = SearchInfo()
+
+
+def _observe_position(key: object) -> None:
+    # Only a bounded recent history is needed for repetition in a legal game.
+    if len(OBSERVED_POSITIONS) >= 1024:
+        old = OBSERVED_POSITIONS.popleft()
+        count = SEEN_POSITIONS.get(old, 0) - 1
+        if count > 0:
+            SEEN_POSITIONS[old] = count
+        else:
+            SEEN_POSITIONS.pop(old, None)
+    OBSERVED_POSITIONS.append(key)
+    SEEN_POSITIONS[key] = SEEN_POSITIONS.get(key, 0) + 1
+
+
+def set_game_history(board: chess.Board) -> None:
+    """Seed known game history for tools that own a complete board, excluding the root."""
+    global LAST_OBSERVED_CHILD
+    SEEN_POSITIONS.clear()
+    OBSERVED_POSITIONS.clear()
+    LAST_OBSERVED_CHILD = None
+    replay = board.root()
+    for move in board.move_stack:
+        _observe_position(_repetition_key(replay))
+        replay.push(move)
 
 
 def _pst_square(square: int, color: chess.Color) -> int:
@@ -785,7 +816,7 @@ def _board_from_fen(fen: str) -> chess.Board:
     return board
 
 
-def get_move(fen: str, time_left_ms: int) -> str:
+def get_move(fen: str, time_left_ms: int, *, move_budget_ms: int | None = None) -> str:
     """Return a legal UCI move before the game clock expires."""
 
     global BETA_CUTOFFS, DEADLINE_NS, LAST_SEARCH_INFO, NODES, QUIESCENCE_NODES, TT_HITS
@@ -797,13 +828,16 @@ def get_move(fen: str, time_left_ms: int) -> str:
         # empty string is safer than throwing if a malformed test does.
         return ""
     repetition_key = _repetition_key(board)
-    SEEN_POSITIONS[repetition_key] = SEEN_POSITIONS.get(repetition_key, 0) + 1
+    global LAST_OBSERVED_CHILD
+    if repetition_key != LAST_OBSERVED_CHILD:
+        _observe_position(repetition_key)
     if len(legal) == 1:
         forced = legal[0]
         board.push(forced)
         child_key = _repetition_key(board)
         board.pop()
-        SEEN_POSITIONS[child_key] = SEEN_POSITIONS.get(child_key, 0) + 1
+        _observe_position(child_key)
+        LAST_OBSERVED_CHILD = child_key
         LAST_SEARCH_INFO = SearchInfo(depth=0, score=0, nodes=0, elapsed_ms=0, pv=(forced.uci(),))
         return forced.uci()
 
@@ -812,7 +846,8 @@ def get_move(fen: str, time_left_ms: int) -> str:
         board.push(book_move)
         played_key = _repetition_key(board)
         board.pop()
-        SEEN_POSITIONS[played_key] = SEEN_POSITIONS.get(played_key, 0) + 1
+        _observe_position(played_key)
+        LAST_OBSERVED_CHILD = played_key
         LAST_SEARCH_INFO = SearchInfo(
             depth=0,
             score=0,
@@ -825,7 +860,8 @@ def get_move(fen: str, time_left_ms: int) -> str:
     _trim_state()
     root_key = _key(board)
 
-    budget_ms = _time_budget_ms(board, max(1, time_left_ms))
+    budget_ms = (_time_budget_ms(board, max(1, time_left_ms)) if move_budget_ms is None
+                 else max(1, min(2500, int(move_budget_ms), max(1, time_left_ms))))
     # Reserve a small fixed margin for Python unwinding + harness IPC.
     margin_ms = min(25, max(3, budget_ms // 12))
     DEADLINE_NS = time.monotonic_ns() + max(1, budget_ms - margin_ms) * 1_000_000
@@ -906,7 +942,8 @@ def get_move(fen: str, time_left_ms: int) -> str:
     board.push(best_move)
     played_key = _repetition_key(board)
     board.pop()
-    SEEN_POSITIONS[played_key] = SEEN_POSITIONS.get(played_key, 0) + 1
+    _observe_position(played_key)
+    LAST_OBSERVED_CHILD = played_key
     if completed_depth == 0:
         elapsed_ms = max(0, (time.monotonic_ns() - started_ns) // 1_000_000)
         LAST_SEARCH_INFO = SearchInfo(

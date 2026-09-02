@@ -4,6 +4,8 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("engineLabDesktop", {
   platform: process.platform,
+  readMetadata: (key) => ipcRenderer.invoke("metadata:get", key),
+  writeMetadata: (key, value) => ipcRenderer.invoke("metadata:set", key, value),
   openFen: () => ipcRenderer.invoke("file:open-fen"),
   openPgn: () => ipcRenderer.invoke("file:open-pgn"),
   openPng: () => ipcRenderer.invoke("file:open-png"),

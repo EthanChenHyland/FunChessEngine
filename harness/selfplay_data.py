@@ -34,6 +34,7 @@ def generate_game(
         if board.is_game_over(claim_draw=True):
             break
         before = board.fen()
+        agent.set_game_history(board)
         move_uci = agent.get_move(before, max(500, min(60_000, int(clock_ms))))
         move = chess.Move.from_uci(move_uci)
         if move not in board.legal_moves:

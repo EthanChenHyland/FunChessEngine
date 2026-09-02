@@ -34,4 +34,4 @@ ignore = ["N818"]
 
 [tool.mypy]
 strict = true
-files = ["agent.py", "uci.py", "harness"]
+files = ["agent.py", "uci.py", "harness", "gui", "integrations", "librarydb", "openingbook", "plugins", "reporting"]

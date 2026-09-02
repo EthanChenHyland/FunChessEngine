@@ -723,6 +723,39 @@ class GameSessionTests(unittest.TestCase):
         self.assertEqual(result["result"], "win")
         self.assertEqual(result["only_winning_move"], "d1e1")
         self.assertEqual(result["optimal_moves"][0]["uci"], "d1e1")
+        self.assertIn("not a DTZ/50-move perfect-play policy", result["move_policy"])
+
+    def test_tablebase_cursed_and_blessed_labels_match_syzygy_semantics(self) -> None:
+        class FakeTablebase:
+            def __init__(self, root_wdl: int) -> None:
+                self.root_wdl = root_wdl
+
+            def __enter__(self) -> FakeTablebase:
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def probe_wdl(self, board: chess.Board) -> int:
+                return self.root_wdl if not board.move_stack else 0
+
+            def probe_dtz(self, _board: chess.Board) -> int:
+                return 0
+
+        for wdl, label in ((1, "cursed win"), (-1, "blessed loss")):
+            with (
+                self.subTest(wdl=wdl),
+                tempfile.TemporaryDirectory() as directory,
+                patch(
+                    "gui.server.chess.syzygy.open_tablebase",
+                    return_value=FakeTablebase(wdl),
+                ),
+            ):
+                result = self.game.tablebase_probe(
+                    "8/8/8/8/8/3k4/8/2RK4 w - - 0 1",
+                    directory,
+                )
+                self.assertEqual(result["result"], label)
 
     def test_time_management_coaching_uses_recorded_clocks_and_analysis(self) -> None:
         self.game.reset(clock_ms=60_000, increment_ms=1_000)

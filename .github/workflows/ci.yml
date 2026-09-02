@@ -34,3 +34,21 @@ jobs:
         working-directory: desktop
       - run: xvfb-run -a npm run smoke:ui
         working-directory: desktop
+
+  portable-processes:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12.14"
+      - run: uv sync --frozen
+      - run: uv run python -m unittest tests.test_integrations tests.test_arena tests.test_audit_repairs
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - run: node --test tests/frontend-behavior.cjs

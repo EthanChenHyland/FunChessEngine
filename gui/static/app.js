@@ -33,7 +33,7 @@ const MAX_SAVE_BYTES = 50 * 1024 * 1024;
 const MAX_RECOVERY_BYTES = 512 * 1024;
 const MAX_RESTART_SNAPSHOT_BYTES = 512 * 1024;
 const MAX_STUDY_BYTES = 2 * 1024 * 1024;
-const MAX_BACKUP_BYTES = 8 * 1024 * 1024;
+const MAX_BACKUP_BYTES = 16 * 1024 * 1024;
 const MAX_LIBRARY_GAMES = 500;
 const DISPLAY_DEFAULTS = {
   theme: "forest",
@@ -121,6 +121,7 @@ const durableMetadataDirty = new Set();
 const durableWriteChains = new Map();
 let persistenceErrorShown = false;
 let trainerFocusMode = "due";
+let trainerSessionKeys = null;
 let applyingAnalysisPreset = false;
 let manualPositionAnalysisQueued = false;
 const positionAnalysisCache = new Map(loadPositionAnalysisCache());
@@ -150,6 +151,10 @@ let lanInfo = { running: false };
 let indexedLibraryStatus = { games: 0, positions: 0 };
 
 const $ = (id) => document.getElementById(id);
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"}[char]));
+}
 
 function setStatus(message, tone = "info") {
   const target = $("statusLine");
@@ -236,9 +241,10 @@ function persistDurableValue(key, value) {
 
   const previous = durableWriteChains.get(key) || Promise.resolve();
   const pending = previous.catch(() => {}).then(async () => {
+    if (globalThis.engineLabDesktop?.writeMetadata) await globalThis.engineLabDesktop.writeMetadata(key, snapshot);
     await writeDurableValue(key, snapshot);
     try {
-      localStorage.removeItem(key);
+      if (localStorage.getItem(key) === serialized) localStorage.removeItem(key);
     } catch (_) {
       // IndexedDB is authoritative once its transaction commits.
     }
@@ -251,6 +257,12 @@ function persistDurableValue(key, value) {
 
 function durableMetadataSpecs() {
   return [
+    { key: CALIBRATION_HISTORY_KEY, get: () => calibrationHistory,
+      set: value => { calibrationHistory = Array.isArray(value) ? value.slice(0, 20) : []; } },
+    { key: EXTERNAL_COMPARE_HISTORY_KEY, get: () => externalCompareHistory,
+      set: value => { externalCompareHistory = Array.isArray(value) ? value.slice(0, 30) : []; } },
+    { key: REGRESSION_HISTORY_KEY, get: () => regressionHistory,
+      set: value => { regressionHistory = Array.isArray(value) ? value.slice(0, 30) : []; } },
     {
       key: RECENTS_KEY,
       get: () => recentGames,
@@ -322,6 +334,10 @@ async function hydrateDurableMetadata() {
         persistDurableValue(spec.key, spec.get());
         continue;
       }
+      if (globalThis.engineLabDesktop?.readMetadata) {
+        const native = await globalThis.engineLabDesktop.readMetadata(spec.key);
+        if (native.found) { spec.set(native.value); continue; }
+      }
       let localRaw = null;
       try {
         localRaw = localStorage.getItem(spec.key);
@@ -332,6 +348,7 @@ async function hydrateDurableMetadata() {
         try {
           spec.set(JSON.parse(localRaw));
           await writeDurableValue(spec.key, spec.get());
+          if (globalThis.engineLabDesktop?.writeMetadata) await globalThis.engineLabDesktop.writeMetadata(spec.key, spec.get());
           try { localStorage.removeItem(spec.key); } catch (_) {}
           continue;
         } catch (error) {
@@ -339,7 +356,10 @@ async function hydrateDurableMetadata() {
         }
       }
       const stored = await readDurableValue(spec.key);
-      if (stored !== undefined) spec.set(stored);
+      if (stored !== undefined) {
+        spec.set(stored);
+        if (globalThis.engineLabDesktop?.writeMetadata) await globalThis.engineLabDesktop.writeMetadata(spec.key, spec.get());
+      }
     }
     durableMetadataHydrated = true;
     if (state) {
@@ -354,6 +374,10 @@ async function hydrateDurableMetadata() {
       renderEnginePresets();
       renderPlugins();
       renderExternalEngines();
+      renderCalibrationEngines();
+      renderAdvancedTournament();
+      renderWorkstationHistory();
+      renderExternalComparisonHistory();
       renderLauncher();
       renderBoard();
     }
@@ -361,6 +385,35 @@ async function hydrateDurableMetadata() {
     durableMetadataHydrated = true;
     console.warn("IndexedDB metadata store unavailable; using localStorage fallback.", error);
   }
+}
+
+function mirrorDesktopPreference(key) {
+  if (!globalThis.engineLabDesktop?.writeMetadata) return;
+  const value = JSON.parse(localStorage.getItem(key) || "null");
+  void globalThis.engineLabDesktop.writeMetadata(key, value).catch(reportPersistenceError);
+}
+
+async function hydrateDesktopPreferences() {
+  if (!globalThis.engineLabDesktop?.readMetadata) return;
+  try {
+    for (const key of [DISPLAY_KEY, SESSION_GOALS_KEY, RECOVERY_KEY, POSITION_CACHE_KEY, ONBOARDING_KEY]) {
+      const saved = await globalThis.engineLabDesktop.readMetadata(key);
+      if (saved.found) {
+        if (saved.value == null) localStorage.removeItem(key);
+        else localStorage.setItem(key, key === ONBOARDING_KEY ? saved.value : JSON.stringify(saved.value));
+      } else {
+        const value = localStorage.getItem(key);
+        if (value != null) await globalThis.engineLabDesktop.writeMetadata(key, key === ONBOARDING_KEY ? value : JSON.parse(value));
+      }
+    }
+    display = loadDisplaySettings();
+    sessionGoals = loadSessionGoals();
+    startupRecovery = loadRecoverySnapshot();
+    recoveryResolved = !startupRecovery;
+    positionAnalysisCache.clear();
+    for (const [key, value] of loadPositionAnalysisCache()) positionAnalysisCache.set(key, value);
+    applyDisplaySettings(false);
+  } catch (error) { reportPersistenceError(error); }
 }
 
 function setEngineStatus(message, mode = "ready") {
@@ -693,6 +746,7 @@ function saveExternalEngines() {
 
 function saveSessionGoals() {
   localStorage.setItem(SESSION_GOALS_KEY, JSON.stringify(sessionGoals));
+    mirrorDesktopPreference(SESSION_GOALS_KEY);
 }
 
 function saveCalibrationHistory() {
@@ -724,6 +778,7 @@ function loadPositionAnalysisCache() {
 function savePositionAnalysisCache() {
   try {
     localStorage.setItem(POSITION_CACHE_KEY, JSON.stringify([...positionAnalysisCache.entries()].slice(-30)));
+    mirrorDesktopPreference(POSITION_CACHE_KEY);
   } catch (_) {
     // The cache is an optimization only; analysis still works when storage is unavailable.
   }
@@ -782,6 +837,7 @@ function normalizeVariationWorkspace(workspace) {
     workspace.nodes[workspace.root].parent = null;
     workspace.nodes[workspace.root].parents = [];
   }
+  try { validateStudyGraph(workspace); } catch (_) { return null; }
   return workspace;
 }
 
@@ -1220,12 +1276,10 @@ async function importOpeningDatabaseFiles(files) {
   let duplicates = 0;
   let positions = 0;
   for (const file of list) {
-    assertBrowserFileSize(file, MAX_PGN_BYTES, file.name || "Opening database PGN");
-    const result = await api("/api/library-db/import", {
-      pgn: await file.text(),
-      source: file.name || "Opening database",
-      max_games: 10000,
-    });
+    const token = await uploadLocalFile(file);
+    let result;
+    try { result = await runBackgroundJob("reference-import", {token}); }
+    finally { await api("/api/library-upload", {action:"cancel",token}).catch(()=>{}); }
     imported += Number(result.imported || 0);
     duplicates += Number(result.duplicates || 0);
     positions += Number(result.positions || 0);
@@ -1293,7 +1347,7 @@ async function runLibraryAnalysisQueue() {
     saveAnalysisQueue();
     renderAnalysisQueue();
     try {
-      const result = await api("/api/analyze-pgn", { pgn: snapshot.pgn_text, budget_ms: 120 });
+      const result = await runBackgroundJob("analyze-pgn", { pgn: snapshot.pgn_text, budget_ms: 120 });
       snapshot.analysis = { status: "complete", ...result };
       item.status = "done";
       saveRecentGames();
@@ -1509,6 +1563,7 @@ async function importStudyFile(file) {
   for (const node of Object.values(workspace.nodes)) {
     if (!node?.id || !node?.snapshot?.fen || !Array.isArray(node.children)) throw new Error("Study contains an invalid position node.");
   }
+  validateStudyGraph(workspace);
   const key = `import:${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`}`;
   workspace.storage_key = key;
   workspace.name = String(workspace.name || "Imported study").slice(0, 80);
@@ -1683,6 +1738,7 @@ function persistRecoverySnapshot() {
     const hasProgress = Boolean(state.moves_uci?.length) || state.initial_fen !== STARTING_FEN;
     if (!hasProgress) {
       localStorage.removeItem(RECOVERY_KEY);
+    mirrorDesktopPreference(RECOVERY_KEY);
       return;
     }
     const serialized = JSON.stringify(recoveryGameSnapshot());
@@ -1690,6 +1746,7 @@ function persistRecoverySnapshot() {
       throw new Error("Session recovery snapshot is too large to save safely.");
     }
     localStorage.setItem(RECOVERY_KEY, serialized);
+    mirrorDesktopPreference(RECOVERY_KEY);
   } catch (error) {
     console.warn("Session recovery save failed:", error);
   }
@@ -1743,6 +1800,7 @@ function discardRecovery() {
   startupRecovery = null;
   try {
     localStorage.removeItem(RECOVERY_KEY);
+    mirrorDesktopPreference(RECOVERY_KEY);
   } catch (_) {
     // Nothing else to do if browser storage is unavailable.
   }
@@ -1787,6 +1845,7 @@ function loadDisplaySettings() {
 function saveDisplaySettings() {
   try {
     localStorage.setItem(DISPLAY_KEY, JSON.stringify(display));
+    mirrorDesktopPreference(DISPLAY_KEY);
   } catch (_) {
     // Display preferences are optional; the GUI still works if storage is blocked.
   }
@@ -2426,8 +2485,9 @@ async function playVariationMove(move) {
   }
   const existing = node.children
     .map((id) => variationWorkspace.nodes[id])
-    .find((child) => child?.move_uci === move);
+    .find((child) => child && variationEdge(node.id, child.id).move_uci === move);
   if (existing) {
+    existing.last_parent = node.id;
     variationNodeId = existing.id;
     saveCurrentVariationWorkspace();
     render();
@@ -2544,7 +2604,9 @@ function promoteVariationBranch() {
 function variationPath() {
   const path = [];
   let node = variationNode();
-  while (node) {
+  const visited = new Set();
+  while (node && !visited.has(node.id)) {
+    visited.add(node.id);
     path.unshift(node);
     const parentId = variationParentFor(node);
     node = parentId ? variationWorkspace.nodes[parentId] : null;
@@ -2712,6 +2774,8 @@ function trainerDueItems() {
 }
 
 function trainerFocusedItems(mode = trainerFocusMode) {
+  if (trainerSessionKeys) return trainerItems.map((item, index) => ({ item, index }))
+    .filter(({ item }) => trainerSessionKeys.has(item.key) && Number(item.due_at || 0) <= Date.now());
   const due = trainerDueItems();
   if (mode === "due") return due;
   const source = trainerItems.map((item, index) => ({ item, index }));
@@ -2794,7 +2858,7 @@ function gradeTrainerMove(move) {
   return correct;
 }
 
-async function startTrainer(focus = "due") {
+async function startTrainer(focus = "due", keys = null) {
   if (!trainerItems.length || busy || setupMode || variationMode) return;
   if (reviewMode || retryMode) {
     setStatus("Return to the live game before starting Personal Trainer.", "error");
@@ -2806,9 +2870,11 @@ async function startTrainer(focus = "due") {
     if (!paused) return;
   }
   trainerFocusMode = focus;
+  trainerSessionKeys = keys ? new Set(keys) : null;
   if ($("trainerFocusSelect")) $("trainerFocusSelect").value = focus;
   const focused = trainerFocusedItems(focus);
-  const target = focused[0]?.index ?? 0;
+  if (!focused.length) { setStatus("No positions due in this training selection.", "success"); return; }
+  const target = focused[0].index;
   trainerSessionSolved = 0;
   trainerSessionStreak = 0;
   await loadTrainerItem(target);
@@ -2874,6 +2940,7 @@ function trainerHint() {
 }
 
 async function exitTrainer(resumeGame = true) {
+  trainerSessionKeys = null;
   trainerMode = false;
   trainerSnapshot = null;
   trainerItemIndex = -1;
@@ -3012,7 +3079,7 @@ function renderWeaknessProfile() {
     .forEach(([motif, count]) => {
       const row = document.createElement("div");
       row.className = "weakness-row motif-weakness-row";
-      row.innerHTML = `<strong>${capitalize(motif)}</strong><span class="weakness-bar"><i style="width:${Math.min(100, count * 20)}%"></i></span><span>${count}</span>`;
+      row.innerHTML = `<strong>${escapeHtml(capitalize(motif))}</strong><span class="weakness-bar"><i style="width:${Math.min(100, count * 20)}%"></i></span><span>${count}</span>`;
       target.appendChild(row);
     });
 }
@@ -3350,6 +3417,7 @@ function clearTransientUiForReplacement() {
   startupRecovery = null;
   try {
     localStorage.removeItem(RECOVERY_KEY);
+    mirrorDesktopPreference(RECOVERY_KEY);
   } catch (_) {
     // A successful replacement remains valid even if browser storage is unavailable.
   }
@@ -3685,7 +3753,12 @@ async function downloadBlob(blob, filename) {
 function workspaceBackupPayload() {
   return {
     format: "FunChessEngine.WorkspaceBackup",
-    version: 1,
+    version: 2,
+    session_goals: sessionGoals,
+    calibration_history: calibrationHistory,
+    external_comparisons: externalCompareHistory,
+    regression_history: regressionHistory,
+    current_game: state ? gameSnapshot() : null,
     created_at: new Date().toISOString(),
     display,
     recent_games: recentGames,
@@ -3705,7 +3778,8 @@ function workspaceBackupPayload() {
 }
 
 function validateWorkspaceBackup(payload) {
-  if (payload?.format !== "FunChessEngine.WorkspaceBackup" || payload?.version !== 1) {
+  validateBackupCollections(payload);
+  if (payload?.format !== "FunChessEngine.WorkspaceBackup" || ![1, 2].includes(payload?.version)) {
     throw new Error("This file is not a supported FunChessEngine workspace backup.");
   }
   const games = Array.isArray(payload.recent_games) ? payload.recent_games : [];
@@ -3716,43 +3790,48 @@ function validateWorkspaceBackup(payload) {
   const studies = payload.studies && typeof payload.studies === "object" && !Array.isArray(payload.studies) ? payload.studies : {};
   if (Object.keys(studies).length > 20) throw new Error("Backup contains too many studies.");
   for (const workspace of Object.values(studies)) {
-    if (!workspace?.nodes || Object.keys(workspace.nodes).length > 500) throw new Error("Backup contains an invalid study.");
+    validateStudyGraph(workspace);
   }
   if (Array.isArray(payload.bookmarks) && payload.bookmarks.length > 100) throw new Error("Backup contains too many bookmarks.");
   if (Array.isArray(payload.trainer) && payload.trainer.length > 250) throw new Error("Backup contains too many training positions.");
+  for (const key of ["lessons", "engine_presets", "plugins", "external_engines", "calibration_history", "external_comparisons", "regression_history", "analysis_queue", "benchmarks", "tournaments"]) {
+    if (payload[key] != null && (!Array.isArray(payload[key]) || payload[key].length > 100)) throw new Error(`Invalid backup collection: ${key}.`);
+    if (payload[key]?.some(item => !item || typeof item !== "object" || Array.isArray(item))) throw new Error(`Invalid records in ${key}.`);
+  }
+  if (payload.plugins) payload.plugins = payload.plugins.map(item => ({...validatePluginManifestClient(item), enabled:Boolean(item.enabled)}));
+  if (payload.session_goals && (!payload.session_goals.targets || !payload.session_goals.progress)) throw new Error("Invalid session goals.");
   return payload;
 }
 
 async function backupWorkspace() {
   try {
-    const text = JSON.stringify(workspaceBackupPayload(), null, 2);
-    if (utf8ByteLength(text) > MAX_BACKUP_BYTES) throw new Error("Workspace backup exceeds the 8 MB local export limit.");
-    const filename = `FunChessEngine-backup-${new Date().toISOString().slice(0, 10)}.fce`;
-    const desktop = desktopApi();
-    if (desktop?.saveBundle) {
-      const saved = await desktop.saveBundle(filename, text);
-      if (!saved) return;
-    } else {
-      await downloadBlob(new Blob([text], { type: "application/json;charset=utf-8" }), filename);
-    }
+    await hydrateDurableMetadata();
+    const metadata = workspaceBackupPayload();
+    const bundle = await api("/api/workspace-data", {action:"backup",metadata,include_reference:$("backupReferenceDatabase").checked});
+    const link = document.createElement("a");
+    link.href = `/api/workspace-download?token=${encodeURIComponent(bundle.token)}`;
+    link.download = "FunChessEngine-workspace.fce.zip";
+    document.body.append(link); link.click(); link.remove();
     setStatus("Workspace backup saved.", "success");
   } catch (error) {
     setStatus(error.message, "error");
   }
 }
 
-async function restoreWorkspaceText(text) {
+async function restoreWorkspaceText(text, beforeApply = null) {
   try {
     const raw = String(text || "");
-    if (utf8ByteLength(raw) > MAX_BACKUP_BYTES) throw new Error("Workspace backup exceeds the 8 MB restore limit.");
+    if (utf8ByteLength(raw) > MAX_BACKUP_BYTES) throw new Error("Workspace backup exceeds the 16 MB restore limit.");
     const payload = validateWorkspaceBackup(JSON.parse(raw));
     const confirmed = await confirmAction(
       "Restore workspace backup?",
-      "This replaces your local library, studies, bookmarks, training data, annotations, and appearance settings. The current live game is not replaced.",
+      "This replaces the included library, book, studies, training, histories and settings. A saved live game is restored paused. Excluded databases are kept.",
       "Restore backup",
       true,
     );
     if (!confirmed) return false;
+    if (beforeApply) await beforeApply();
+    if (payload.current_game && !beforeApply) setState(await api("/api/load-game", {...payload.current_game, paused:true}));
     recentGames = payload.recent_games || [];
     savedVariationWorkspaces = payload.studies || {};
     positionBookmarks = Array.isArray(payload.bookmarks) ? payload.bookmarks : [];
@@ -3765,12 +3844,18 @@ async function restoreWorkspaceText(text) {
     enginePresets = Array.isArray(payload.engine_presets) ? payload.engine_presets.slice(0, 30) : [];
     pluginManifests = Array.isArray(payload.plugins) ? payload.plugins.slice(0, 50) : [];
     externalEngines = Array.isArray(payload.external_engines) ? payload.external_engines.slice(0, 12) : [];
+    calibrationHistory = payload.calibration_history || [];
+    externalCompareHistory = payload.external_comparisons || [];
+    regressionHistory = payload.regression_history || [];
+    if (payload.session_goals) { sessionGoals = payload.session_goals; saveSessionGoals(); }
+    saveCalibrationHistory(); saveExternalCompareHistory(); saveRegressionHistory();
     positionAnalysisCache.clear();
     for (const entry of Array.isArray(payload.position_cache) ? payload.position_cache.slice(-30) : []) {
       if (Array.isArray(entry) && typeof entry[0] === "string" && entry[1]) positionAnalysisCache.set(entry[0], entry[1]);
     }
     try {
       localStorage.setItem(DISPLAY_KEY, JSON.stringify(payload.display || DISPLAY_DEFAULTS));
+      mirrorDesktopPreference(DISPLAY_KEY);
     } catch (_) {}
     display = loadDisplaySettings();
     saveRecentGames();
@@ -3799,6 +3884,7 @@ async function restoreWorkspaceText(text) {
     renderEnginePresets();
     renderPlugins();
     renderExternalEngines();
+    await Promise.all([...durableWriteChains.values()]);
     setStatus("Workspace restored from backup.", "success");
     return true;
   } catch (error) {
@@ -3808,13 +3894,7 @@ async function restoreWorkspaceText(text) {
 }
 
 async function restoreWorkspace() {
-  const desktop = desktopApi();
-  if (desktop?.openBundle) {
-    const text = await desktop.openBundle();
-    if (text) await restoreWorkspaceText(text);
-  } else {
-    $("restoreWorkspaceInput").click();
-  }
+  $("restoreWorkspaceInput").click();
 }
 
 async function copyShareText() {
@@ -4044,7 +4124,11 @@ function renderPlugins() {
     const row = document.createElement("div");
     row.className = "compact-list-row static-row";
     const info = document.createElement("div");
-    info.innerHTML = `<strong>${plugin.name}</strong><span>${plugin.kind} · v${plugin.version} · ${(plugin.items || []).length} items</span>`;
+    const name = document.createElement("strong");
+    name.textContent = plugin.name;
+    const description = document.createElement("span");
+    description.textContent = `${plugin.kind} · v${plugin.version} · ${(plugin.items || []).length} items`;
+    info.append(name, description);
     const toggle = document.createElement("button");
     toggle.className = "secondary compact";
     toggle.textContent = plugin.enabled ? "Disable" : "Enable";
@@ -4153,7 +4237,10 @@ function showOnboarding(force = false) {
 }
 
 function closeOnboarding() {
-  try { localStorage.setItem(ONBOARDING_KEY, "done"); } catch (_) {}
+  try {
+    localStorage.setItem(ONBOARDING_KEY, "done");
+    if (globalThis.engineLabDesktop?.writeMetadata) void globalThis.engineLabDesktop.writeMetadata(ONBOARDING_KEY, "done").catch(reportPersistenceError);
+  } catch (_) {}
   if ($("onboardingDialog").open) $("onboardingDialog").close();
 }
 
@@ -4747,14 +4834,17 @@ function liveClockMs(side) {
   if (!state) return 0;
   const key = side === "white" ? "white_ms" : "black_ms";
   let remaining = Number(state[key] || 0);
-  if (!state.game_over && !state.paused && state.turn === side) {
-    remaining -= performance.now() - clockAnchorMs;
+  if (!state.game_over && !state.paused) {
+    const active = Number(state[state.turn === "white" ? "white_ms" : "black_ms"] || 0);
+    const elapsed = Math.min(Math.max(0, active), Math.max(0, performance.now() - clockAnchorMs));
+    if (state.turn === side) remaining -= elapsed;
+    else if (state.clock_mode === "hourglass") remaining += elapsed;
   }
   return Math.max(0, remaining);
 }
 
 function recordedClockText(value) {
-  return Number.isFinite(Number(value)) ? clock(Number(value)) : "—";
+  return value != null && Number.isFinite(Number(value)) ? clock(Number(value)) : "—";
 }
 
 function renderClocks() {
@@ -4927,6 +5017,11 @@ function render() {
   renderEnginePresets();
   renderPlugins();
   renderExternalEngines();
+  renderAdvancedTournament();
+  renderWorkstationHistory();
+  renderExternalComparisonHistory();
+  renderCalibrationEngines();
+  renderSessionGoals();
   renderLanStatus();
   renderAnalysisQueue();
   renderTournament();
@@ -5132,7 +5227,7 @@ function renderGameQualityTimeline() {
     button.className = `quality-timeline-row grade-${String(row.classification || "").toLowerCase()}`;
     const think = approximateThinkMsForPly(Number(row.ply || 0));
     const motif = Array.isArray(row.motifs) && row.motifs.length ? row.motifs.slice(0, 2).join(", ") : "no motif";
-    button.innerHTML = `<strong>${row.ply}. ${row.played_san || row.played_uci || "Move"}</strong><span>${Number(row.cpl || 0)} CPL · ${capitalize(row.phase || "middlegame")} · ${motif}${think === null ? "" : ` · ~${(think / 1000).toFixed(1)}s`}</span><i style="--loss:${Math.min(100, Math.max(3, Number(row.cpl || 0) / 4))}%"></i>`;
+    button.innerHTML = `<strong>${escapeHtml(row.ply)}. ${escapeHtml(row.played_san || row.played_uci || "Move")}</strong><span>${Number(row.cpl || 0)} CPL · ${escapeHtml(capitalize(row.phase || "middlegame"))} · ${escapeHtml(motif)}${think === null ? "" : ` · ~${(think / 1000).toFixed(1)}s`}</span><i style="--loss:${Math.min(100, Math.max(3, Number(row.cpl || 0) / 4))}%"></i>`;
     button.title = `Review ply ${row.ply}: ${row.classification || "Move"}`;
     button.addEventListener("click", () => enterReviewMode(Number(row.ply)));
     target.appendChild(button);
@@ -5155,7 +5250,7 @@ async function refreshMoveAlternatives() {
     if (insight) {
       const played = document.createElement("div");
       played.className = "prep-row alternatives-played";
-      played.innerHTML = `<strong>Played · ${insight.played_san || insight.played_uci}</strong><span>${Number(insight.cpl || 0)} CPL · ${richMoveExplanation(insight)}</span>`;
+      played.innerHTML = `<strong>Played · ${escapeHtml(insight.played_san || insight.played_uci)}</strong><span>${Number(insight.cpl || 0)} CPL · ${escapeHtml(richMoveExplanation(insight))}</span>`;
       target.appendChild(played);
     }
     for (const [index, line] of lines.entries()) {
@@ -5174,12 +5269,12 @@ async function refreshMoveAlternatives() {
       }
       const row = document.createElement("div");
       row.className = "prep-row alternative-row";
-      row.innerHTML = `<strong>${index === 0 ? "Best" : `Alternative ${index}`} · ${line.san || line.move}</strong><span>${scoreText(line.score || 0)} · ${motifText} · ${planText}</span>`;
+      row.innerHTML = `<strong>${index === 0 ? "Best" : `Alternative ${index}`} · ${escapeHtml(line.san || line.move)}</strong><span>${scoreText(line.score || 0)} · ${escapeHtml(motifText)} · ${escapeHtml(planText)}</span>`;
       target.appendChild(row);
     }
     if (!lines.length) target.innerHTML = '<p class="hint">No candidate lines are available for this position.</p>';
   } catch (error) {
-    target.innerHTML = `<p class="hint">${error.message}</p>`;
+    target.innerHTML = `<p class="hint">${escapeHtml(error.message)}</p>`;
   }
 }
 
@@ -5577,7 +5672,8 @@ function currentMovePrefix() {
   if (!state) return [];
   if (variationMode && variationWorkspace) {
     const base = (state.moves_uci || []).slice(0, variationWorkspace.origin_ply || 0);
-    const branch = variationPath().slice(1).map((node) => node.move_uci).filter(Boolean);
+    const path = variationPath();
+    const branch = path.slice(1).map((node, index) => variationEdge(path[index].id, node.id).move_uci).filter(Boolean);
     return [...base, ...branch];
   }
   const ply = reviewMode ? Number(reviewSnapshot?.ply || 0) : (state.moves_uci?.length || 0);
@@ -5800,7 +5896,7 @@ async function searchOpeningDatabase() {
     });
     if (!games.length) target.innerHTML = '<p class="hint">No indexed reference games match these filters.</p>';
   } catch (error) {
-    target.innerHTML = `<p class="hint">${error.message}</p>`;
+    target.innerHTML = `<p class="hint">${escapeHtml(error.message)}</p>`;
   }
 }
 
@@ -5831,7 +5927,7 @@ async function exploreOpeningDatabase() {
     });
     if (!moves.length) target.innerHTML = '<p class="hint">No indexed reference games contain this position.</p>';
   } catch (error) {
-    target.innerHTML = `<p class="hint">${error.message}</p>`;
+    target.innerHTML = `<p class="hint">${escapeHtml(error.message)}</p>`;
   }
 }
 
@@ -5917,7 +6013,7 @@ function renderRepertoireGaps() {
   rows.forEach((entry) => {
     const row = document.createElement("div");
     row.className = "prep-row";
-    row.innerHTML = `<strong>${entry.played}</strong><span>${entry.count} departure${entry.count === 1 ? "" : "s"} · avg ${Math.round(entry.cpl / entry.count)} CPL · prepare ${entry.best}</span>`;
+    row.innerHTML = `<strong>${escapeHtml(entry.played)}</strong><span>${entry.count} departure${entry.count === 1 ? "" : "s"} · avg ${Math.round(entry.cpl / entry.count)} CPL · prepare ${escapeHtml(entry.best)}</span>`;
     target.appendChild(row);
   });
 }
@@ -5973,7 +6069,7 @@ function searchSimilarGames() {
   matches.slice(0, 10).forEach((match) => {
     const button = document.createElement("button");
     button.className = "compact-list-row";
-    button.innerHTML = `<strong>${Math.round(match.score * 100)}% similar</strong><span>${match.game.opening?.name || "Saved game"} · ply ${match.ply || 0}</span>`;
+    button.innerHTML = `<strong>${Math.round(match.score * 100)}% similar</strong><span>${escapeHtml(match.game.opening?.name || "Saved game")} · ply ${match.ply || 0}</span>`;
     button.addEventListener("click", async () => {
       await openRecentGame(match.gameIndex);
       await enterReviewMode(Number(match.ply || 0));
@@ -6055,7 +6151,7 @@ function renderStrategicInsights() {
       "Piece activity",
       `W best ${data.piece_activity?.white?.best || "—"}/worst ${data.piece_activity?.white?.worst || "—"} · B best ${data.piece_activity?.black?.best || "—"}/worst ${data.piece_activity?.black?.worst || "—"}`,
     );
-    appendFeature("Structures", (data.structure_tags || []).join(" · ") || "none detected");
+    appendFeature("Heuristic structures", (data.structure_tags || []).join(" · ") || "none detected");
   }
   motifs.innerHTML = "";
   const ply = reviewMode ? Number(reviewSnapshot?.ply || 0) : Number(state?.moves_uci?.length || 0);
@@ -6065,6 +6161,7 @@ function renderStrategicInsights() {
     const chip = document.createElement("span");
     chip.className = "tag-chip";
     chip.textContent = label;
+    chip.title = "Heuristic pattern label; verify the continuation before using it as a tactic.";
     motifs.appendChild(chip);
   });
   if (!labels.length) {
@@ -6097,7 +6194,7 @@ async function probeTablebase() {
   target.innerHTML = '<p class="hint">Probing local tablebases…</p>';
   try {
     const result = await api("/api/tablebase", { fen, path: $("syzygyPathInput").value.trim() });
-    if (!result.available) target.innerHTML = `<p class="hint">${result.reason || "Tablebase directory unavailable."}</p>`;
+    if (!result.available) target.innerHTML = `<p class="hint">${escapeHtml(result.reason || "Tablebase directory unavailable.")}</p>`;
     else if (!result.eligible) target.innerHTML = `<p class="hint">${result.piece_count} pieces · exact Syzygy probing starts at seven pieces or fewer.</p>`;
     else if (result.missing) target.innerHTML = `<p class="hint">This position is not present in the selected tablebase set.</p>`;
     else {
@@ -6110,6 +6207,10 @@ async function probeTablebase() {
       meta.textContent = `WDL ${result.wdl}${result.dtz == null ? "" : ` · DTZ ${result.dtz}`}`;
       summary.append(title, meta);
       target.appendChild(summary);
+      const policy = document.createElement("p");
+      policy.className = "hint";
+      policy.textContent = "Moves preserve WDL. DTZ and the remaining 50-move clock are not used to choose a perfect-play move.";
+      target.appendChild(policy);
       if (result.only_winning_move) {
         const only = document.createElement("p");
         only.className = "tablebase-only-move";
@@ -6129,7 +6230,7 @@ async function probeTablebase() {
       });
     }
   } catch (error) {
-    target.innerHTML = `<p class="hint">${error.message}</p>`;
+    target.innerHTML = `<p class="hint">${escapeHtml(error.message)}</p>`;
   }
 }
 
@@ -6180,6 +6281,19 @@ function selectExternalEngine() {
   }
 }
 
+function externalScoreText(line) {
+      if (line?.mate != null && Number.isFinite(Number(line.mate))) return `M${line.mate}`;
+      if (line?.score_cp != null && Number.isFinite(Number(line.score_cp))) {
+        const value = Number(line.score_cp) / 100;
+        return `${value >= 0 ? "+" : ""}${value.toFixed(2)}`;
+      }
+      if (line?.score != null && Number.isFinite(Number(line.score))) {
+        const value = Number(line.score) / 100;
+        return `${value >= 0 ? "+" : ""}${value.toFixed(2)}`;
+      }
+      return "—";
+}
+
 async function compareExternalEngine() {
   const executable = $("externalEnginePath").value.trim();
   if (!executable) {
@@ -6200,18 +6314,6 @@ async function compareExternalEngine() {
       ? "Both engines chose the same top move."
       : `Disagreement: FunChessEngine chose ${result.funchess?.san || result.funchess?.move || "—"}; ${result.external?.name || "external UCI"} chose ${result.external?.san || result.external?.move || "—"}.`;
     target.appendChild(verdict);
-    const scoreText = (line) => {
-      if (Number.isFinite(Number(line?.mate))) return `M${line.mate}`;
-      if (Number.isFinite(Number(line?.score_cp))) {
-        const value = Number(line.score_cp) / 100;
-        return `${value >= 0 ? "+" : ""}${value.toFixed(2)}`;
-      }
-      if (Number.isFinite(Number(line?.score))) {
-        const value = Number(line.score) / 100;
-        return `${value >= 0 ? "+" : ""}${value.toFixed(2)}`;
-      }
-      return "—";
-    };
     const addEngineLines = (name, rows, meta = "") => {
       const heading = document.createElement("div");
       heading.className = "setting-heading external-engine-heading";
@@ -6230,7 +6332,7 @@ async function compareExternalEngine() {
         title.textContent = `${index + 1}. ${line.san || line.move || "—"}`;
         const text = document.createElement("span");
         const pv = (line.pv_san || line.pv || []).slice(0, 5).join(" ");
-        text.textContent = `${scoreText(line)}${line.depth == null ? "" : ` · d${line.depth}`}${pv ? ` · ${pv}` : ""}`;
+        text.textContent = `${externalScoreText(line)}${line.depth == null ? "" : ` · d${line.depth}`}${pv ? ` · ${pv}` : ""}`;
         row.append(title, text);
         target.appendChild(row);
       });
@@ -6245,6 +6347,9 @@ async function compareExternalEngine() {
       result.external?.lines,
       `${result.external?.elapsed_ms ?? 0} ms`,
     );
+    externalCompareHistory.unshift({...result, created_at:new Date().toISOString()});
+    saveExternalCompareHistory();
+    renderExternalComparisonHistory();
     const saved = externalEngines.find((engine) => engine.path === executable);
     if (saved && result.external?.name && saved.name !== result.external.name) {
       saved.name = String(result.external.name).slice(0, 80);
@@ -6253,7 +6358,7 @@ async function compareExternalEngine() {
       renderExternalEngines();
     }
   } catch (error) {
-    target.innerHTML = `<p class="hint">${error.message}</p>`;
+    target.innerHTML = `<p class="hint">${escapeHtml(error.message)}</p>`;
   }
 }
 
@@ -6351,7 +6456,7 @@ function renderPerformanceHistory() {
     const score = entry.scores.length
       ? `${Math.round(entry.scores.reduce((sum, value) => sum + value, 0) / entry.scores.length * 100)}%`
       : "—";
-    cell.innerHTML = `<span>${name}</span><strong>${entry.games} · ${score}</strong>`;
+    cell.innerHTML = `<span>${escapeHtml(name)}</span><strong>${escapeHtml(entry.games)} · ${escapeHtml(score)}</strong>`;
     target.appendChild(cell);
   }
   const points = recentGames
@@ -6398,12 +6503,13 @@ function renderCalibrationEngines() {
   if ([...select.options].some((option) => option.value === current)) select.value = current;
   const latest = calibrationHistory[0];
   if (latest && $("calibrationResult")) {
-    $("calibrationResult").innerHTML = `<div class="prep-row"><strong>~${latest.estimated_elo}</strong><span>${latest.games} games vs ~${latest.opponent_elo} · ${(Number(latest.score || 0) * 100).toFixed(0)}% score · interval ~${latest.elo_interval?.[0] ?? "—"}–${latest.elo_interval?.[1] ?? "—"}</span></div>`;
+    $("calibrationResult").innerHTML = `<div class="prep-row"><strong>~${escapeHtml(latest.estimated_elo)}</strong><span>${escapeHtml(latest.games)} games vs ~${escapeHtml(latest.opponent_elo)} · ${(Number(latest.score || 0) * 100).toFixed(0)}% score · interval ~${escapeHtml(latest.elo_interval?.[0] ?? "—")}–${escapeHtml(latest.elo_interval?.[1] ?? "—")}</span></div>`;
   }
 }
 
 async function runMeasuredCalibration() {
-  const index = Number($("calibrationEngineSelect")?.value);
+  const selectedEngine = $("calibrationEngineSelect")?.value;
+  const index = selectedEngine === "" ? NaN : Number(selectedEngine);
   const engine = Number.isInteger(index) ? externalEngines[index] : null;
   if (!engine?.path) {
     setStatus("Save and select an external UCI engine before running calibration.", "error");
@@ -6413,7 +6519,7 @@ async function runMeasuredCalibration() {
   const games = Math.max(2, Math.min(12, Number($("calibrationGames")?.value) || 4));
   setStatus(`Running ${games} measured calibration games against ${engine.name || "the selected UCI engine"}…`, "loading");
   try {
-    const result = await api("/api/uci-calibration", {
+    const result = await runBackgroundJob("calibration", {
       executable: engine.path,
       opponent_elo: opponentElo,
       games,
@@ -6423,14 +6529,6 @@ async function runMeasuredCalibration() {
     calibrationHistory.unshift(record);
     saveCalibrationHistory();
     renderCalibrationEngines();
-    const targets = [[20, 800], [40, 1200], [60, 1600], [70, 1900], [85, 2200], [100, 2600]];
-    const [skill] = targets.reduce((best, item) => (
-      Math.abs(item[1] - Number(result.estimated_elo || 1600)) < Math.abs(best[1] - Number(result.estimated_elo || 1600)) ? item : best
-    ), targets[0]);
-    const config = await api("/api/engine-config", { profile: engineProfileForSkill(skill), skill });
-    state.engine_profile = config.profile;
-    state.engine_skill = config.skill;
-    renderEngineStrength();
     setStatus(`Measured local estimate ~${result.estimated_elo} from ${result.games} calibration games.`, "success");
   } catch (error) {
     setStatus(error.message, "error");
@@ -6577,7 +6675,7 @@ function startRepertoireTraining() {
     .filter(({ item }) => item.repertoire_key === key && item.repertoire_color === color && Number(item.due_at || 0) <= Date.now());
   if (due.length) {
     trainerFocusMode = "opening";
-    startTrainer("opening");
+    void startTrainer("opening", due.map(({ item }) => item.key));
   }
   renderRepertoireTrainer();
   setStatus(`Prepared ${due.length} due ${color} repertoire line${due.length === 1 ? "" : "s"}${added ? ` · ${added} newly added` : ""}.`, "success");
@@ -6774,7 +6872,7 @@ async function refreshOpeningBook() {
       const line = document.createElement("div");
       line.className = "compact-list-row static-row";
       const info = document.createElement("div");
-      info.innerHTML = `<strong>${row.san || row.move}</strong><span>weight ${row.weight} · learn ${row.learn} · ${row.source || "local"}</span>`;
+      info.innerHTML = `<strong>${escapeHtml(row.san || row.move)}</strong><span>weight ${escapeHtml(row.weight)} · learn ${escapeHtml(row.learn)} · ${escapeHtml(row.source || "local")}</span>`;
       const remove = document.createElement("button");
       remove.type = "button";
       remove.className = "text-button compact";
@@ -6788,7 +6886,7 @@ async function refreshOpeningBook() {
     });
     if (!(result.moves || []).length) target.innerHTML = '<p class="hint">No local book moves saved for this position.</p>';
   } catch (error) {
-    $("openingBookMoves").innerHTML = `<p class="hint">${error.message}</p>`;
+    $("openingBookMoves").innerHTML = `<p class="hint">${escapeHtml(error.message)}</p>`;
   }
 }
 
@@ -6888,7 +6986,7 @@ function renderLessons() {
   lessons.slice(0, 8).forEach((lesson) => {
     const row = document.createElement("div");
     row.className = "compact-list-row static-row";
-    row.innerHTML = `<strong>${lesson.title}</strong><span>${lesson.cards?.length || 0} cards</span>`;
+    row.innerHTML = `<strong>${escapeHtml(lesson.title)}</strong><span>${lesson.cards?.length || 0} cards</span>`;
     target.appendChild(row);
   });
 }
@@ -7357,7 +7455,7 @@ function renderTournament() {
       ? `${latest.white_wins}-${latest.draws}-${latest.black_wins}`
       : "Not running";
     $("tournamentProgress").innerHTML = latest
-      ? `<p><strong>Last series:</strong> ${latest.games} games · White ${latest.white_skill} vs Black ${latest.black_skill} · ${latest.white_wins}W ${latest.draws}D ${latest.black_wins}B</p>`
+      ? `<p><strong>Last series:</strong> ${Number(latest.games)} games · White ${Number(latest.white_skill)} vs Black ${Number(latest.black_skill)} · ${Number(latest.white_wins)}W ${Number(latest.draws)}D ${Number(latest.black_wins)}B</p>`
       : '<p class="hint">No match series has been run.</p>';
     $("startTournamentBtn").disabled = busy;
     $("stopTournamentBtn").disabled = true;
@@ -7962,6 +8060,7 @@ async function activateTab(button, focus = false) {
     ensureReviewSeries().then(renderReviewPanel).catch((error) => setStatus(error.message, "error"));
   }
   if (nextTab === "engine") scheduleAutoPositionAnalysis();
+  if (nextTab === "position") void refreshOpeningBook();
 }
 
 tabButtons.forEach((button, index) => {
@@ -8091,7 +8190,12 @@ $("bulkPgnInput").addEventListener("change", async (event) => {
   }
 });
 $("analyzeLibraryBtn").addEventListener("click", runLibraryAnalysisQueue);
-$("cancelQueueBtn").addEventListener("click", () => { analysisQueueCancel = true; });
+$("cancelQueueBtn").addEventListener("click", () => {
+  analysisQueueCancel = true;
+  for (const job of workstationJobs.values()) {
+    if (job.kind === "analyze-pgn" && job.status === "running") void api("/api/jobs/cancel", {id:job.id}).catch(error=>setStatus(error.message,"error"));
+  }
+});
 $("searchPositionBtn").addEventListener("click", renderPositionSearch);
 $("searchSimilarGamesBtn").addEventListener("click", searchSimilarGames);
 $("openingDatabaseImportBtn").addEventListener("click", () => $("openingDatabaseInput").click());
@@ -8344,7 +8448,14 @@ $("startRepertoireTrainerBtn").addEventListener("click", startRepertoireTraining
 $("addFlashcardBtn").addEventListener("click", () => addCurrentFlashcard().catch((error) => setStatus(error.message, "error")));
 $("saveLessonBtn").addEventListener("click", saveLesson);
 $("studyFlashcardsBtn").addEventListener("click", studyDueFlashcards);
-$("calibrateEngineBtn").addEventListener("click", () => calibrateEngineFromHistory().catch((error) => setStatus(error.message, "error")));
+$("calibrateEngineBtn").addEventListener("click", runMeasuredCalibration);
+$("buildRepertoireBtn").addEventListener("click", () => buildAutomaticRepertoire().catch((error) => setStatus(error.message, "error")));
+$("generateLibraryPuzzlesBtn").addEventListener("click", () => generateLibraryPuzzles().catch((error) => setStatus(error.message, "error")));
+$("saveSessionGoalsBtn").addEventListener("click", saveSessionGoalTargets);
+$("reviewNextLossBtn").addEventListener("click", () => reviewNextLoss().catch((error) => setStatus(error.message, "error")));
+$("refreshAlternativesBtn").addEventListener("click", () => refreshMoveAlternatives().catch((error) => setStatus(error.message, "error")));
+$("addOpeningBookMoveBtn").addEventListener("click", () => addCurrentOpeningBookMove().catch((error) => setStatus(error.message, "error")));
+$("importPolyglotBtn").addEventListener("click", () => importPolyglotBook().catch((error) => setStatus(error.message, "error")));
 $("backupWorkspaceBtn").addEventListener("click", backupWorkspace);
 $("restoreWorkspaceBtn").addEventListener("click", restoreWorkspace);
 $("restoreWorkspaceInput").addEventListener("change", async (event) => {
@@ -8352,8 +8463,9 @@ $("restoreWorkspaceInput").addEventListener("change", async (event) => {
   event.target.value = "";
   if (!file) return;
   try {
-    assertBrowserFileSize(file, MAX_BACKUP_BYTES, "Workspace backup");
-    await restoreWorkspaceText(await file.text());
+    assertBrowserFileSize(file, /\.zip$/i.test(file.name) ? 1024 * 1024 * 1024 : MAX_BACKUP_BYTES, "Workspace backup");
+    if (/\.zip$/i.test(file.name)) await restoreWorkspaceBundle(file);
+    else await restoreWorkspaceText(await file.text());
   } catch (error) {
     setStatus(error.message, "error");
   }
@@ -8652,10 +8764,12 @@ async function reconnectBackend() {
 
 $("retryConnectionBtn").addEventListener("click", reconnectBackend);
 
+bindWorkstationWorkflows();
 applyDisplaySettings(false);
 orientForHuman();
-void hydrateDurableMetadata();
+const storageReady = hydrateDesktopPreferences().then(hydrateDurableMetadata);
 api("/api/state").then(async (value) => {
+  await storageReady;
   setState(value);
   if (!state.game_over && !state.paused) {
     setState(await api("/api/pause", { paused: true }));
@@ -8665,6 +8779,7 @@ api("/api/state").then(async (value) => {
   syncTimeControlsFromState();
   render();
   void refreshOpeningDatabaseStatus();
+  void recoverWorkstationJobs();
   setLauncherVisible(true);
   setEngineStatus("Engine ready");
   setTimeout(() => showOnboarding(false), 250);

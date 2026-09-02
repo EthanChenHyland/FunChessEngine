@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-UV := $(shell command -v uv 2>/dev/null || printf '%s' '/Users/ethius/AI-Workspace/runtimes/uv/bin/uv')
+UV ?= uv
 PYTHON_VERSION := 3.12.14
 
 .PHONY: setup check-python play arena ab benchmark uci gui desktop desktop-dev desktop-build test zip verify-zip gate release-gate release-build
@@ -41,6 +41,7 @@ desktop-build:
 
 test:
 	$(UV) run python -m unittest discover -v
+	node --test tests/frontend-behavior.cjs
 
 zip:
 	$(UV) run python -m harness.package
@@ -52,10 +53,12 @@ gate: check-python
 	$(UV) run ruff check .
 	$(UV) run mypy
 	$(UV) run python -m unittest discover -v
+	node --test tests/frontend-behavior.cjs
 	$(UV) run python -m harness.arena --opponent baselines/random --games 2 --base-ms 5000
 
 release-gate: gate verify-zip
 	node --check gui/static/app.js
+	node --check gui/static/workflows.js
 	cd desktop && npm run check
 	cd desktop && npm audit
 	cd desktop && npm run smoke:ui

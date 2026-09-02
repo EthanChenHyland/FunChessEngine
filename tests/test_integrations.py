@@ -1,15 +1,35 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import patch
 
 import chess
 
 from integrations.uci_client import ExternalUCIEngine, calibration_score, validate_engine_path
 from plugins.manifest import validate_manifest
 from reporting.generator import annotated_pgn, html_report
+
+
+@contextmanager
+def python_uci(script: Path) -> Iterator[ExternalUCIEngine]:
+    # Exercise real pipes on every OS without relying on POSIX shebang execution.
+    original = subprocess.Popen
+
+    def launch(command: list[str], **kwargs: object) -> subprocess.Popen[bytes]:
+        return original([sys.executable, *command], **kwargs)  # type: ignore[call-overload,no-any-return]
+
+    with (
+        patch("integrations.uci_client.subprocess.Popen", side_effect=launch),
+        ExternalUCIEngine(script) as engine,
+    ):
+        yield engine
 
 
 class OptionalIntegrationTests(unittest.TestCase):
@@ -33,7 +53,7 @@ class OptionalIntegrationTests(unittest.TestCase):
             )
             script.chmod(0o755)
             self.assertEqual(validate_engine_path(script), script.resolve())
-            with ExternalUCIEngine(script) as engine:
+            with python_uci(script) as engine:
                 result = engine.bestmove(chess.STARTING_FEN, movetime_ms=20)
             self.assertEqual(result.move, "e2e4")
 
@@ -83,7 +103,7 @@ class OptionalIntegrationTests(unittest.TestCase):
                 encoding="utf-8",
             )
             script.chmod(0o755)
-            with ExternalUCIEngine(script) as engine:
+            with python_uci(script) as engine:
                 result = engine.analyze(chess.STARTING_FEN, movetime_ms=20, multipv=3)
                 self.assertEqual(engine.engine_name, "Fake MultiPV")
                 self.assertEqual(engine.options["MultiPV"].maximum, 4)
@@ -131,7 +151,7 @@ class OptionalIntegrationTests(unittest.TestCase):
         )
         self.assertNotIn("<script>", document)
         self.assertIn("&lt;script&gt;", document)
-        pgn = "[Result \"*\"]\n\n1. e4 e5 *\n"
+        pgn = '[Result "*"]\n\n1. e4 e5 *\n'
         annotated = annotated_pgn(
             pgn,
             [{"ply": 1, "classification": "Mistake", "cpl": 80, "best_san": "d4"}],

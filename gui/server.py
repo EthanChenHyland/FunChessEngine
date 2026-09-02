@@ -20,6 +20,7 @@ import math
 import os
 import secrets
 import socket
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -39,6 +40,9 @@ import chess.pgn
 import chess.syzygy
 
 import agent
+from gui import workspace as workspace_files
+from gui.imports import import_reference_file
+from gui.jobs import JOBS, JobCancelled, progress, run_process, worker_slot
 from harness import benchmark as benchmark_harness
 from harness.referee import FAILED_TERMINATIONS, play_match
 from harness.regression import compare_runs as compare_regression_runs
@@ -58,7 +62,7 @@ else:
     ROOT = Path(__file__).resolve().parent
 DEFAULT_CLOCK_MS = 120_000
 DEFAULT_INCREMENT_MS = 500
-MAX_API_BODY_BYTES = 4 * 1024 * 1024
+MAX_API_BODY_BYTES = 20 * 1024 * 1024
 OPENING_DATA_PATH = ROOT / "openings.json"
 DEFAULT_SYZYGY_PATH = os.environ.get("FUNCHESS_SYZYGY_PATH", "").strip()
 LAN_LOCK = threading.RLock()
@@ -305,11 +309,16 @@ def _detect_tactical_motifs(board: chess.Board, move: chess.Move) -> list[str]:
             continue
         for target_square in board.attacks(square):
             target = board.piece_at(target_square)
-            if target is not None and target.color != mover and target.piece_type in {
-                chess.ROOK,
-                chess.QUEEN,
-                chess.KING,
-            }:
+            if (
+                target is not None
+                and target.color != mover
+                and target.piece_type
+                in {
+                    chess.ROOK,
+                    chess.QUEEN,
+                    chess.KING,
+                }
+            ):
                 before_slider_targets.add((square, target_square))
     child = board.copy(stack=False)
     child.push(move)
@@ -349,7 +358,7 @@ def _detect_tactical_motifs(board: chess.Board, move: chess.Move) -> list[str]:
                 (-1, 1),
                 (-1, -1),
             )
-            allowed = directions
+            allowed: tuple[tuple[int, int], ...] = directions
             if moved_piece.piece_type == chess.BISHOP:
                 allowed = directions[4:]
             elif moved_piece.piece_type == chess.ROOK:
@@ -412,11 +421,16 @@ def _detect_tactical_motifs(board: chess.Board, move: chess.Move) -> list[str]:
             continue
         for target_square in child.attacks(square):
             target = child.piece_at(target_square)
-            if target is not None and target.color != mover and target.piece_type in {
-                chess.ROOK,
-                chess.QUEEN,
-                chess.KING,
-            }:
+            if (
+                target is not None
+                and target.color != mover
+                and target.piece_type
+                in {
+                    chess.ROOK,
+                    chess.QUEEN,
+                    chess.KING,
+                }
+            ):
                 after_slider_targets.add((square, target_square))
     if after_slider_targets - before_slider_targets:
         motifs.extend(["discovered attack", "clearance"])
@@ -442,8 +456,10 @@ def _detect_tactical_motifs(board: chess.Board, move: chess.Move) -> list[str]:
             ]
             if newly_loose:
                 motifs.extend(["deflection", "removal of defender"])
-    if child.is_check() and not board.is_capture(move) and any(
-        board.is_capture(candidate) for candidate in board.legal_moves
+    if (
+        child.is_check()
+        and not board.is_capture(move)
+        and any(board.is_capture(candidate) for candidate in board.legal_moves)
     ):
         motifs.append("zwischenzug")
     if child.is_check() and moved_piece is not None:
@@ -506,9 +522,7 @@ def _pawn_structure(board: chess.Board, color: chess.Color) -> dict[str, Any]:
         if not any(adjacent in by_file for adjacent in (file_index - 1, file_index + 1)):
             isolated.append(chess.square_name(square))
     doubled = [
-        chr(ord("a") + file_index)
-        for file_index, squares in by_file.items()
-        if len(squares) > 1
+        chr(ord("a") + file_index) for file_index, squares in by_file.items() if len(squares) > 1
     ]
     occupied_files = sorted(by_file)
     islands = 0
@@ -831,7 +845,7 @@ def _position_insights(board: chess.Board) -> dict[str, Any]:
 
 def _tablebase_probe(fen: str, path: str = "") -> dict[str, Any]:
     tablebase_path = Path(path or DEFAULT_SYZYGY_PATH).expanduser()
-    if not str(tablebase_path) or not tablebase_path.is_dir():
+    if not (path or DEFAULT_SYZYGY_PATH).strip() or not tablebase_path.is_dir():
         return {"available": False, "reason": "Configure a local Syzygy directory first."}
     board = chess.Board(fen)
     if not board.is_valid():
@@ -881,7 +895,7 @@ def _tablebase_probe(fen: str, path: str = "") -> dict[str, Any]:
             "missing": True,
             "reason": str(exc),
         }
-    labels = {-2: "loss", -1: "cursed loss", 0: "draw", 1: "blessed win", 2: "win"}
+    labels = {-2: "loss", -1: "blessed loss", 0: "draw", 1: "cursed win", 2: "win"}
     return {
         "available": True,
         "eligible": True,
@@ -891,6 +905,7 @@ def _tablebase_probe(fen: str, path: str = "") -> dict[str, Any]:
         "dtz": dtz,
         "moves": move_rows,
         "optimal_moves": optimal_moves,
+        "move_policy": "WDL-preserving candidates; not a DTZ/50-move perfect-play policy",
         "only_winning_move": (
             optimal_moves[0]["uci"]
             if wdl > 0 and len(optimal_moves) == 1 and best_wdl > 0
@@ -979,7 +994,8 @@ def _run_analysis_worker(payload: dict[str, Any]) -> None:
         best_uci = agent.get_move(board.fen(), _analysis_time_left_ms(board, budget_ms))
         best_info = agent.LAST_SEARCH_INFO
         best_score_mover = _analysis_score(best_info, board)
-        best_move = chess.Move.from_uci(best_uci)
+        best_move = board.parse_uci(best_uci)
+        best_uci = board.uci(best_move)
         best_san = board.san(best_move) if best_move in board.legal_moves else best_uci
         pv_san = _pv_to_san(board, best_info.pv)
 
@@ -1136,9 +1152,7 @@ def _run_benchmark_worker(payload: dict[str, Any]) -> None:
             "summary": right,
             "depth_delta": float(left["mean_depth"]) - float(right["mean_depth"]),
             "nps_delta": int(left["aggregate_nps"]) - int(right["aggregate_nps"]),
-            "changed_moves": sum(
-                a.move != b.move for a, b in zip(rows, other, strict=True)
-            ),
+            "changed_moves": sum(a.move != b.move for a, b in zip(rows, other, strict=True)),
         }
     print(json.dumps(result, separators=(",", ":")), flush=True)
 
@@ -1293,17 +1307,15 @@ class GameSession:
         self.analysis_error: str | None = None
         self.analysis_budget_ms = 100
         self.analysis_generation = 0
-        self.analysis_process: subprocess.Popen[str] | None = None
+        self.analysis_cancel = threading.Event()
         self.turn_started_ns = time.monotonic_ns()
 
     def _cancel_analysis_locked(self) -> None:
         """Invalidate and stop a local post-game analysis worker if one exists."""
 
         self.analysis_generation += 1
-        process = self.analysis_process
-        self.analysis_process = None
-        if process is not None and process.poll() is None:
-            process.terminate()
+        self.analysis_cancel.set()
+        self.analysis_cancel = threading.Event()
         self.analysis_status = "idle"
         self.analysis_completed = 0
         self.analysis_total = 0
@@ -1591,7 +1603,10 @@ class GameSession:
         if not board.is_valid() or board.is_game_over(claim_draw=True):
             raise ValueError("Engine comparison requires a valid non-terminal position.")
         ours = self.multipv_fen(board.fen(), line_count, budget)
-        with ExternalUCIEngine(executable, timeout_s=max(3.0, budget / 1_000 + 2.0)) as external:
+        with (
+            worker_slot(),
+            ExternalUCIEngine(executable, timeout_s=max(3.0, budget / 1_000 + 2.0)) as external,
+        ):
             external.new_game(chess960=self.chess960)
             theirs = external.analyze(
                 board.fen(),
@@ -1734,7 +1749,7 @@ class GameSession:
         )
         return white - black
 
-    def load_snapshot(self, payload: dict[str, Any]) -> None:
+    def load_snapshot(self, payload: dict[str, Any], *, reset_engine: bool = True) -> None:
         """Restore a game exported by the local Engine Lab."""
 
         initial_fen = str(payload.get("initial_fen", chess.STARTING_FEN))
@@ -1790,7 +1805,8 @@ class GameSession:
 
         with self.lock:
             self._cancel_analysis_locked()
-            agent.reset_game_state()
+            if reset_engine:
+                agent.reset_game_state()
             self.board = board
             self.initial_fen = initial_fen
             self.chess960 = chess960
@@ -1809,9 +1825,7 @@ class GameSession:
             self.delay_ms = max(0, int(payload.get("delay_ms", 0)))
             clock_mode = str(payload.get("clock_mode", "increment")).lower()
             self.clock_mode = (
-                clock_mode
-                if clock_mode in {"increment", "bronstein", "hourglass"}
-                else "increment"
+                clock_mode if clock_mode in {"increment", "bronstein", "hourglass"} else "increment"
             )
             stages_raw = payload.get("time_stages", [])
             self.time_stages = []
@@ -1820,11 +1834,11 @@ class GameSession:
                 for raw in stages_raw[:8]:
                     if not isinstance(raw, dict):
                         continue
-                    moves = max(1, min(500, int(raw.get("moves", 0))))
+                    stage_moves = max(1, min(500, int(raw.get("moves", 0))))
                     add_ms = max(1, min(24 * 60 * 60 * 1_000, int(raw.get("add_ms", 0))))
-                    if moves not in seen_moves:
-                        self.time_stages.append({"moves": moves, "add_ms": add_ms})
-                        seen_moves.add(moves)
+                    if stage_moves not in seen_moves:
+                        self.time_stages.append({"moves": stage_moves, "add_ms": add_ms})
+                        seen_moves.add(stage_moves)
                 self.time_stages.sort(key=lambda item: item["moves"])
             if recorded_initial_raw is None:
                 self.recorded_initial_clocks = (
@@ -1848,9 +1862,7 @@ class GameSession:
             self.last_engine_quiescence_nodes = 0
             self.last_engine_budget_ms = 0
             self.last_engine_pv_changed = False
-            self.history = history if history else [
-                (self.white_ms, self.black_ms) for _ in moves
-            ]
+            self.history = history if history else [(self.white_ms, self.black_ms) for _ in moves]
             if recorded:
                 self.recorded_clocks = recorded
             elif history and self.clock_mode == "increment":
@@ -1870,9 +1882,7 @@ class GameSession:
             manual_result = payload.get("manual_result")
             manual_termination = payload.get("manual_termination")
             self.manual_result = (
-                str(manual_result)
-                if manual_result in {"1-0", "0-1", "1/2-1/2"}
-                else None
+                str(manual_result) if manual_result in {"1-0", "0-1", "1/2-1/2"} else None
             )
             self.manual_termination = (
                 str(manual_termination) if self.manual_result is not None else None
@@ -1956,9 +1966,7 @@ class GameSession:
                 len(board.pieces(piece_type, chess.WHITE))
                 - len(board.pieces(piece_type, chess.BLACK))
             )
-        mobility = 3 * (
-            agent._mobility(board, chess.WHITE) - agent._mobility(board, chess.BLACK)
-        )
+        mobility = 3 * (agent._mobility(board, chess.WHITE) - agent._mobility(board, chess.BLACK))
         king_safety = agent._king_safety(board, chess.WHITE) - agent._king_safety(
             board, chess.BLACK
         )
@@ -2160,36 +2168,22 @@ class GameSession:
             command = [sys.executable, "--analysis-worker"]
         else:
             command = [sys.executable, "-m", "gui.server", "--analysis-worker"]
-        completed = subprocess.run(
+        results: list[dict[str, Any]] = []
+
+        def record(message: dict[str, Any]) -> None:
+            if message.get("type") == "move":
+                results.append(message)
+                progress({"completed": len(results), "total": len(moves)})
+
+        completed = run_process(
             command,
-            input=json.dumps(payload),
-            capture_output=True,
-            text=True,
-            cwd=str(Path(__file__).resolve().parents[1]),
-            timeout=max(20.0, len(moves) * (budget / 1_000 * 5 + 0.35)),
-            check=False,
+            payload,
+            max(20.0, len(moves) * (budget / 1000 * 5 + 0.35)),
+            str(Path(__file__).resolve().parents[1]),
+            on_message=record,
         )
-        messages: list[dict[str, Any]] = []
-        for line in completed.stdout.splitlines():
-            if not line.strip():
-                continue
-            try:
-                message = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise RuntimeError(line.strip()) from exc
-            if isinstance(message, dict):
-                messages.append(message)
-        error = next((item for item in messages if item.get("type") == "error"), None)
-        done = any(item.get("type") == "done" for item in messages)
-        if completed.returncode != 0 or error is not None or not done:
-            detail = (
-                str(error.get("error"))
-                if error is not None
-                else completed.stderr.strip()
-                or "Analysis worker did not complete."
-            )
-            raise RuntimeError(detail)
-        results = [item for item in messages if item.get("type") == "move"]
+        if completed.get("type") != "done":
+            raise RuntimeError("Analysis worker did not complete.")
         return {
             "headers": item["headers"],
             "variant": item["variant"],
@@ -2378,37 +2372,9 @@ class GameSession:
         turn: str,
     ) -> dict[str, Any]:
         worker_budget = int(payload["budget_ms"])
-        if getattr(sys, "frozen", False):
-            command = [sys.executable, "--multipv-worker"]
-        else:
-            command = [sys.executable, "-m", "gui.server", "--multipv-worker"]
-        completed = subprocess.run(
-            command,
-            input=json.dumps(payload),
-            capture_output=True,
-            text=True,
-            cwd=str(Path(__file__).resolve().parents[1]),
-            timeout=max(8.0, worker_budget / 1_000 * 5 + 3),
-            check=False,
+        result = self._run_json_worker(
+            "--multipv-worker", payload, timeout=max(8.0, worker_budget / 1_000 * 5 + 3)
         )
-        if completed.returncode != 0:
-            detail = (
-                completed.stdout.strip()
-                or completed.stderr.strip()
-                or "MultiPV worker failed."
-            )
-            try:
-                message = json.loads(detail.splitlines()[-1])
-                detail = str(message.get("error", detail))
-            except json.JSONDecodeError:
-                pass
-            raise RuntimeError(detail)
-        lines_out = [line for line in completed.stdout.splitlines() if line.strip()]
-        if not lines_out:
-            raise RuntimeError("MultiPV worker returned no result.")
-        result = json.loads(lines_out[-1])
-        if not isinstance(result, dict):
-            raise RuntimeError("MultiPV worker returned an invalid result.")
         result["ply"] = target
         result["total_plies"] = total
         result["turn"] = turn
@@ -2421,33 +2387,7 @@ class GameSession:
             command = [sys.executable, flag]
         else:
             command = [sys.executable, "-m", "gui.server", flag]
-        completed = subprocess.run(
-            command,
-            input=json.dumps(payload),
-            capture_output=True,
-            text=True,
-            cwd=str(Path(__file__).resolve().parents[1]),
-            timeout=timeout,
-            check=False,
-        )
-        output = [line for line in completed.stdout.splitlines() if line.strip()]
-        if completed.returncode != 0 or not output:
-            detail = (
-                output[-1]
-                if output
-                else completed.stderr.strip()
-                or f"Worker {flag} failed without output."
-            )
-            try:
-                message = json.loads(detail)
-                detail = str(message.get("error", detail))
-            except json.JSONDecodeError:
-                pass
-            raise RuntimeError(detail)
-        result = json.loads(output[-1])
-        if not isinstance(result, dict):
-            raise RuntimeError(f"Worker {flag} returned an invalid result.")
-        return result
+        return run_process(command, payload, timeout, cwd=str(Path(__file__).resolve().parents[1]))
 
     def benchmark_engine(self, clock_ms: int = 10_000, compare_path: str = "") -> dict[str, Any]:
         """Run the development benchmark outside the live engine process."""
@@ -2474,7 +2414,7 @@ class GameSession:
         return self._run_json_worker(
             "--selfplay-worker",
             {"games": count, "clock_ms": clock},
-            timeout=max(30.0, count * 45.0),
+            timeout=max(30.0, count * 160 * 2.7),
         )
 
     def tune_parameters(self, parameters: list[str] | None = None) -> dict[str, Any]:
@@ -2487,7 +2427,13 @@ class GameSession:
         return self._run_json_worker(
             "--uci-tournament-worker",
             payload,
-            timeout=max(60.0, min(900.0, count * 120.0)),
+            timeout=max(
+                120.0,
+                count
+                * max(8, count - 1)
+                * 180
+                * (min(2000, max(20, int(payload.get("movetime_ms", 80)))) / 1000 + 0.2),
+            ),
         )
 
     def uci_calibration(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -2495,7 +2441,7 @@ class GameSession:
         return self._run_json_worker(
             "--uci-calibration-worker",
             payload,
-            timeout=max(60.0, min(900.0, games * 75.0)),
+            timeout=max(120.0, games * 180 * 1.2),
         )
 
     def arena_compare(
@@ -2528,8 +2474,10 @@ class GameSession:
             if not moves:
                 raise ValueError("Play or import at least one move before analyzing the game.")
             self._cancel_analysis_locked()
-            if not self.paused and self.manual_result is None and not self.board.is_game_over(
-                claim_draw=True
+            if (
+                not self.paused
+                and self.manual_result is None
+                and not self.board.is_game_over(claim_draw=True)
             ):
                 self._commit_clock()
                 self.paused = True
@@ -2565,66 +2513,38 @@ class GameSession:
             command = [sys.executable, "--analysis-worker"]
         else:
             command = [sys.executable, "-m", "gui.server", "--analysis-worker"]
-        process: subprocess.Popen[str] | None = None
+        with self.lock:
+            if generation != self.analysis_generation:
+                return
+            cancellation = self.analysis_cancel
+
+        def record(message: dict[str, Any]) -> None:
+            with self.lock:
+                if generation != self.analysis_generation:
+                    raise JobCancelled("Analysis cancelled.")
+                if message.get("type") == "move":
+                    self.analysis_results.append(message)
+                    self.analysis_completed = len(self.analysis_results)
+
         try:
-            process = subprocess.Popen(
+            completed = run_process(
                 command,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                cwd=str(Path(__file__).resolve().parents[1]),
+                payload,
+                max(20.0, len(payload["moves"]) * (payload["budget_ms"] / 1000 * 5 + 0.35)),
+                str(Path(__file__).resolve().parents[1]),
+                on_message=record,
+                cancel=cancellation,
             )
+            if completed.get("type") != "done":
+                raise RuntimeError("Analysis worker did not complete.")
             with self.lock:
-                if generation != self.analysis_generation:
-                    process.terminate()
-                    return
-                self.analysis_process = process
-            assert process.stdin is not None
-            assert process.stdout is not None
-            process.stdin.write(json.dumps(payload))
-            process.stdin.close()
-            with process.stdout:
-                for line in process.stdout:
-                    try:
-                        message = json.loads(line)
-                    except json.JSONDecodeError as exc:
-                        if line.strip():
-                            raise RuntimeError(line.strip()) from exc
-                        continue
-                    with self.lock:
-                        if generation != self.analysis_generation:
-                            process.terminate()
-                            return
-                        if message.get("type") == "move":
-                            self.analysis_results.append(message)
-                            self.analysis_completed = len(self.analysis_results)
-                        elif message.get("type") == "done":
-                            self.analysis_status = "complete"
-                        elif message.get("type") == "error":
-                            self.analysis_status = "error"
-                            self.analysis_error = str(
-                                message.get("error", "Analysis worker failed.")
-                            )
-            return_code = process.wait()
-            with self.lock:
-                if generation != self.analysis_generation:
-                    return
-                self.analysis_process = None
-                if return_code != 0 and self.analysis_status != "complete":
-                    self.analysis_status = "error"
-                    self.analysis_error = f"Analysis worker exited with code {return_code}."
-                elif self.analysis_status == "running":
+                if generation == self.analysis_generation:
                     self.analysis_status = "complete"
         except Exception as exc:
-            if process is not None and process.poll() is None:
-                process.terminate()
             with self.lock:
-                if generation != self.analysis_generation:
-                    return
-                self.analysis_process = None
-                self.analysis_status = "error"
-                self.analysis_error = str(exc)
+                if generation == self.analysis_generation:
+                    self.analysis_status = "error"
+                    self.analysis_error = str(exc)
 
     def state(self) -> dict[str, Any]:
         with self.lock:
@@ -2719,8 +2639,7 @@ class GameSession:
     @staticmethod
     def _board_payload(board: chess.Board) -> dict[str, str]:
         return {
-            chess.square_name(square): piece.symbol()
-            for square, piece in board.piece_map().items()
+            chess.square_name(square): piece.symbol() for square, piece in board.piece_map().items()
         }
 
     @staticmethod
@@ -2781,7 +2700,8 @@ class GameSession:
             requested = max(20, min(requested, int(requested * skill_scale)))
             fen = self.board.fen()
             before = time.monotonic_ns()
-            searched_uci = agent.get_move(fen, requested)
+            agent.set_game_history(self.board)
+            searched_uci = self.board.uci(self.board.parse_uci(agent.get_move(fen, requested)))
             uci = self._select_profile_move(
                 self.board,
                 searched_uci,
@@ -2900,8 +2820,48 @@ class GameSession:
 SESSION = GameSession()
 
 
+def _submit_job(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+    workers = {
+        "analyze-pgn": lambda: SESSION.analyze_pgn(
+            str(payload.get("pgn", "")), int(payload.get("budget_ms", 120))
+        ),
+        "tournament": lambda: SESSION.uci_tournament(payload),
+        "calibration": lambda: SESSION.uci_calibration(payload),
+        "regression": lambda: SESSION.regression_engine(
+            payload.get("baseline"), float(payload.get("clock_scale", 0.5))
+        ),
+        "selfplay": lambda: SESSION.selfplay_dataset(
+            int(payload.get("games", 2)), int(payload.get("clock_ms", 4000))
+        ),
+        "tuner": lambda: SESSION.tune_parameters(payload.get("parameters")),
+        "benchmark": lambda: SESSION.benchmark_engine(
+            int(payload.get("clock_ms", 10000)), str(payload.get("compare_path", ""))
+        ),
+        "arena": lambda: SESSION.arena_compare(
+            str(payload.get("opponent_path", "")),
+            int(payload.get("games", 6)),
+            int(payload.get("base_ms", 5000)),
+            int(payload.get("increment_ms", 100)),
+        ),
+    }
+    if kind == "reference-import":
+        token = str(payload.get("token", ""))
+        workspace_files.uploaded_file(token)
+
+        def import_file() -> dict[str, Any]:
+            with workspace_files.leased_file(token) as (path, name):
+                return import_reference_file(_library_database(), path, name)
+
+        return JOBS.submit(kind, import_file)
+    if kind not in workers:
+        raise ValueError("Unknown background job kind.")
+    return JOBS.submit(kind, workers[kind])
+
+
 class Handler(SimpleHTTPRequestHandler):
     """Static assets plus a tiny JSON API."""
+
+    server: ThreadingHTTPServer
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, directory=str(ROOT / "static"), **kwargs)
@@ -2963,6 +2923,31 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:
         if self._deny_nonlocal_request():
             return
+        if self.path.startswith("/api/workspace-download?"):
+            if isinstance(self, LanHandler):
+                self.send_error(HTTPStatus.FORBIDDEN)
+                return
+            token = parse_qs(urlsplit(self.path).query).get("token", [""])[0]
+            try:
+                with workspace_files.leased_file(token) as (path, _):
+                    self.send_response(HTTPStatus.OK)
+                    self.send_header("Content-Type", "application/zip")
+                    self.send_header(
+                        "Content-Disposition",
+                        'attachment; filename="FunChessEngine-workspace.fce.zip"',
+                    )
+                    self.send_header("Content-Length", str(path.stat().st_size))
+                    self.end_headers()
+                    with path.open("rb") as stream:
+                        while chunk := stream.read(1024 * 1024):
+                            self.wfile.write(chunk)
+            except ValueError:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            finally:
+                with suppress(ValueError):
+                    workspace_files.upload({"action": "cancel", "token": token})
+            return
         if self.path == "/api/state":
             self._json(SESSION.state())
             return
@@ -2981,6 +2966,11 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             payload = self._body()
             if self.__class__.__name__ == "LanHandler" and self.path in {
+                "/api/jobs",
+                "/api/jobs/status",
+                "/api/jobs/cancel",
+                "/api/workspace-data",
+                "/api/library-upload",
                 "/api/external-uci",
                 "/api/tablebase",
                 "/api/opening-book",
@@ -2999,7 +2989,58 @@ class Handler(SimpleHTTPRequestHandler):
                 "/api/library-db/explorer",
             }:
                 raise ValueError("This host-local action is unavailable to LAN guests.")
-            if self.path == "/api/move":
+            if self.path == "/api/library-upload":
+                self._json(workspace_files.upload(payload))
+                return
+            elif self.path == "/api/workspace-data":
+                action = payload.get("action", "backup")
+                if action == "backup":
+                    metadata = payload.get("metadata")
+                    if not isinstance(metadata, dict):
+                        raise ValueError("Backup metadata must be an object.")
+                    self._json(
+                        workspace_files.create_bundle(
+                            metadata, bool(payload.get("include_reference", True))
+                        )
+                    )
+                elif action == "inspect":
+                    self._json(workspace_files.inspect_bundle(str(payload.get("token", ""))))
+                elif action == "restore":
+                    if any(row["status"] == "running" for row in JOBS.list()):
+                        raise ValueError(
+                            "Finish or cancel background jobs before restoring databases."
+                        )
+                    token = str(payload.get("token", ""))
+                    inspected = workspace_files.inspect_bundle(token)
+                    current = inspected["metadata"].get("current_game")
+                    with SESSION.lock:
+                        if current is not None:
+                            if not isinstance(current, dict):
+                                raise ValueError("Backup live game must be an object.")
+                            GameSession().load_snapshot(current, reset_engine=False)
+                        result = workspace_files.restore_bundle(token)
+                        if current is not None:
+                            SESSION.load_snapshot({**current, "paused": True})
+                            result["restored_state"] = SESSION.state()
+                    self._json(result)
+                else:
+                    raise ValueError("Unknown workspace action.")
+                return
+            elif self.path == "/api/jobs":
+                kind = str(payload.get("kind", ""))
+                arguments = payload.get("payload", {})
+                if not isinstance(arguments, dict):
+                    raise ValueError("Job payload must be an object.")
+                self._json(_submit_job(kind, arguments))
+                return
+            elif self.path == "/api/jobs/status":
+                identifier = payload.get("id")
+                self._json(JOBS.get(str(identifier)) if identifier else {"jobs": JOBS.list()})
+                return
+            elif self.path == "/api/jobs/cancel":
+                self._json(JOBS.cancel(str(payload.get("id", ""))))
+                return
+            elif self.path == "/api/move":
                 SESSION.play_move(str(payload.get("move", "")))
             elif self.path == "/api/engine":
                 budget = payload.get("budget_ms")
@@ -3007,9 +3048,7 @@ class Handler(SimpleHTTPRequestHandler):
             elif self.path == "/api/engine-config":
                 config = SESSION.configure_engine(
                     profile=(
-                        str(payload["profile"])
-                        if payload.get("profile") is not None
-                        else None
+                        str(payload["profile"]) if payload.get("profile") is not None else None
                     ),
                     skill=(int(payload["skill"]) if payload.get("skill") is not None else None),
                     move_time_cap_ms=(
@@ -3246,15 +3285,11 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             elif self.path == "/api/eval-breakdown":
                 self._json(
-                    SESSION.evaluation_breakdown(
-                        str(payload.get("fen", chess.STARTING_FEN))
-                    )
+                    SESSION.evaluation_breakdown(str(payload.get("fen", chess.STARTING_FEN)))
                 )
                 return
             elif self.path == "/api/position-insights":
-                self._json(
-                    SESSION.position_insights(str(payload.get("fen", chess.STARTING_FEN)))
-                )
+                self._json(SESSION.position_insights(str(payload.get("fen", chess.STARTING_FEN))))
                 return
             elif self.path == "/api/tactical-motifs":
                 self._json(
@@ -3318,9 +3353,7 @@ class Handler(SimpleHTTPRequestHandler):
                 raw_parameters = payload.get("parameters")
                 if raw_parameters is not None and not isinstance(raw_parameters, list):
                     raise ValueError("Tuner parameters must be a list.")
-                self._json(
-                    SESSION.tune_parameters([str(item) for item in raw_parameters or []])
-                )
+                self._json(SESSION.tune_parameters([str(item) for item in raw_parameters or []]))
                 return
             elif self.path == "/api/uci-tournament":
                 self._json(SESSION.uci_tournament(payload))
@@ -3350,7 +3383,14 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             self._json(SESSION.state())
-        except (TypeError, ValueError, RuntimeError) as exc:
+        except (
+            TypeError,
+            ValueError,
+            RuntimeError,
+            OSError,
+            subprocess.TimeoutExpired,
+            sqlite3.Error,
+        ) as exc:
             self._json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
     def _body(self) -> dict[str, Any]:
@@ -3437,7 +3477,7 @@ def _lan_host_ip() -> str:
     candidates: list[str] = []
     with suppress(OSError):
         candidates.extend(
-            item[4][0]
+            str(item[4][0])
             for item in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
             if item[4]
         )

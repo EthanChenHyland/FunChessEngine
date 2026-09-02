@@ -611,6 +611,7 @@
               <div class="row two compact-row"><select id="externalEngineSelect"><option value="">Saved engines…</option></select><button id="saveExternalEngineBtn" class="secondary">Save engine</button></div>
               <div class="row two compact-row"><div><label for="externalEngineBudget">Move time (ms)</label><input id="externalEngineBudget" type="number" min="50" max="5000" step="50" value="300"></div><div><label for="externalEngineLines">Candidate lines</label><select id="externalEngineLines"><option value="1">1</option><option value="3" selected>3</option><option value="5">5</option></select></div></div>
               <button id="compareExternalEngineBtn" class="secondary full">Compare engines</button>
+              <details class="inline-details"><summary>Comparison history</summary><div id="externalComparisonHistory"></div></details>
               <div id="externalEngineResult" class="mini-report"><p class="hint">FunChessEngine and the selected local UCI engine will analyze the same position independently.</p></div>
             </div>
           </details>
@@ -662,6 +663,13 @@
                   <div><label for="devArenaGames">A/B games</label><input id="devArenaGames" type="number" min="2" max="40" step="2" value="6"></div>
                   <button id="devArenaBtn" class="secondary align-end">Run A/B</button>
                 </div>
+                <div class="row two compact-row"><div><label for="regressionClockScale">Regression clock scale</label><input id="regressionClockScale" type="number" min="0.1" max="5" step="0.1" value="0.5"></div><button id="runRegressionBtn" class="secondary">Run regression</button></div>
+                <p class="hint">Compare tactical correctness with the most recent saved regression run.</p>
+                <div class="row three compact-row"><div><label for="selfplayGames">Self-play games</label><input id="selfplayGames" type="number" min="1" max="20" value="2"></div><div><label for="selfplayClock">Search clock ms</label><input id="selfplayClock" type="number" min="500" max="30000" value="4000"></div><button id="runSelfplayBtn" class="secondary">Generate data</button></div>
+                <fieldset id="tunerParameters"><legend>Offline parameter experiments</legend><label><input type="checkbox" value="ASPIRATION_WINDOW" checked> Aspiration window</label><label><input type="checkbox" value="EXCHANGE_PRUNE_MARGIN"> Exchange margin</label></fieldset>
+                <button id="runTunerBtn" class="secondary">Explore parameters</button><p class="hint">Suggestions only. Engine source and playing strength are never changed automatically.</p>
+                <pre id="developerResults" class="experiment-output">No result yet.</pre><button id="exportDeveloperResultBtn" class="secondary" disabled>Export result JSON…</button>
+                <details class="inline-details"><summary>Tournament and experiment history</summary><div id="workstationHistory"></div></details>
                 <div id="devLabResult" class="devlab-result"><p class="hint">No experiment run yet.</p></div>
                 <div class="setting-heading dev-history-heading"><span class="label">Benchmark history</span><button id="clearDevHistoryBtn" class="text-button">Clear</button></div>
                 <div id="devBenchmarkHistory" class="dev-history"></div>
@@ -789,8 +797,10 @@
           <div class="file-card settings-data-card">
             <div class="setting-heading"><span class="label">Workspace backup</span><span class="setting-value">.fce</span></div>
             <p class="hint">Export or restore games, studies, bookmarks, training data, annotations, and appearance settings in one local bundle. Saving it in iCloud/Dropbox/OneDrive gives you folder-based sync without an account service.</p>
+            <label class="analysis-auto"><input id="backupReferenceDatabase" type="checkbox" checked> Include reference database in backup (up to 1 GB)</label>
+            <p class="hint">Backups include the opening book, studies, training, histories, settings, and current game. Uncheck the reference database to make a smaller bundle.</p>
             <div class="row two compact-row"><button id="backupWorkspaceBtn" class="secondary">Back up workspace…</button><button id="restoreWorkspaceBtn" class="secondary">Restore workspace…</button></div>
-            <input id="restoreWorkspaceInput" type="file" accept=".fce,.json,application/json" hidden>
+            <input id="restoreWorkspaceInput" type="file" accept=".fce,.zip,.json,application/json,application/zip" hidden>
           </div>
           <div class="file-card settings-data-card">
             <div class="setting-heading"><span class="label">Encrypted folder sync</span><span class="setting-value">Portable local file</span></div>
@@ -873,6 +883,8 @@
     </div>
   </dialog>
   <div id="dropOverlay" class="drop-overlay" hidden><div><strong>Open in FunChessEngine</strong><span>Drop PGN, FEN, or saved PNG</span></div></div>
-  <script src="/app.js?v=12"></script>
+  <section class="background-jobs" aria-label="Background work"><div id="backgroundJobs" aria-live="polite"></div></section>
+  <script src="/workflows.js?v=1"></script>
+  <script src="/app.js?v=13"></script>
 </body>
 </html>

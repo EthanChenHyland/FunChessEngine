@@ -1,10 +1,13 @@
 "use strict";
 
-const { app, BrowserWindow } = require("electron");
+const { app, BrowserWindow, ipcMain } = require("electron");
 const { spawn } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+
+const {metadataStore} = require("../storage");
+const {registerMetadataHandlers} = require("../metadata-ipc");
 
 const root = path.resolve(__dirname, "..", "..");
 const smokeUserData = fs.mkdtempSync(path.join(os.tmpdir(), "funchess-ui-smoke-"));
@@ -12,7 +15,7 @@ app.setPath("userData", smokeUserData);
 let backend = null;
 
 function pythonCommand() {
-  const venv = path.join(root, ".venv", "bin", "python");
+  const venv = path.join(root, ".venv", ...(process.platform === "win32" ? ["Scripts","python.exe"] : ["bin","python"]));
   if (fs.existsSync(venv)) return { command: venv, args: [] };
   return { command: "uv", args: ["run", "python"] };
 }
@@ -23,7 +26,7 @@ function startBackend() {
     const child = spawn(
       python.command,
       [...python.args, "-m", "gui.server", "--no-open", "--port", "0"],
-      { cwd: root, stdio: ["ignore", "pipe", "pipe"] },
+      { cwd: root, stdio: ["ignore", "pipe", "pipe"], env:{...process.env,FUNCHESS_DATA_DIR:path.join(smokeUserData,"data")} },
     );
     backend = child;
     let output = "";
@@ -32,7 +35,7 @@ function startBackend() {
       reject(new Error(`UI smoke backend timed out.\n${output}`));
     }, 15000);
     const inspect = (chunk) => {
-      output += chunk.toString();
+      output = (output + chunk.toString()).slice(-64*1024);
       const match = output.match(/FunChessEngine GUI:\s+(http:\/\/127\.0\.0\.1:\d+)/);
       if (!match) return;
       clearTimeout(timeout);
@@ -73,7 +76,11 @@ async function run() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      preload:path.join(root,"desktop","preload.js"),
     },
+  });
+  registerMetadataHandlers(ipcMain,metadataStore(smokeUserData),(event)=>{
+    if(event.sender!==window.webContents || event.senderFrame!==window.webContents.mainFrame) throw new Error('Untrusted test sender');
   });
   await window.loadURL(url);
   await waitFor(window, `document.getElementById("startSessionSummary")?.textContent !== "Loading local board…"`);
@@ -177,8 +184,47 @@ async function run() {
     throw new Error(`Analysis launcher route failed: ${JSON.stringify(analysis)}`);
   }
 
+  // Execute real renderer save functions, then hydrate through the real preload after reload.
+  await window.webContents.executeJavaScript(`(async()=>{
+    calibrationHistory=[{estimated_elo:1600,games:4,opponent_elo:1500,score:.5,elo_interval:[1400,1800]}];
+    saveCalibrationHistory();
+    pluginManifests=[{id:'smoke.safe',name:'<img id="injected-plugin">',version:'1',kind:'commands',items:[],enabled:false}];
+    savePluginManifests(); renderPlugins();
+    if(document.getElementById('injected-plugin')) throw new Error('Plugin HTML injection');
+    await Promise.all([...durableWriteChains.values()]);
+  })()`,true);
+  window.webContents.reload();
+  await new Promise(resolve=>window.webContents.once('did-finish-load',resolve));
+  await waitFor(window, `durableMetadataHydrated && state && calibrationHistory.length===1`);
+  const result=await window.webContents.executeJavaScript(`(async()=>{
+    if(calibrationHistory[0].estimated_elo!==1600) throw new Error('Lost calibration after reload');
+    if(!engineLabDesktop.readMetadata) throw new Error('Missing real preload bridge');
+    const record=await engineLabDesktop.readMetadata(CALIBRATION_HISTORY_KEY);
+    if(!record.found) throw new Error('Missing desktop mirror');
+    await runDeveloperTool('regression');
+    if(!developerResult.rows?.length) throw new Error('Developer regression did not finish');
+    return developerResult.rows.length;
+  })()`,true);
+  if(!result) throw new Error('No developer result');
+  // Simulate an occupied preferred port: a second backend produces a different browser origin.
+  const oldBackend=backend;
+  const secondUrl=await startBackend();
+  oldBackend.kill('SIGTERM');
+  await window.loadURL(secondUrl);
+  await waitFor(window, `durableMetadataHydrated && state && calibrationHistory.length===1`);
+  await window.webContents.executeJavaScript(`(async()=>{
+    if(calibrationHistory[0].estimated_elo!==1600 || !regressionHistory.length) throw new Error('Lost desktop data on port change');
+    const bundle=await api('/api/workspace-data',{action:'backup',metadata:workspaceBackupPayload(),include_reference:true});
+    const response=await fetch('/api/workspace-download?token='+bundle.token);
+    const bytes=new Uint8Array(await response.arrayBuffer());
+    if(bytes[0]!==80 || bytes[1]!==75) throw new Error('Backup was not a ZIP');
+    const consumed=await fetch('/api/workspace-download?token='+bundle.token);
+    if(consumed.status!==404) throw new Error('Completed backup download retained its transfer slot');
+    const roundtrip=validateWorkspaceBackup(workspaceBackupPayload());
+    if(!roundtrip.calibration_history.length) throw new Error('Backup omitted history');
+  })()`,true);
   window.destroy();
-  console.log("Electron UI smoke OK");
+  console.log("Electron UI smoke OK: preload, history reload, port migration, regression job, backup");
 }
 
 app.whenReady().then(async () => {

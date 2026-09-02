@@ -14,13 +14,12 @@ fs.rmSync(output, { recursive: true, force: true });
 fs.mkdirSync(output, { recursive: true });
 fs.mkdirSync(work, { recursive: true });
 
-const localUv = "/Users/ethius/AI-Workspace/runtimes/uv/bin/uv";
-const uv = process.env.UV || (fs.existsSync(localUv) ? localUv : "uv");
+const uv = process.env.UV || "uv";
 const separator = process.platform === "win32" ? ";" : ":";
 const args = [
   "run",
   "--with",
-  "pyinstaller",
+  "pyinstaller==6.22.2",
   "pyinstaller",
   "--noconfirm",
   "--clean",

@@ -1,12 +1,11 @@
 import json
-import os
-import selectors
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import IO
 
+from harness.process_io import LineReader, PipeError, TailReader
 from harness.rules import STDERR_TAIL_CAP, STDOUT_CAP, WATCHDOG_GRACE_MS
 
 RUNNER = Path(__file__).resolve().parent / "runner.py"
@@ -30,9 +29,8 @@ class Agent:
         self.command = command
         self.stderr_tail = ""
         self._process: subprocess.Popen[bytes] | None = None
-        self._selector = selectors.DefaultSelector()
-        self._buffer = b""
-        self._tail = b""
+        self.reader: LineReader | None = None
+        self.stderr_reader: TailReader | None = None
 
     def start(self, init_budget_s: float) -> None:
         process = subprocess.Popen(
@@ -43,8 +41,8 @@ class Agent:
             bufsize=0,
         )
         self._process = process
-        self._selector.register(_pipe(process.stdout), selectors.EVENT_READ, "stdout")
-        self._selector.register(_pipe(process.stderr), selectors.EVENT_READ, "stderr")
+        self.reader = LineReader(_pipe(process.stdout), line_limit=STDOUT_CAP)
+        self.stderr_reader = TailReader(_pipe(process.stderr), STDERR_TAIL_CAP)
         ready = self._await_line(time.monotonic() + init_budget_s)
         if ready is None:
             raise AgentFailure("init" if process.poll() is None else "crash")
@@ -67,52 +65,29 @@ class Agent:
     def stop(self) -> None:
         if self._process is None:
             return
-        self._process.kill()
-        self._drain()
-        self.stderr_tail = self._tail.decode("utf-8", "replace")
-        self._selector.close()
+        if self._process.poll() is None:
+            self._process.kill()
+        self._process.wait(timeout=5)
+        if self.stderr_reader:
+            self.stderr_reader.thread.join(timeout=1)
+            self.stderr_tail = self.stderr_reader.tail.decode("utf-8", "replace")
+        if self.reader:
+            self.reader.thread.join(timeout=1)
         for stream in (self._process.stdin, self._process.stdout, self._process.stderr):
             if stream is not None:
                 stream.close()
-        self._process.wait()
         self._process = None
 
     def _await_line(self, deadline: float) -> bytes | None:
-        while b"\n" not in self._buffer:
-            if len(self._buffer) >= STDOUT_CAP:
-                raise AgentFailure("illegal")
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+        if self.reader is None:
+            raise AgentFailure("init")
+        try:
+            return self.reader.readline(deadline)
+        except PipeError as exc:
+            if "timed out" in str(exc):
                 return None
-            for key, _ in self._selector.select(remaining):
-                chunk = os.read(key.fd, STDOUT_CAP)
-                if key.data == "stderr":
-                    self._keep(key, chunk)
-                elif not chunk:
-                    raise AgentFailure("crash")
-                else:
-                    self._buffer += chunk
-        line, _, self._buffer = self._buffer.partition(b"\n")
-        return line
-
-    # the writer is dead by now, so the pipes hold a bounded amount and this terminates
-    def _drain(self) -> None:
-        while self._selector.get_map():
-            events = self._selector.select(0)
-            if not events:
-                return
-            for key, _ in events:
-                chunk = os.read(key.fd, STDOUT_CAP)
-                if key.data == "stderr":
-                    self._keep(key, chunk)
-                elif not chunk:
-                    self._selector.unregister(key.fileobj)
-
-    def _keep(self, key: selectors.SelectorKey, chunk: bytes) -> None:
-        if not chunk:
-            self._selector.unregister(key.fileobj)
-            return
-        self._tail = (self._tail + chunk)[-STDERR_TAIL_CAP:]
+            reason = "crash" if "closed" in str(exc) else "illegal"
+            raise AgentFailure(reason) from exc
 
 
 def _pipe(stream: IO[bytes] | None) -> IO[bytes]:

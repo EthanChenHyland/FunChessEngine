@@ -4,6 +4,9 @@ const { app, BrowserWindow, Menu, dialog, ipcMain, nativeImage, screen, shell } 
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const { metadataStore } = require("./storage");
+const { registerMetadataHandlers } = require("./metadata-ipc");
+let backendLog = "";
 
 let mainWindow = null;
 let backend = null;
@@ -24,6 +27,14 @@ const DEFAULT_WINDOW_HEIGHT = 900;
 const pendingOpenDocuments = [];
 
 app.setName("FunChessEngine");
+if (process.env.FUNCHESS_PORTABLE_DIR) {
+  const portable = path.resolve(process.env.FUNCHESS_PORTABLE_DIR);
+  fs.mkdirSync(portable, {recursive:true});
+  const desktopProfile = path.join(portable, "desktop");
+  fs.mkdirSync(desktopProfile, {recursive:true});
+  app.setPath("userData", desktopProfile);
+  process.env.FUNCHESS_DATA_DIR = path.join(portable, "data");
+}
 
 function projectRoot() {
   return path.resolve(__dirname, "..");
@@ -124,7 +135,7 @@ function restoredWindowState(saved) {
 
 function devBackendCommand() {
   const root = projectRoot();
-  const localPython = path.join(root, ".venv", "bin", "python");
+  const localPython = path.join(root, ".venv", ...(process.platform === "win32" ? ["Scripts", "python.exe"] : ["bin", "python"]));
   if (fs.existsSync(localPython)) {
     return {
       command: localPython,
@@ -135,7 +146,6 @@ function devBackendCommand() {
 
   const uvCandidates = [
     process.env.UV,
-    "/Users/ethius/AI-Workspace/runtimes/uv/bin/uv",
     "/opt/homebrew/bin/uv",
     "/usr/local/bin/uv",
   ].filter(Boolean);
@@ -192,7 +202,8 @@ function startBackend() {
 
     const inspect = (chunk) => {
       const text = chunk.toString();
-      output += text;
+      output = (output + text).slice(-64 * 1024);
+      backendLog = output;
       const match = output.match(/FunChessEngine GUI:\s+(http:\/\/127\.0\.0\.1:\d+)/);
       if (!settled && match) {
         settled = true;
@@ -512,8 +523,17 @@ function installMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+function assertTrustedRenderer(event, action) {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents
+      || event.senderFrame !== mainWindow.webContents.mainFrame) {
+    throw new Error(`${action} request did not come from the active application window.`);
+  }
+}
+
 function registerFileHandlers() {
-  ipcMain.handle("file:open-fen", async () => {
+  registerMetadataHandlers(ipcMain, metadataStore(app.getPath("userData")), assertTrustedRenderer);
+  ipcMain.handle("file:open-fen", async (event) => {
+    assertTrustedRenderer(event, "Open FEN");
     const result = await dialog.showOpenDialog(mainWindow, {
       title: "Open FEN Position",
       properties: ["openFile"],
@@ -524,7 +544,8 @@ function registerFileHandlers() {
     return readBounded(result.filePaths[0], MAX_FEN_BYTES, "utf8");
   });
 
-  ipcMain.handle("file:open-pgn", async () => {
+  ipcMain.handle("file:open-pgn", async (event) => {
+    assertTrustedRenderer(event, "Open PGN");
     const result = await dialog.showOpenDialog(mainWindow, {
       title: "Open PGN Game",
       properties: ["openFile"],
@@ -535,7 +556,8 @@ function registerFileHandlers() {
     return readBounded(result.filePaths[0], MAX_PGN_BYTES, "utf8");
   });
 
-  ipcMain.handle("file:open-png", async () => {
+  ipcMain.handle("file:open-png", async (event) => {
+    assertTrustedRenderer(event, "Open PNG");
     const result = await dialog.showOpenDialog(mainWindow, {
       title: "Open FunChessEngine Saved Game",
       properties: ["openFile"],
@@ -546,7 +568,8 @@ function registerFileHandlers() {
     return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
   });
 
-  ipcMain.handle("file:open-engine", async () => {
+  ipcMain.handle("file:open-engine", async (event) => {
+    assertTrustedRenderer(event, "Open UCI engine");
     const result = await dialog.showOpenDialog(mainWindow, {
       title: "Choose UCI Engine Executable",
       properties: ["openFile"],
@@ -564,7 +587,8 @@ function registerFileHandlers() {
     return candidate;
   });
 
-  ipcMain.handle("file:save-text", async (_event, payload) => {
+  ipcMain.handle("file:save-text", async (event, payload) => {
+    assertTrustedRenderer(event, "Save FEN");
     if (!payload || typeof payload.text !== "string") return false;
     if (Buffer.byteLength(payload.text, "utf8") > MAX_FEN_BYTES) throw new Error("FEN export is too large.");
     const result = await dialog.showSaveDialog(mainWindow, {
@@ -577,7 +601,8 @@ function registerFileHandlers() {
     return true;
   });
 
-  ipcMain.handle("file:save-pgn", async (_event, payload) => {
+  ipcMain.handle("file:save-pgn", async (event, payload) => {
+    assertTrustedRenderer(event, "Save PGN");
     if (!payload || typeof payload.text !== "string") return false;
     if (Buffer.byteLength(payload.text, "utf8") > MAX_PGN_BYTES) throw new Error("PGN export is too large.");
     const result = await dialog.showSaveDialog(mainWindow, {
@@ -590,7 +615,8 @@ function registerFileHandlers() {
     return true;
   });
 
-  ipcMain.handle("file:save-binary", async (_event, payload) => {
+  ipcMain.handle("file:save-binary", async (event, payload) => {
+    assertTrustedRenderer(event, "Save binary game");
     if (!payload?.bytes) return false;
     const bytes = Buffer.from(payload.bytes);
     if (bytes.byteLength > MAX_SAVE_BYTES) throw new Error("Saved game is too large.");
@@ -604,7 +630,8 @@ function registerFileHandlers() {
     return true;
   });
 
-  ipcMain.handle("file:open-bundle", async () => {
+  ipcMain.handle("file:open-bundle", async (event) => {
+    assertTrustedRenderer(event, "Open backup bundle");
     const result = await dialog.showOpenDialog(mainWindow, {
       title: "Restore FunChessEngine Backup",
       properties: ["openFile"],
@@ -618,7 +645,8 @@ function registerFileHandlers() {
     return readBounded(result.filePaths[0], MAX_BUNDLE_BYTES, "utf8");
   });
 
-  ipcMain.handle("file:save-bundle", async (_event, payload) => {
+  ipcMain.handle("file:save-bundle", async (event, payload) => {
+    assertTrustedRenderer(event, "Save backup bundle");
     if (!payload || typeof payload.text !== "string") return false;
     if (Buffer.byteLength(payload.text, "utf8") > MAX_BUNDLE_BYTES) {
       throw new Error("Backup bundle is too large.");
@@ -637,9 +665,7 @@ function registerFileHandlers() {
 
 function registerBackendHandlers() {
   ipcMain.handle("backend:restart", async (event, snapshot) => {
-    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
-      throw new Error("Backend restart request did not come from the active application window.");
-    }
+    assertTrustedRenderer(event, "Backend restart");
     return restartBackend(snapshot);
   });
 }

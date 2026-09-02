@@ -8,11 +8,15 @@ import os
 import re
 import sqlite3
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 import chess
 import chess.pgn
+
+from librarydb.connections import DATABASE_LOCK
 
 
 def default_data_dir() -> Path:
@@ -67,9 +71,7 @@ def structure_tags(board: chess.Board) -> tuple[str, ...]:
         pawns = board.pieces(chess.PAWN, color)
         d_pawns = [square for square in pawns if chess.square_file(square) == 3]
         adjacent = {
-            chess.square_file(square)
-            for square in pawns
-            if chess.square_file(square) in {2, 4}
+            chess.square_file(square) for square in pawns if chess.square_file(square) in {2, 4}
         }
         return bool(d_pawns and not adjacent)
 
@@ -83,9 +85,7 @@ def structure_tags(board: chess.Board) -> tuple[str, ...]:
         tags.update({"hanging pawns", "black hanging pawns"})
     if {"c4", "e4"}.issubset(white_pawns):
         tags.add("Maroczy bind")
-    if {"c4", "d4", "e3"}.issubset(white_pawns) and {"c6", "d5", "e6"}.issubset(
-        black_pawns
-    ):
+    if {"c4", "d4", "e3"}.issubset(white_pawns) and {"c6", "d5", "e6"}.issubset(black_pawns):
         tags.add("Carlsbad structure")
 
     white_king = board.king(chess.WHITE)
@@ -104,8 +104,11 @@ def structure_tags(board: chess.Board) -> tuple[str, ...]:
         tags.add("rook endgame")
     if not queens and not rooks and bishops and knights:
         tags.add("bishop vs knight")
-    passed = _passed_pawns(board, chess.WHITE) + _passed_pawns(board, chess.BLACK)
-    if any(chess.square_rank(square) in {2, 5} for square in passed):
+    if any(
+        chess.square_rank(square) == (5 if color == chess.WHITE else 2)
+        for color in (chess.WHITE, chess.BLACK)
+        for square in _passed_pawns(board, color)
+    ):
         tags.add("passed pawn on sixth rank")
     return tuple(sorted(tags))
 
@@ -178,14 +181,20 @@ class LibraryDatabase:
         self.path = Path(path) if path is not None else default_database_path()
         self.path = self.path.expanduser().resolve()
 
-    def _connect(self) -> sqlite3.Connection:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.path, timeout=15.0)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA journal_mode = WAL")
-        self._ensure_schema(connection)
-        return connection
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        with DATABASE_LOCK:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            connection = sqlite3.connect(self.path, timeout=15.0)
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA journal_mode = WAL")
+            self._ensure_schema(connection)
+            try:
+                with connection:
+                    yield connection
+            finally:
+                connection.close()
 
     @staticmethod
     def _ensure_schema(connection: sqlite3.Connection) -> None:
@@ -329,7 +338,8 @@ class LibraryDatabase:
                 if cursor.rowcount == 0:
                     duplicates += 1
                     continue
-                game_id = int(cursor.lastrowid)
+                assert cursor.lastrowid is not None
+                game_id = cursor.lastrowid
                 board = game.board()
                 for ply, move in enumerate(game.mainline_moves()):
                     before = board.fen()
@@ -465,7 +475,7 @@ class LibraryDatabase:
         query_sql = f"""
             SELECT DISTINCT g.id, g.source, g.event, g.game_date, g.year, g.white, g.black,
                 g.white_elo, g.black_elo, g.result, g.eco, g.opening, g.variant
-            FROM games g {' '.join(joins)} {where}
+            FROM games g {" ".join(joins)} {where}
             ORDER BY COALESCE(g.year, 0) DESC, g.id DESC
             LIMIT ? OFFSET ?
         """
@@ -508,8 +518,8 @@ class LibraryDatabase:
                     WHEN (p.turn = 'w' AND g.result = '0-1') OR
                          (p.turn = 'b' AND g.result = '1-0') THEN 1 ELSE 0 END) AS losses,
                 ROUND(AVG(CASE WHEN p.turn = 'w' THEN g.white_elo ELSE g.black_elo END)) AS avg_elo
-            FROM positions p {' '.join(joins)}
-            WHERE {' AND '.join(clauses)}
+            FROM positions p {" ".join(joins)}
+            WHERE {" AND ".join(clauses)}
             GROUP BY p.move_uci
             ORDER BY games DESC, wins DESC
             LIMIT ?

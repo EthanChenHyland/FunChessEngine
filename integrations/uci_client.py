@@ -7,13 +7,14 @@ must explicitly select an executable already installed on their machine.
 from __future__ import annotations
 
 import os
-import select
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import chess
+
+from harness.process_io import LineReader, PipeError
 
 
 class UCIClientError(RuntimeError):
@@ -75,7 +76,7 @@ class ExternalUCIEngine:
         self.executable = validate_engine_path(executable)
         self.timeout_s = max(0.25, min(30.0, float(timeout_s)))
         self.process: subprocess.Popen[bytes] | None = None
-        self._stdout_buffer = bytearray()
+        self.reader: LineReader | None = None
         self.engine_name = self.executable.name
         self.options: dict[str, UCIOption] = {}
 
@@ -98,7 +99,8 @@ class ExternalUCIEngine:
                 bufsize=0,
                 shell=False,
             )
-            self._stdout_buffer.clear()
+            assert self.process.stdout is not None
+            self.reader = LineReader(self.process.stdout)
             self._send("uci")
             handshake = self._read_until("uciok")
             self._parse_handshake(handshake)
@@ -137,31 +139,20 @@ class ExternalUCIEngine:
         process.stdin.flush()
 
     def _readline(self, deadline: float) -> str:
-        process = self.process
-        if process is None or process.poll() is not None or process.stdout is None:
-            raise UCIClientError("UCI engine exited unexpectedly.")
-        while True:
-            newline = self._stdout_buffer.find(b"\n")
-            if newline >= 0:
-                raw = bytes(self._stdout_buffer[:newline])
-                del self._stdout_buffer[: newline + 1]
-                return raw.rstrip(b"\r").decode("utf-8", errors="replace")
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise UCIClientError("UCI engine response timed out.")
-            readable, _, _ = select.select([process.stdout], [], [], remaining)
-            if not readable:
-                raise UCIClientError("UCI engine response timed out.")
-            chunk = os.read(process.stdout.fileno(), 4096)
-            if not chunk:
-                raise UCIClientError("UCI engine closed its output stream.")
-            self._stdout_buffer.extend(chunk)
+        if self.reader is None:
+            raise UCIClientError("UCI engine is not running.")
+        try:
+            return self.reader.readline(deadline).decode("utf-8", errors="replace")
+        except PipeError as exc:
+            raise UCIClientError(str(exc)) from exc
 
     def _read_until(self, terminal: str) -> tuple[str, ...]:
         deadline = time.monotonic() + self.timeout_s
         lines: list[str] = []
         while True:
             line = self._readline(deadline)
+            if len(lines) >= 512:
+                raise UCIClientError("UCI handshake is too large.")
             lines.append(line)
             if line == terminal:
                 return tuple(lines)
@@ -232,7 +223,7 @@ class ExternalUCIEngine:
         """Apply standard UCI strength controls when the selected engine exposes them."""
 
         applied: dict[str, int] = {}
-        if elo is not None and "UCI_Elo" in self.options:
+        if elo is not None and {"UCI_Elo", "UCI_LimitStrength"} <= self.options.keys():
             option = self.options["UCI_Elo"]
             target = int(elo)
             if option.minimum is not None:
@@ -295,6 +286,8 @@ class ExternalUCIEngine:
             line = self._readline(deadline)
             if line.startswith("info "):
                 info.append(line)
+                if len(info) > 128:
+                    del info[0]
                 structured = self._parse_info_line(board, line)
                 if structured is not None and structured.multipv <= line_count:
                     parsed[structured.multipv] = structured

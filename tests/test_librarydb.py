@@ -35,6 +35,13 @@ SAMPLE_PGN = """[Event "Reference One"]
 
 
 class LibraryDatabaseTests(unittest.TestCase):
+    @staticmethod
+    def structure_board(pieces: dict[str, str]) -> chess.Board:
+        board = chess.Board(None)
+        for square, symbol in pieces.items():
+            board.set_piece_at(chess.parse_square(square), chess.Piece.from_symbol(symbol))
+        return board
+
     def test_import_indexes_games_positions_and_deduplicates(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database = LibraryDatabase(Path(directory) / "library.sqlite3")
@@ -67,6 +74,59 @@ class LibraryDatabaseTests(unittest.TestCase):
         self.assertEqual(parsed["opening"], "Sicilian")
         self.assertEqual(parsed["structure"], "IQP")
         self.assertEqual(parsed["year_from"], 2020)
+
+    def test_structure_tag_corpus_has_positive_and_negative_fixtures(self) -> None:
+        fixtures = (
+            (
+                "white IQP",
+                {"d4": "P"},
+                {"c4": "P", "d4": "P"},
+            ),
+            (
+                "black IQP",
+                {"d5": "p"},
+                {"d5": "p", "e5": "p"},
+            ),
+            (
+                "white hanging pawns",
+                {"c4": "P", "d4": "P"},
+                {"c4": "P", "d4": "P", "e4": "P"},
+            ),
+            (
+                "black hanging pawns",
+                {"c5": "p", "d5": "p"},
+                {"b5": "p", "c5": "p", "d5": "p"},
+            ),
+            (
+                "Maroczy bind",
+                {"c4": "P", "e4": "P"},
+                {"c4": "P"},
+            ),
+            (
+                "Carlsbad structure",
+                {"c4": "P", "d4": "P", "e3": "P", "c6": "p", "d5": "p", "e6": "p"},
+                {"c4": "P", "d4": "P", "e3": "P", "c6": "p", "d5": "p"},
+            ),
+            (
+                "opposite-side castling",
+                {"b1": "K", "g8": "k"},
+                {"e1": "K", "e8": "k"},
+            ),
+            (
+                "rook endgame",
+                {"e1": "K", "e8": "k", "a1": "R", "a8": "r"},
+                {"e1": "K", "e8": "k", "a1": "R", "c1": "B"},
+            ),
+            (
+                "bishop vs knight",
+                {"e1": "K", "e8": "k", "c1": "B", "f6": "n"},
+                {"e1": "K", "e8": "k", "c1": "B"},
+            ),
+        )
+        for tag, positive, negative in fixtures:
+            with self.subTest(tag=tag):
+                self.assertIn(tag, structure_tags(self.structure_board(positive)))
+                self.assertNotIn(tag, structure_tags(self.structure_board(negative)))
 
 
 if __name__ == "__main__":
