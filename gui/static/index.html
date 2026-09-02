@@ -6,7 +6,7 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:">
   <title>FunChessEngine · Default Lab</title>
   <link rel="icon" href="/app-mark.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/style.css?v=10">
+  <link rel="stylesheet" href="/style.css?v=11">
 </head>
 <body>
   <a class="skip-link" href="#board" hidden>Skip to chessboard</a>
@@ -137,6 +137,33 @@
             <p class="hint">Changing game mode starts a new game. Return to the live game before switching modes.</p>
           </div>
 
+          <div class="section-card variant-card">
+            <div class="setting-heading"><label for="variantSelect">Variant</label><span id="variantValue" class="setting-value">Standard</span></div>
+            <select id="variantSelect">
+              <option value="standard" selected>Standard chess</option>
+              <option value="chess960">Chess960</option>
+            </select>
+            <div id="chess960Controls" class="row two compact-row" hidden>
+              <div><label for="chess960Position">Position #</label><input id="chess960Position" type="number" min="0" max="959" step="1" value="518"></div>
+              <button id="randomChess960Btn" class="secondary align-end" type="button">Randomize</button>
+            </div>
+            <p class="hint">Changing variants applies on the next New Game or time-control restart.</p>
+          </div>
+
+          <div class="section-card engine-strength-card">
+            <div class="setting-heading"><label for="engineStrengthSelect">Engine strength</label><span id="engineStrengthValue" class="setting-value">Maximum</span></div>
+            <select id="engineStrengthSelect">
+              <option value="20">Beginner · ~800</option>
+              <option value="40">Casual · ~1200</option>
+              <option value="60">Intermediate · ~1600</option>
+              <option value="70">Advanced · ~1900</option>
+              <option value="85">Expert · ~2200</option>
+              <option value="adaptive">Adaptive</option>
+              <option value="100" selected>Maximum</option>
+            </select>
+            <p id="engineStrengthHint" class="hint">Full search strength and the engine's strongest move selection.</p>
+          </div>
+
           <div class="game-actions">
             <button id="newGameBtn" class="primary">New game</button>
             <button id="pauseBtn" class="secondary">Pause clocks</button>
@@ -180,7 +207,31 @@
               <div><label for="incrementInput">Increment seconds</label><input id="incrementInput" type="number" min="0" step="0.1" value="0.5"></div>
             </div>
             <button id="applyTimeBtn" class="secondary full">Apply & restart</button>
+            <details id="advancedClockDetails" class="inline-details">
+              <summary>Advanced clock options</summary>
+              <div class="advanced-clock-grid">
+                <div><label for="clockModeSelect">Clock rule</label><select id="clockModeSelect"><option value="increment">Fischer increment</option><option value="bronstein">Bronstein delay</option><option value="hourglass">Hourglass</option></select></div>
+                <div><label for="delayInput">Delay seconds</label><input id="delayInput" type="number" min="0" max="60" step="0.1" value="0"></div>
+                <div><label for="whiteBaseInput">White minutes</label><input id="whiteBaseInput" type="number" min="0.1" max="600" step="0.25" value="2"></div>
+                <div><label for="blackBaseInput">Black minutes</label><input id="blackBaseInput" type="number" min="0.1" max="600" step="0.25" value="2"></div>
+                <div><label for="stageMovesInput">Stage after moves</label><input id="stageMovesInput" type="number" min="0" max="200" step="1" value="0"></div>
+                <div><label for="stageAddInput">Add minutes</label><input id="stageAddInput" type="number" min="0" max="600" step="1" value="0"></div>
+              </div>
+              <p class="hint">Use asymmetric starting clocks, Bronstein delay, hourglass time transfer, or a staged time bonus such as “40 moves, then +30 minutes.”</p>
+            </details>
           </div>
+
+          <details class="section-card tournament-card">
+            <summary><span>Engine match series</span><span id="tournamentScore" class="setting-value">Not running</span></summary>
+            <p class="hint">Run a local engine-v-engine series with different strength targets. Games are saved to your local library.</p>
+            <div class="row three compact-row">
+              <div><label for="tournamentGames">Games</label><input id="tournamentGames" type="number" min="2" max="20" step="2" value="4"></div>
+              <div><label for="tournamentWhiteSkill">White</label><select id="tournamentWhiteSkill"><option value="40">1200</option><option value="60">1600</option><option value="70">1900</option><option value="85">2200</option><option value="100" selected>Max</option></select></div>
+              <div><label for="tournamentBlackSkill">Black</label><select id="tournamentBlackSkill"><option value="40" selected>1200</option><option value="60">1600</option><option value="70">1900</option><option value="85">2200</option><option value="100">Max</option></select></div>
+            </div>
+            <div class="row two compact-row"><button id="startTournamentBtn" class="secondary">Start series</button><button id="stopTournamentBtn" class="secondary" disabled>Stop</button></div>
+            <div id="tournamentProgress" class="mini-report"><p class="hint">No match series has been run.</p></div>
+          </details>
 
           <div class="list-heading"><span>Moves</span><span id="moveCount" class="setting-value">0 plies</span></div>
           <div id="moves" class="moves"></div>
@@ -209,6 +260,21 @@
             </div>
             <div id="recentGamesList" class="recent-games-list"></div>
             <button id="clearRecentGamesBtn" class="text-button recent-clear" hidden>Clear game library</button>
+          </details>
+
+          <details class="file-card bulk-library-card">
+            <summary><span>Bulk PGN &amp; analysis queue</span><span id="analysisQueueCount" class="setting-value">0 queued</span></summary>
+            <p class="hint">Import multi-game PGN files without replacing the live board, then analyze saved games sequentially in isolated engine workers.</p>
+            <div class="row two compact-row"><button id="bulkPgnBtn" class="secondary">Import PGN collection…</button><button id="analyzeLibraryBtn" class="secondary">Analyze unanalyzed games</button></div>
+            <input id="bulkPgnInput" type="file" accept=".pgn,application/x-chess-pgn,text/plain" multiple hidden>
+            <div class="analysis-progress-wrap queue-progress"><div class="analysis-progress-track"><div id="queueProgressBar" class="analysis-progress"></div></div><div class="analysis-progress-meta"><span id="queueProgressText">Idle</span><button id="cancelQueueBtn" class="text-button" disabled>Cancel</button></div></div>
+          </details>
+
+          <details class="file-card position-search-card">
+            <summary><span>Position search</span><span id="positionSearchCount" class="setting-value">0 matches</span></summary>
+            <p class="hint">Find the current position in saved games, including analyzed transpositions with the same FEN position key.</p>
+            <button id="searchPositionBtn" class="secondary full">Search current position</button>
+            <div id="positionSearchResults" class="compact-list"></div>
           </details>
 
           <details class="file-card study-library-card" open>
@@ -352,10 +418,12 @@
               </div>
               <div class="variation-toolbar">
                 <button id="variationBackBtn" class="secondary compact">← Parent</button>
+                <button id="variationPromoteBtn" class="secondary compact">Promote line</button>
                 <button id="variationDeleteBtn" class="text-button">Delete branch</button>
                 <button id="variationResetBtn" class="text-button">Reset study</button>
               </div>
               <div id="variationBreadcrumb" class="variation-breadcrumb"></div>
+              <div id="variationTree" class="variation-tree" aria-label="Study variation tree"></div>
               <div id="variationChildren" class="variation-children"></div>
               <label for="variationNag">Annotation</label>
               <select id="variationNag"><option value="">None</option><option value="!">!</option><option value="?">?</option><option value="!!">!!</option><option value="??">??</option><option value="!?">!?</option><option value="?!">?!</option></select>
@@ -444,10 +512,29 @@
             <p class="hint">Uses your recent local games to show what was played next from the current position.</p>
             <div id="openingExplorer" class="opening-explorer"><p class="hint">Play or save more games to build personal opening statistics.</p></div>
           </div>
+          <div class="opening-explorer-card">
+            <div class="setting-heading"><span class="label">Opening preparation report</span><button id="refreshPrepBtn" class="text-button" type="button">Refresh</button></div>
+            <p class="hint">Combines your local game results, analyzed opening CPL, and saved repertoires to surface lines worth preparing.</p>
+            <div id="openingPrepReport" class="mini-report"><p class="hint">Save or analyze games to build a preparation report.</p></div>
+          </div>
+          <div class="opening-explorer-card">
+            <div class="setting-heading"><span class="label">Player profile</span><span id="profileRating" class="setting-value">Unrated</span></div>
+            <div id="playerProfile" class="profile-grid"></div>
+          </div>
           <div class="setting-group">
             <label for="evalPerspectiveSelect">Evaluation perspective</label>
             <select id="evalPerspectiveSelect"><option value="white">White</option><option value="turn">Side to move</option></select>
           </div>
+          <details class="advanced-details engine-config-card">
+            <summary>Engine configuration</summary>
+            <div class="advanced-body">
+              <div class="row two compact-row">
+                <div><label for="engineProfileSelect">Personality</label><select id="engineProfileSelect"><option value="maximum">Maximum</option><option value="fast">Fast</option><option value="beginner">Beginner</option><option value="aggressive">Aggressive</option><option value="solid">Solid</option><option value="adaptive">Adaptive</option></select></div>
+                <div><label for="engineMoveCapInput">Move cap (ms)</label><input id="engineMoveCapInput" type="number" min="50" max="10000" step="50" value="2500"></div>
+              </div>
+              <button id="applyEngineConfigBtn" class="secondary full">Apply engine configuration</button>
+            </div>
+          </details>
           <button id="engineBtn" class="primary full" title="Play engine move (E)">Play engine move</button>
           <details class="advanced-details">
             <summary>Advanced diagnostics</summary>
@@ -511,6 +598,22 @@
             <div class="setting-heading"><span class="label">Training queue</span><button id="clearTrainerBtn" class="text-button">Clear</button></div>
             <div id="trainerQueue" class="trainer-queue"></div>
           </div>
+          <div class="trainer-card">
+            <div class="setting-heading"><span class="label">Endgame trainer</span><span class="setting-value">Curated local set</span></div>
+            <p class="hint">Load a practical endgame position and let FunChessEngine generate the local best-move target before training.</p>
+            <select id="endgameSelect"><option value="opposition">King + pawn opposition</option><option value="queen">Queen mate technique</option><option value="rook">Rook mate technique</option><option value="rook-pawn">Rook + passer technique</option><option value="minor-pawn">Minor-piece endgame</option></select>
+            <button id="startEndgameBtn" class="secondary full">Start endgame drill</button>
+          </div>
+          <div class="trainer-card">
+            <div class="setting-heading"><span class="label">Puzzle creator</span><span class="setting-value">Current position</span></div>
+            <div class="row two compact-row"><div><label for="customPuzzleTitle">Title</label><input id="customPuzzleTitle" type="text" maxlength="60" placeholder="My puzzle"></div><div><label for="customPuzzleMove">Solution UCI</label><input id="customPuzzleMove" type="text" maxlength="5" placeholder="e2e4"></div></div>
+            <div class="row two compact-row"><button id="suggestPuzzleMoveBtn" class="secondary">Use engine best</button><button id="savePuzzleBtn" class="secondary">Save puzzle</button></div>
+          </div>
+          <div class="trainer-card">
+            <div class="setting-heading"><span class="label">Visualization &amp; coordinates</span><span id="coordinateScore" class="setting-value">0 / 0</span></div>
+            <div class="row two compact-row"><div><label for="visionModeSelect">Board vision</label><select id="visionModeSelect"><option value="normal">Normal</option><option value="blindfold">Blindfold</option><option value="hide-white">Hide White</option><option value="hide-black">Hide Black</option></select></div><button id="coordinateDrillBtn" class="secondary align-end">Start coordinate drill</button></div>
+            <p id="coordinatePrompt" class="hint">Coordinate drill will ask you to click named squares on the board.</p>
+          </div>
         </div>
 
         <div id="displayTab" class="tab-panel" role="tabpanel" aria-labelledby="displayTabButton">
@@ -541,6 +644,17 @@
             <label class="toggle"><span><strong>High contrast</strong><small>Stronger panel borders and focus indicators</small></span><input id="highContrastToggle" type="checkbox"><i></i></label>
             <label class="toggle"><span><strong>Larger interface text</strong><small>Increase supporting text and control labels</small></span><input id="largeTextToggle" type="checkbox"><i></i></label>
           </div>
+          <div class="file-card settings-data-card">
+            <div class="setting-heading"><span class="label">Workspace backup</span><span class="setting-value">.fce</span></div>
+            <p class="hint">Export or restore games, studies, bookmarks, training data, annotations, and appearance settings in one local bundle. Saving it in iCloud/Dropbox/OneDrive gives you folder-based sync without an account service.</p>
+            <div class="row two compact-row"><button id="backupWorkspaceBtn" class="secondary">Back up workspace…</button><button id="restoreWorkspaceBtn" class="secondary">Restore workspace…</button></div>
+            <input id="restoreWorkspaceInput" type="file" accept=".fce,.json,application/json" hidden>
+          </div>
+          <div class="file-card settings-data-card">
+            <div class="setting-heading"><span class="label">Share current game</span><span class="setting-value">Local export</span></div>
+            <div class="row two compact-row"><button id="copyShareBtn" class="secondary">Copy share text</button><button id="shareImageBtn" class="secondary">Save share image</button></div>
+          </div>
+          <button id="showOnboardingBtn" class="secondary full">Show getting-started tour</button>
           <button id="resetDisplayBtn" class="secondary full">Reset appearance</button>
           <p class="shortcut-hint">Keyboard: <kbd>⌘K</kbd> commands · <kbd>Z</kbd> zen · <kbd>Alt+1…5</kbd> tabs · <kbd>F</kbd> flip · <kbd>U</kbd> undo · <kbd>E</kbd> engine · <kbd>Space</kbd> pause · <kbd>Esc</kbd> clear</p>
         </div>
@@ -588,7 +702,14 @@
       <div id="commandResults" class="command-results"></div>
     </div>
   </dialog>
+  <dialog id="onboardingDialog" class="command-dialog onboarding-dialog" aria-labelledby="onboardingTitle">
+    <div class="command-shell">
+      <div class="dialog-head"><div><p class="eyebrow">WELCOME</p><h2 id="onboardingTitle">Your local chess workspace</h2></div><button id="onboardingCloseBtn" class="dialog-close" aria-label="Close">×</button></div>
+      <div id="onboardingContent" class="onboarding-content"></div>
+      <div class="dialog-actions"><button id="onboardingPrevBtn" class="secondary">Back</button><button id="onboardingNextBtn" class="primary">Next</button></div>
+    </div>
+  </dialog>
   <div id="dropOverlay" class="drop-overlay" hidden><div><strong>Open in FunChessEngine</strong><span>Drop PGN, FEN, or saved PNG</span></div></div>
-  <script src="/app.js?v=10"></script>
+  <script src="/app.js?v=11"></script>
 </body>
 </html>

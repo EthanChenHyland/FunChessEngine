@@ -18,6 +18,9 @@ DESKTOP_VERIFY_BUILD = (
 )
 DESKTOP_NOTARIZE = Path(__file__).resolve().parents[1] / "desktop" / "scripts" / "notarize.js"
 CI_WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml"
+DESKTOP_BUILDS_WORKFLOW = (
+    Path(__file__).resolve().parents[1] / ".github" / "workflows" / "desktop-builds.yml"
+)
 
 
 class FrontendTransitionContractTests(unittest.TestCase):
@@ -35,6 +38,7 @@ class FrontendTransitionContractTests(unittest.TestCase):
         cls.desktop_verify_build = DESKTOP_VERIFY_BUILD.read_text(encoding="utf-8")
         cls.desktop_notarize = DESKTOP_NOTARIZE.read_text(encoding="utf-8")
         cls.ci = CI_WORKFLOW.read_text(encoding="utf-8")
+        cls.desktop_builds = DESKTOP_BUILDS_WORKFLOW.read_text(encoding="utf-8")
 
     def assert_function_contains(self, name: str, text: str, span: int = 6_000) -> None:
         match = re.search(rf"(?:async\s+)?function\s+{re.escape(name)}\b", self.source)
@@ -56,6 +60,103 @@ class FrontendTransitionContractTests(unittest.TestCase):
         self.assert_function_contains("renderRecentGames", '$("recentFavoritesOnly")')
         self.assert_function_contains("toggleRecentFavorite", "snapshot.favorite")
         self.assert_function_contains("deleteRecentGame", "recentGames.splice")
+
+    def test_sidebar_scrolls_per_tab_and_engine_strength_is_live_configurable(self) -> None:
+        self.assertIn('id="engineStrengthSelect"', self.html)
+        self.assertIn('id="engineStrengthValue"', self.html)
+        self.assert_function_contains("applyEngineStrength", 'api("/api/engine-config"')
+        self.assert_function_contains("applyEngineStrength", "engineProfileForSkill")
+        self.assert_function_contains("activateTab", "tabScrollPositions.set")
+        self.assert_function_contains("activateTab", "nextPanel.scrollTop")
+        self.assertIn("grid-template-rows: auto minmax(0, 1fr);", self.css)
+        self.assertIn("overscroll-behavior-y: contain;", self.css)
+        self.assertIn("-webkit-overflow-scrolling: touch;", self.css)
+
+    def test_variant_advanced_clocks_and_engine_profiles_are_exposed(self) -> None:
+        for control in (
+            "variantSelect",
+            "chess960Position",
+            "clockModeSelect",
+            "delayInput",
+            "whiteBaseInput",
+            "blackBaseInput",
+            "stageMovesInput",
+            "stageAddInput",
+            "engineProfileSelect",
+            "engineMoveCapInput",
+        ):
+            self.assertIn(f'id="{control}"', self.html)
+        self.assert_function_contains("resetPayloadFromControls", "white_clock_ms")
+        self.assert_function_contains("resetPayloadFromControls", "black_clock_ms")
+        self.assert_function_contains("resetPayloadFromControls", "time_stages")
+        self.assert_function_contains("resetPayloadFromControls", "chess960_pos")
+        self.assert_function_contains("applyEngineConfig", 'api("/api/engine-config"')
+
+    def test_bulk_library_analysis_and_position_search_are_local_and_non_destructive(self) -> None:
+        for control in (
+            "bulkPgnBtn",
+            "analyzeLibraryBtn",
+            "analysisQueueCount",
+            "searchPositionBtn",
+            "positionSearchResults",
+        ):
+            self.assertIn(f'id="{control}"', self.html)
+        self.assert_function_contains("importPgnCollectionText", 'api("/api/parse-pgn-batch"')
+        self.assert_function_contains("runLibraryAnalysisQueue", 'api("/api/analyze-pgn"')
+        self.assert_function_contains("renderPositionSearch", "fenPositionKey")
+        self.assert_function_contains("openRecentGame", 'api("/api/load-pgn"')
+
+    def test_training_prep_profile_and_visual_study_features_exist(self) -> None:
+        for control in (
+            "openingPrepReport",
+            "playerProfile",
+            "variationTree",
+            "variationPromoteBtn",
+            "endgameSelect",
+            "customPuzzleMove",
+            "visionModeSelect",
+            "coordinateDrillBtn",
+        ):
+            self.assertIn(f'id="{control}"', self.html)
+        self.assert_function_contains("renderOpeningPrepReport", "openingCpl")
+        self.assert_function_contains("renderPlayerProfile", "training")
+        self.assert_function_contains("renderVariationWorkspace", "fenCounts")
+        self.assert_function_contains("startEndgameDrill", "ENDGAME_DRILLS")
+        self.assert_function_contains("saveCustomPuzzle", 'api("/api/variation-move"')
+        self.assertIn(':root[data-vision-mode="blindfold"] .piece', self.css)
+
+    def test_workspace_backup_share_onboarding_and_persistent_analysis_cache(self) -> None:
+        for control in (
+            "backupWorkspaceBtn",
+            "restoreWorkspaceBtn",
+            "copyShareBtn",
+            "shareImageBtn",
+            "showOnboardingBtn",
+            "onboardingDialog",
+        ):
+            self.assertIn(f'id="{control}"', self.html)
+        self.assert_function_contains(
+            "workspaceBackupPayload", 'format: "FunChessEngine.WorkspaceBackup"'
+        )
+        self.assert_function_contains("restoreWorkspaceText", "validateWorkspaceBackup")
+        self.assert_function_contains("copyShareText", "currentPgnText")
+        self.assert_function_contains("showOnboarding", "ONBOARDING_KEY")
+        self.assertIn('const POSITION_CACHE_KEY = "funChessEngine.positionCache.v1"', self.source)
+        self.assert_function_contains("rememberPositionAnalysis", "savePositionAnalysisCache")
+
+    def test_engine_match_series_and_native_open_documents_are_wired(self) -> None:
+        for control in (
+            "tournamentGames",
+            "tournamentWhiteSkill",
+            "tournamentBlackSkill",
+            "startTournamentBtn",
+            "stopTournamentBtn",
+        ):
+            self.assertIn(f'id="{control}"', self.html)
+        self.assert_function_contains("startTournament", "tournamentState")
+        self.assert_function_contains("scheduleComputerReply", "configureTournamentSide")
+        self.assert_function_contains("handleNativeDocument", "importPgnCollectionText")
+        self.assertIn("desktop.onOpenDocument?.", self.source)
 
     def test_game_replacements_clear_transient_workspaces_only_after_success(self) -> None:
         for name in (
@@ -272,12 +373,27 @@ class FrontendTransitionContractTests(unittest.TestCase):
         self.assertIn('"smoke:ui": "electron scripts/ui-smoke.js"', self.desktop_package)
         self.assertIn('"verify:build": "node scripts/verify-build.js"', self.desktop_package)
         self.assertIn(
-            "electron-builder --mac --arm64 && npm run verify:build", self.desktop_package
+            '"build:mac": "npm run build:icon && npm run build:backend '
+            '&& npm run clean:dist && electron-builder --mac --arm64 '
+            '&& npm run verify:build"',
+            self.desktop_package,
         )
         self.assertIn("Review navigation mutated the live game", self.desktop_ui_smoke)
         self.assertIn("Packaged macOS build smoke OK", self.desktop_verify_build)
         self.assertIn("requireArm64(appExecutable)", self.desktop_verify_build)
         self.assertIn("requireArm64(backendExecutable)", self.desktop_verify_build)
+
+    def test_cross_platform_desktop_packaging_is_available_without_weakening_mac_checks(
+        self,
+    ) -> None:
+        self.assertIn('"build:linux":', self.desktop_package)
+        self.assertIn("electron-builder --linux --x64", self.desktop_package)
+        self.assertIn('"build:win":', self.desktop_package)
+        self.assertIn("electron-builder --win --x64", self.desktop_package)
+        self.assertIn('process.platform === "win32" ? "funchess-backend.exe"', self.desktop_main)
+        self.assertIn("ubuntu-latest", self.desktop_builds)
+        self.assertIn("windows-latest", self.desktop_builds)
+        self.assertIn("actions/upload-artifact@v4", self.desktop_builds)
 
     def test_mac_notarization_hook_is_opt_in_and_credential_gated(self) -> None:
         self.assertIn('"afterSign": "scripts/notarize.js"', self.desktop_package)

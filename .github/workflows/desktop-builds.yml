@@ -1,0 +1,48 @@
+name: desktop builds
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            script: build:linux
+            artifact: linux-x64
+          - os: windows-latest
+            script: build:win
+            artifact: windows-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12.14"
+          enable-cache: true
+      - run: uv sync --frozen
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm ci
+        working-directory: desktop
+      - run: npm run ${{ matrix.script }}
+        working-directory: desktop
+        env:
+          UV: uv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FunChessEngine-${{ matrix.artifact }}
+          path: desktop/dist/*
+          if-no-files-found: error
+

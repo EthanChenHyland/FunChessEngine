@@ -156,7 +156,11 @@ function devBackendCommand() {
 
 function backendCommand() {
   if (!app.isPackaged) return devBackendCommand();
-  const executable = path.join(process.resourcesPath, "bin", "funchess-backend");
+  const executable = path.join(
+    process.resourcesPath,
+    "bin",
+    process.platform === "win32" ? "funchess-backend.exe" : "funchess-backend",
+  );
   return {
     command: executable,
     args: ["--no-open", "--port", String(DESKTOP_BACKEND_PORT)],

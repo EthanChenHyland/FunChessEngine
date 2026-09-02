@@ -5,10 +5,11 @@ and benchmarks outside the engine package so `engine-package.zip` remains small 
 
 ## Build and test
 
-From the repository root:
+Clone the repository and enter it:
 
 ```bash
-cd /Users/ethius/VSCode/FunChessEngine
+git clone https://github.com/EthanChenHyland/FunChessEngine.git
+cd FunChessEngine
 ```
 
 Install/sync the Python environment:
@@ -80,6 +81,10 @@ For a local engine match or standalone engine package:
 make play
 make zip
 ```
+
+The standalone engine package is generated locally from the tracked source rather than committed as a
+binary artifact. A fresh clone therefore contains everything required to reproduce it; `make zip` creates
+`engine-package.zip` with `agent.py` at its root.
 
 `make gui` launches the local Engine Lab in your browser. `make desktop-dev` launches the same
 Engine Lab in an Electron desktop shell, and `make desktop-build` produces an Apple Silicon macOS

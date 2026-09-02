@@ -3,7 +3,7 @@ SHELL := /bin/bash
 UV := $(shell command -v uv 2>/dev/null || printf '%s' '/Users/ethius/AI-Workspace/runtimes/uv/bin/uv')
 PYTHON_VERSION := 3.12.14
 
-.PHONY: setup check-python play arena ab benchmark gui desktop desktop-dev desktop-build test zip verify-zip gate release-gate release-build
+.PHONY: setup check-python play arena ab benchmark uci gui desktop desktop-dev desktop-build test zip verify-zip gate release-gate release-build
 
 setup:
 	$(UV) sync
@@ -23,6 +23,9 @@ ab:
 
 benchmark:
 	$(UV) run python -m harness.benchmark $(if $(COMPARE),--compare "$(COMPARE)") $(if $(CLOCK_MS),--clock-ms "$(CLOCK_MS)")
+
+uci:
+	$(UV) run python -m uci
 
 gui:
 	$(UV) run python -m gui.server
