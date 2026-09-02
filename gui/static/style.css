@@ -1169,6 +1169,19 @@ kbd { padding: 2px 5px; border: 1px solid var(--line-strong); border-bottom-widt
 .training-viz-track { height: 6px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--panel-2) 70%, black); }
 .training-viz-track i { display: block; height: 100%; background: var(--accent); }
 
+.tag-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.tag-chip { padding: 4px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--text); background: var(--panel-3); font-size: 9px; text-transform: capitalize; }
+.breakable-code { display: block; max-width: 100%; margin-top: 8px; padding: 8px; overflow-wrap: anywhere; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); background: var(--panel-3); font-size: 9px; }
+.static-row { cursor: default; }
+.engine-preset-editor { display: grid; gap: 7px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.report-actions { margin-top: 10px; }
+.strategic-insights-card .mini-report { margin-top: 8px; }
+.square.engine-heat::after { content: ""; position: absolute; inset: 15%; border-radius: 50%; background: color-mix(in srgb, var(--accent) calc(var(--engine-heat, .3) * 100%), transparent); pointer-events: none; }
+.square.threat-white { box-shadow: inset 0 0 0 3px rgba(245, 245, 235, .35); }
+.square.threat-black { box-shadow: inset 0 0 0 3px rgba(20, 24, 20, .55); }
+.square.threat-white.threat-black { box-shadow: inset 0 0 0 3px rgba(224, 160, 74, .7); }
+.square.loose-piece::before { content: "!"; position: absolute; z-index: 5; top: 4px; right: 5px; display: grid; place-items: center; width: 17px; height: 17px; border-radius: 50%; color: #fff; background: #b94242; font: 800 10px/1 system-ui; pointer-events: none; }
+
 :root[data-high-contrast="true"] { --line: color-mix(in srgb, var(--text) 30%, transparent); --line-strong: color-mix(in srgb, var(--text) 55%, transparent); }
 :root[data-high-contrast="true"] button:focus-visible,
 :root[data-high-contrast="true"] input:focus-visible,

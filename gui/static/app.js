@@ -16,6 +16,10 @@ const ONBOARDING_KEY = "funChessEngine.onboarding.v1";
 const ANALYSIS_QUEUE_KEY = "funChessEngine.analysisQueue.v1";
 const TOURNAMENT_HISTORY_KEY = "funChessEngine.tournaments.v1";
 const POSITION_CACHE_KEY = "funChessEngine.positionCache.v1";
+const LESSONS_KEY = "funChessEngine.lessons.v1";
+const ENGINE_PRESETS_KEY = "funChessEngine.enginePresets.v1";
+const PLUGINS_KEY = "funChessEngine.plugins.v1";
+const EXTERNAL_ENGINES_KEY = "funChessEngine.externalEngines.v1";
 const DURABLE_DB_NAME = "FunChessEngine.LocalData";
 const DURABLE_DB_VERSION = 1;
 const DURABLE_STORE = "metadata";
@@ -127,6 +131,14 @@ let coordinateCorrect = 0;
 let coordinateAttempts = 0;
 let coordinateWasPaused = true;
 let onboardingStep = 0;
+let lessons = loadLessons();
+let lessonDraftCards = [];
+let enginePresets = loadEnginePresets();
+let pluginManifests = loadPluginManifests();
+let externalEngines = loadExternalEngines();
+let positionInsightsData = null;
+let positionInsightsBusy = false;
+let lanInfo = { running: false };
 
 const $ = (id) => document.getElementById(id);
 
@@ -270,6 +282,26 @@ function durableMetadataSpecs() {
       get: () => tournamentHistory,
       set: (value) => { tournamentHistory = Array.isArray(value) ? value.slice(0, 20) : []; },
     },
+    {
+      key: LESSONS_KEY,
+      get: () => lessons,
+      set: (value) => { lessons = Array.isArray(value) ? value.filter((item) => item?.title).slice(0, 100) : []; },
+    },
+    {
+      key: ENGINE_PRESETS_KEY,
+      get: () => enginePresets,
+      set: (value) => { enginePresets = Array.isArray(value) ? value.filter((item) => item?.name).slice(0, 30) : []; },
+    },
+    {
+      key: PLUGINS_KEY,
+      get: () => pluginManifests,
+      set: (value) => { pluginManifests = Array.isArray(value) ? value.filter((item) => item?.id).slice(0, 50) : []; },
+    },
+    {
+      key: EXTERNAL_ENGINES_KEY,
+      get: () => externalEngines,
+      set: (value) => { externalEngines = Array.isArray(value) ? value.filter((item) => item?.path).slice(0, 12) : []; },
+    },
   ];
 }
 
@@ -309,6 +341,10 @@ async function hydrateDurableMetadata() {
       renderVariationWorkspace();
       renderStudyLibrary();
       renderBookmarks();
+      renderLessons();
+      renderEnginePresets();
+      renderPlugins();
+      renderExternalEngines();
       renderLauncher();
       renderBoard();
     }
@@ -533,6 +569,62 @@ function loadTournamentHistory() {
   } catch (_) {
     return [];
   }
+}
+
+function loadLessons() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LESSONS_KEY) || "[]");
+    return Array.isArray(saved) ? saved.filter((item) => item?.title).slice(0, 100) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function loadEnginePresets() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(ENGINE_PRESETS_KEY) || "[]");
+    return Array.isArray(saved) ? saved.filter((item) => item?.name).slice(0, 30) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function loadPluginManifests() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PLUGINS_KEY) || "[]");
+    return Array.isArray(saved) ? saved.filter((item) => item?.id).slice(0, 50) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function loadExternalEngines() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(EXTERNAL_ENGINES_KEY) || "[]");
+    return Array.isArray(saved) ? saved.filter((item) => item?.path).slice(0, 12) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function saveLessons() {
+  lessons = lessons.slice(0, 100);
+  persistDurableValue(LESSONS_KEY, lessons);
+}
+
+function saveEnginePresets() {
+  enginePresets = enginePresets.slice(0, 30);
+  persistDurableValue(ENGINE_PRESETS_KEY, enginePresets);
+}
+
+function savePluginManifests() {
+  pluginManifests = pluginManifests.slice(0, 50);
+  persistDurableValue(PLUGINS_KEY, pluginManifests);
+}
+
+function saveExternalEngines() {
+  externalEngines = externalEngines.slice(0, 12);
+  persistDurableValue(EXTERNAL_ENGINES_KEY, externalEngines);
 }
 
 function loadPositionAnalysisCache() {
@@ -908,7 +1000,7 @@ async function clearRecentGames() {
   renderOpeningExplorer();
 }
 
-function importedGameSnapshot(game, sourceName = "PGN collection") {
+function importedGameSnapshot(game, sourceName = "PGN collection", referenceDatabase = false) {
   const headers = game?.headers && typeof game.headers === "object" ? game.headers : {};
   const result = ["1-0", "0-1", "1/2-1/2"].includes(headers.Result) ? headers.Result : "*";
   return {
@@ -917,6 +1009,7 @@ function importedGameSnapshot(game, sourceName = "PGN collection") {
     recent_id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`,
     saved_at: new Date().toISOString(),
     imported_from: sourceName,
+    reference_database: Boolean(referenceDatabase),
     initial_fen: game.initial_fen || STARTING_FEN,
     moves: Array.isArray(game.moves_uci) ? game.moves_uci.slice(0, 1000) : [],
     pgn_text: String(game.pgn || ""),
@@ -932,7 +1025,7 @@ function importedGameSnapshot(game, sourceName = "PGN collection") {
   };
 }
 
-async function importPgnCollectionText(text, sourceName = "PGN collection") {
+async function importPgnCollectionText(text, sourceName = "PGN collection", referenceDatabase = false) {
   const pgn = String(text || "");
   if (!pgn.trim()) return 0;
   if (utf8ByteLength(pgn) > MAX_PGN_BYTES) throw new Error(`${sourceName} exceeds the 2 MB import limit.`);
@@ -940,7 +1033,7 @@ async function importPgnCollectionText(text, sourceName = "PGN collection") {
   const games = Array.isArray(parsed.games) ? parsed.games : [];
   let added = 0;
   for (const game of games) {
-    const snapshot = importedGameSnapshot(game, sourceName);
+    const snapshot = importedGameSnapshot(game, sourceName, referenceDatabase);
     const signature = gameSignature(snapshot);
     const existing = recentGames.findIndex((item) => gameSignature(item) === signature);
     if (existing >= 0) {
@@ -972,6 +1065,23 @@ async function importPgnCollectionFiles(files) {
     added += await importPgnCollectionText(await file.text(), file.name || "PGN collection");
   }
   setStatus(`Imported ${added} new game${added === 1 ? "" : "s"} into the local library.`, "success");
+}
+
+async function importOpeningDatabaseFiles(files) {
+  const list = [...(files || [])];
+  if (!list.length) return;
+  let added = 0;
+  for (const file of list) {
+    assertBrowserFileSize(file, MAX_PGN_BYTES, file.name || "Opening database PGN");
+    added += await importPgnCollectionText(
+      await file.text(),
+      file.name || "Opening database",
+      true,
+    );
+  }
+  renderOpeningDatabase();
+  renderRepertoireGaps();
+  setStatus(`Imported ${added} new reference game${added === 1 ? "" : "s"}.`, "success");
 }
 
 function queueableLibraryGames() {
@@ -1109,7 +1219,7 @@ function renderStudyLibrary() {
     const workspaceKind = workspace.kind === "repertoire" ? "repertoire" : "study";
     if (kind !== "all" && workspaceKind !== kind) return false;
     if (!query) return true;
-    return `${workspace.name || "Untitled study"} ${workspaceKind}`.toLowerCase().includes(query);
+    return `${workspace.name || "Untitled study"} ${workspaceKind} ${workspace.folder || ""} ${(workspace.tags || []).join(" ")}`.toLowerCase().includes(query);
   });
   entries.sort((left, right) => {
     if (sort === "name") return String(left[1].name || "").localeCompare(String(right[1].name || ""));
@@ -1137,7 +1247,8 @@ function renderStudyLibrary() {
     const meta = document.createElement("span");
     const updated = workspace.updated_at ? new Date(workspace.updated_at) : null;
     const when = updated && !Number.isNaN(updated.getTime()) ? updated.toLocaleDateString() : "Local";
-    meta.textContent = `${workspace.kind === "repertoire" ? "Repertoire" : "Study"} · ${studyNodeCount(workspace)} positions · ${when}`;
+    const organization = [workspace.folder, ...(workspace.tags || []).slice(0, 3)].filter(Boolean).join(" · ");
+    meta.textContent = `${workspace.kind === "repertoire" ? "Repertoire" : "Study"} · ${studyNodeCount(workspace)} positions · ${when}${organization ? ` · ${organization}` : ""}`;
     info.append(title, meta);
     const actions = document.createElement("div");
     actions.className = "study-library-actions";
@@ -1657,6 +1768,15 @@ function renderBoard() {
   const lastFrom = !setupMode && display.lastMove ? view?.last_move?.slice(0, 2) : null;
   const lastTo = !setupMode && display.lastMove ? view?.last_move?.slice(2, 4) : null;
   const marks = currentAnnotations();
+  const threatMap = Boolean($("threatMapToggle")?.checked && positionInsightsData?.fen === view?.fen);
+  const heatMap = Boolean($("heatMapToggle")?.checked && multiPvData?.fen === view?.fen);
+  const heatMoves = heatMap ? (multiPvData?.lines || []).map((line, index) => ({
+    square: String(line.move || "").slice(2, 4),
+    rank: index,
+  })) : [];
+  const attackedWhite = new Set(positionInsightsData?.attacks?.white || []);
+  const attackedBlack = new Set(positionInsightsData?.attacks?.black || []);
+  const looseSquares = new Set(positionInsightsData?.loose_pieces || []);
 
   for (const square of order) {
     const file = square.charCodeAt(0) - 97;
@@ -1668,6 +1788,14 @@ function renderBoard() {
     if (square === lastFrom || square === lastTo) button.classList.add("last");
     if (targets.has(square)) button.classList.add("target");
     if (symbol) button.classList.add("occupied");
+    if (threatMap && attackedWhite.has(square)) button.classList.add("threat-white");
+    if (threatMap && attackedBlack.has(square)) button.classList.add("threat-black");
+    if (threatMap && looseSquares.has(square)) button.classList.add("loose-piece");
+    const heat = heatMoves.find((item) => item.square === square);
+    if (heat) {
+      button.classList.add("engine-heat");
+      button.style.setProperty("--engine-heat", String(Math.max(.18, .6 - heat.rank * .16)));
+    }
     if (marks.squares?.[square]) {
       button.classList.add("annotation-highlight");
       button.style.setProperty("--annotation-color", annotationColorValue(marks.squares[square], .42));
@@ -2191,6 +2319,12 @@ function saveStudyIdentity() {
   if (!variationWorkspace) return;
   variationWorkspace.name = String($("studyNameInput")?.value || defaultStudyName(variationWorkspace.origin_ply)).trim().slice(0, 80) || defaultStudyName(variationWorkspace.origin_ply);
   variationWorkspace.kind = $("studyKindSelect")?.value === "repertoire" ? "repertoire" : "study";
+  variationWorkspace.folder = String($("studyFolderInput")?.value || "").trim().slice(0, 48);
+  variationWorkspace.tags = String($("studyTagsInput")?.value || "")
+    .split(",")
+    .map((tag) => tag.trim().slice(0, 32))
+    .filter(Boolean)
+    .slice(0, 12);
   saveCurrentVariationWorkspace();
   renderStudyLibrary();
   renderVariationWorkspace();
@@ -2254,6 +2388,8 @@ function renderVariationWorkspace() {
   $("variationStatus").textContent = `${variationWorkspace?.kind === "repertoire" ? "Repertoire" : "Study"} · ${Math.max(0, path.length - 1)} ply branch`;
   if ($("studyNameInput") && document.activeElement !== $("studyNameInput")) $("studyNameInput").value = variationWorkspace?.name || defaultStudyName(variationWorkspace?.origin_ply);
   if ($("studyKindSelect")) $("studyKindSelect").value = variationWorkspace?.kind === "repertoire" ? "repertoire" : "study";
+  if ($("studyFolderInput") && document.activeElement !== $("studyFolderInput")) $("studyFolderInput").value = variationWorkspace?.folder || "";
+  if ($("studyTagsInput") && document.activeElement !== $("studyTagsInput")) $("studyTagsInput").value = (variationWorkspace?.tags || []).join(", ");
   if ($("studyFavoriteBtn")) $("studyFavoriteBtn").textContent = variationWorkspace?.favorite ? "★ Bookmarked study" : "☆ Bookmark study";
   $("variationBackBtn").disabled = !node?.parent;
   $("variationPromoteBtn").disabled = !node?.parent;
@@ -3239,6 +3375,10 @@ function workspaceBackupPayload() {
     tournaments: tournamentHistory,
     analysis_queue: analysisQueue,
     position_cache: [...positionAnalysisCache.entries()],
+    lessons,
+    engine_presets: enginePresets,
+    plugins: pluginManifests,
+    external_engines: externalEngines,
   };
 }
 
@@ -3299,6 +3439,10 @@ async function restoreWorkspaceText(text) {
     benchmarkHistory = Array.isArray(payload.benchmarks) ? payload.benchmarks : [];
     tournamentHistory = Array.isArray(payload.tournaments) ? payload.tournaments : [];
     analysisQueue = Array.isArray(payload.analysis_queue) ? payload.analysis_queue : [];
+    lessons = Array.isArray(payload.lessons) ? payload.lessons.slice(0, 100) : [];
+    enginePresets = Array.isArray(payload.engine_presets) ? payload.engine_presets.slice(0, 30) : [];
+    pluginManifests = Array.isArray(payload.plugins) ? payload.plugins.slice(0, 50) : [];
+    externalEngines = Array.isArray(payload.external_engines) ? payload.external_engines.slice(0, 12) : [];
     positionAnalysisCache.clear();
     for (const entry of Array.isArray(payload.position_cache) ? payload.position_cache.slice(-30) : []) {
       if (Array.isArray(entry) && typeof entry[0] === "string" && entry[1]) positionAnalysisCache.set(entry[0], entry[1]);
@@ -3316,6 +3460,10 @@ async function restoreWorkspaceText(text) {
     saveTournamentHistory();
     saveAnalysisQueue();
     savePositionAnalysisCache();
+    saveLessons();
+    saveEnginePresets();
+    savePluginManifests();
+    saveExternalEngines();
     applyDisplaySettings(false);
     render();
     renderStudyLibrary();
@@ -3325,6 +3473,10 @@ async function restoreWorkspaceText(text) {
     renderAnalysisQueue();
     renderOpeningPrepReport();
     renderPlayerProfile();
+    renderLessons();
+    renderEnginePresets();
+    renderPlugins();
+    renderExternalEngines();
     setStatus("Workspace restored from backup.", "success");
     return true;
   } catch (error) {
@@ -3355,6 +3507,291 @@ async function copyShareText() {
   } catch (error) {
     setStatus(error.message, "error");
   }
+}
+
+function bytesToBase64(bytes) {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunk));
+  }
+  return btoa(binary);
+}
+
+function base64ToBytes(value) {
+  const binary = atob(String(value || ""));
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+async function syncEncryptionKey(passphrase, salt) {
+  if (!globalThis.crypto?.subtle) throw new Error("Encrypted sync requires Web Crypto support.");
+  const encoder = new TextEncoder();
+  const material = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(passphrase),
+    "PBKDF2",
+    false,
+    ["deriveKey"],
+  );
+  return crypto.subtle.deriveKey(
+    { name: "PBKDF2", salt, iterations: 250000, hash: "SHA-256" },
+    material,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"],
+  );
+}
+
+async function exportEncryptedSync() {
+  try {
+    const passphrase = $("syncPassphraseInput").value;
+    if (passphrase.length < 8) throw new Error("Use a sync passphrase of at least 8 characters.");
+    const plaintext = new TextEncoder().encode(JSON.stringify(workspaceBackupPayload()));
+    if (plaintext.byteLength > MAX_BACKUP_BYTES) throw new Error("Workspace exceeds the encrypted sync size limit.");
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const key = await syncEncryptionKey(passphrase, salt);
+    const encrypted = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plaintext));
+    const envelope = JSON.stringify({
+      format: "FunChessEngine.EncryptedWorkspace",
+      version: 1,
+      kdf: "PBKDF2-SHA256-250000",
+      cipher: "AES-256-GCM",
+      salt: bytesToBase64(salt),
+      iv: bytesToBase64(iv),
+      data: bytesToBase64(encrypted),
+    });
+    const filename = `FunChessEngine-sync-${new Date().toISOString().slice(0, 10)}.fcex`;
+    await downloadBlob(new Blob([envelope], { type: "application/json;charset=utf-8" }), filename);
+    setStatus("Encrypted workspace sync file exported.", "success");
+  } catch (error) {
+    setStatus(error.message, "error");
+  }
+}
+
+async function importEncryptedSyncFile(file) {
+  try {
+    assertBrowserFileSize(file, MAX_BACKUP_BYTES * 2, "Encrypted sync file");
+    const envelope = JSON.parse(await file.text());
+    if (envelope?.format !== "FunChessEngine.EncryptedWorkspace" || envelope?.version !== 1) {
+      throw new Error("This is not a supported FunChessEngine encrypted sync file.");
+    }
+    const passphrase = $("syncPassphraseInput").value;
+    if (passphrase.length < 8) throw new Error("Enter the passphrase used to encrypt this workspace.");
+    const salt = base64ToBytes(envelope.salt);
+    const iv = base64ToBytes(envelope.iv);
+    const data = base64ToBytes(envelope.data);
+    const key = await syncEncryptionKey(passphrase, salt);
+    let decrypted;
+    try {
+      decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, data);
+    } catch (_) {
+      throw new Error("Could not decrypt this workspace. Check the passphrase and file integrity.");
+    }
+    await restoreWorkspaceText(new TextDecoder().decode(decrypted));
+  } catch (error) {
+    setStatus(error.message, "error");
+  }
+}
+
+function renderEnginePresets() {
+  const select = $("enginePresetSelect");
+  if (!select) return;
+  const current = select.value;
+  select.innerHTML = '<option value="">Saved presets…</option>';
+  enginePresets.forEach((preset, index) => {
+    const option = document.createElement("option");
+    option.value = String(index);
+    option.textContent = `${preset.name} · ${capitalize(preset.profile)} · ${preset.skill}`;
+    select.appendChild(option);
+  });
+  if ([...select.options].some((option) => option.value === current)) select.value = current;
+}
+
+function saveCurrentEnginePreset() {
+  const name = $("enginePresetName").value.trim().slice(0, 40);
+  if (!name || !state) {
+    setStatus("Enter a name for the engine preset first.", "error");
+    return;
+  }
+  const preset = {
+    name,
+    profile: $("engineProfileSelect").value || state.engine_profile || "maximum",
+    skill: Number(state.engine_skill || 100),
+    move_time_cap_ms: Math.max(50, Math.min(10000, Number($("engineMoveCapInput").value) || 2500)),
+  };
+  const existing = enginePresets.findIndex((item) => item.name.toLowerCase() === name.toLowerCase());
+  if (existing >= 0) enginePresets.splice(existing, 1);
+  enginePresets.unshift(preset);
+  saveEnginePresets();
+  renderEnginePresets();
+  $("enginePresetName").value = "";
+  setStatus(`Saved engine preset “${name}”.`, "success");
+}
+
+async function applySavedEnginePreset() {
+  const index = Number($("enginePresetSelect").value);
+  const preset = Number.isInteger(index) ? enginePresets[index] : null;
+  if (!preset) return;
+  const config = await api("/api/engine-config", {
+    profile: preset.profile,
+    skill: preset.skill,
+    move_time_cap_ms: preset.move_time_cap_ms,
+  });
+  state.engine_profile = config.profile;
+  state.engine_skill = config.skill;
+  state.engine_move_time_cap_ms = config.move_time_cap_ms;
+  renderEngineStrength();
+  setStatus(`Applied engine preset “${preset.name}”.`, "success");
+}
+
+const SAFE_PLUGIN_ACTIONS = new Set([
+  "open-analysis",
+  "open-training",
+  "start-engine",
+  "start-repertoire-training",
+  "export-report",
+]);
+
+function validatePluginManifestClient(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Plugin manifest must be a JSON object.");
+  const id = String(payload.id || "").trim();
+  const name = String(payload.name || "").trim();
+  const version = String(payload.version || "").trim();
+  const kind = String(payload.kind || "").trim().toLowerCase();
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(id) || !name || name.length > 80 || !version || version.length > 32) {
+    throw new Error("Plugin id, name, or version is invalid.");
+  }
+  if (!["training", "openings", "commands"].includes(kind)) throw new Error("Plugin kind is not supported.");
+  const items = Array.isArray(payload.items) ? payload.items : [];
+  if (items.length > 500) throw new Error("Plugin has too many items.");
+  const normalized = items.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("Plugin items must be objects.");
+    if (kind === "training") {
+      const fen = String(item.fen || "").slice(0, 120);
+      const best = String(item.best_uci || "").slice(0, 5);
+      if (!fen || !/^[a-h][1-8][a-h][1-8][qrbn]?$/.test(best)) throw new Error("Training plugin item needs FEN and best_uci.");
+      return { fen, best_uci: best, title: String(item.title || "Plugin training").slice(0, 100) };
+    }
+    if (kind === "openings") {
+      const moves = Array.isArray(item.moves) ? item.moves.map(String).slice(0, 40) : [];
+      return { name: String(item.name || "Opening").slice(0, 100), moves };
+    }
+    const action = String(item.action || "").slice(0, 64);
+    if (!SAFE_PLUGIN_ACTIONS.has(action)) throw new Error(`Unsupported safe plugin command: ${action}`);
+    return { label: String(item.label || "Plugin command").slice(0, 80), action };
+  });
+  return { id, name, version, kind, items: normalized, enabled: false };
+}
+
+function applyPluginContributions(plugin) {
+  if (!plugin?.enabled) return;
+  if (plugin.kind === "training") {
+    for (const item of plugin.items || []) {
+      const key = `plugin:${plugin.id}:${item.fen}:${item.best_uci}`;
+      if (trainerItems.some((entry) => entry.key === key)) continue;
+      trainerItems.unshift({
+        key,
+        fen: item.fen,
+        best_uci: item.best_uci,
+        best_san: item.best_uci,
+        classification: "Plugin",
+        cpl: 100,
+        phase: "middlegame",
+        explanation: item.title || plugin.name,
+        source: `plugin:${plugin.name}`,
+        created_at: new Date().toISOString(),
+        attempts: 0,
+        solved: 0,
+        due_at: Date.now(),
+      });
+    }
+    saveTrainerItems();
+    renderTrainerPanel();
+  }
+}
+
+function renderPlugins() {
+  const target = $("pluginList");
+  if (!target) return;
+  target.innerHTML = "";
+  $("pluginCount").textContent = `${pluginManifests.length} installed`;
+  pluginManifests.forEach((plugin, index) => {
+    const row = document.createElement("div");
+    row.className = "compact-list-row static-row";
+    const info = document.createElement("div");
+    info.innerHTML = `<strong>${plugin.name}</strong><span>${plugin.kind} · v${plugin.version} · ${(plugin.items || []).length} items</span>`;
+    const toggle = document.createElement("button");
+    toggle.className = "secondary compact";
+    toggle.textContent = plugin.enabled ? "Disable" : "Enable";
+    toggle.addEventListener("click", () => {
+      plugin.enabled = !plugin.enabled;
+      savePluginManifests();
+      applyPluginContributions(plugin);
+      renderPlugins();
+    });
+    const remove = document.createElement("button");
+    remove.className = "text-button compact";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => {
+      pluginManifests.splice(index, 1);
+      savePluginManifests();
+      renderPlugins();
+    });
+    row.append(info, toggle, remove);
+    target.appendChild(row);
+  });
+  if (!pluginManifests.length) target.innerHTML = '<p class="hint">No data-only plugins installed.</p>';
+}
+
+async function installPluginFile(file) {
+  try {
+    assertBrowserFileSize(file, 256 * 1024, "Plugin manifest");
+    const plugin = validatePluginManifestClient(JSON.parse(await file.text()));
+    const existing = pluginManifests.findIndex((item) => item.id === plugin.id);
+    if (existing >= 0) pluginManifests.splice(existing, 1);
+    pluginManifests.unshift(plugin);
+    savePluginManifests();
+    renderPlugins();
+    setStatus(`Installed data-only plugin “${plugin.name}”. Enable it to apply its contributions.`, "success");
+  } catch (error) {
+    setStatus(error.message, "error");
+  }
+}
+
+async function refreshLanStatus() {
+  try {
+    lanInfo = await api("/api/lan", { action: "status" });
+  } catch (_) {
+    lanInfo = { running: false };
+  }
+  renderLanStatus();
+}
+
+function renderLanStatus() {
+  if (!$("lanStatus")) return;
+  $("lanStatus").textContent = lanInfo.running ? "Sharing" : "Off";
+  $("toggleLanBtn").textContent = lanInfo.running ? "Stop LAN sharing" : "Start LAN sharing";
+  $("copyLanLinkBtn").disabled = !lanInfo.running || !lanInfo.url;
+  $("lanLink").textContent = lanInfo.url || "Not running";
+}
+
+async function toggleLanSharing() {
+  try {
+    lanInfo = await api("/api/lan", { action: lanInfo.running ? "stop" : "start" });
+    renderLanStatus();
+    setStatus(lanInfo.running ? "LAN multiplayer link is active on your private network." : "LAN sharing stopped.", "success");
+  } catch (error) {
+    setStatus(error.message, "error");
+  }
+}
+
+async function copyLanLink() {
+  if (!lanInfo.url) return;
+  await navigator.clipboard.writeText(lanInfo.url);
+  setStatus("LAN join link copied.", "success");
 }
 
 const ONBOARDING_STEPS = [
@@ -3606,6 +4043,262 @@ async function saveGamePng() {
   } catch (error) {
     setStatus(error.message, "error");
     return false;
+  }
+}
+
+async function renderShareCard() {
+  const snapshot = gameSnapshot();
+  const canvas = document.createElement("canvas");
+  const size = 960;
+  const header = 120;
+  const footer = 150;
+  canvas.width = size;
+  canvas.height = header + size + footer;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Canvas export is not available in this browser.");
+  const styles = getComputedStyle(document.documentElement);
+  const light = styles.getPropertyValue("--light-square").trim() || "#d9dccd";
+  const dark = styles.getPropertyValue("--dark-square").trim() || "#65705d";
+  const background = styles.getPropertyValue("--panel").trim() || "#171b18";
+  const text = styles.getPropertyValue("--text").trim() || "#f3f5f1";
+  const muted = styles.getPropertyValue("--muted").trim() || "#9da69c";
+  const accent = styles.getPropertyValue("--accent").trim() || "#85c789";
+  context.fillStyle = background;
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  const customTitle = $("shareImageTitle")?.value.trim().slice(0, 60);
+  const layout = $("shareImageLayout")?.value || "game";
+  const title = customTitle || (layout === "study" ? "FunChessEngine · Study Position" : layout === "position" ? "FunChessEngine · Position" : "FunChessEngine · Game");
+  context.fillStyle = text;
+  context.font = "700 34px system-ui";
+  context.fillText(title, 28, 52);
+  context.fillStyle = muted;
+  context.font = "19px system-ui";
+  const opening = state.opening?.name || state.opening?.eco || "Unclassified position";
+  context.fillText(`${opening} · ${state.result || state.manual_result || "in progress"}`, 28, 86);
+  const order = squareOrder();
+  const squareSize = size / 8;
+  for (let index = 0; index < order.length; index += 1) {
+    const row = Math.floor(index / 8);
+    const col = index % 8;
+    const square = order[index];
+    const file = square.charCodeAt(0) - 97;
+    const rank = Number(square[1]) - 1;
+    context.fillStyle = (file + rank) % 2 ? light : dark;
+    context.fillRect(col * squareSize, header + row * squareSize, squareSize, squareSize);
+    const symbol = currentBoardView()?.board?.[square] || state.board[square];
+    if (symbol) {
+      context.fillStyle = symbol === symbol.toUpperCase() ? "#f8f8f0" : "#151515";
+      context.strokeStyle = symbol === symbol.toUpperCase() ? "#191919" : "#f0f0e8";
+      context.lineWidth = 1.5;
+      context.font = `92px "Arial Unicode MS", "Segoe UI Symbol", sans-serif`;
+      context.textAlign = "center";
+      context.textBaseline = "middle";
+      const x = col * squareSize + squareSize / 2;
+      const y = header + row * squareSize + squareSize / 2 + 3;
+      context.strokeText(PIECES[symbol], x, y);
+      context.fillText(PIECES[symbol], x, y);
+    }
+  }
+  if ($("shareAnnotationsToggle")?.checked) {
+    const marks = currentAnnotations();
+    for (const [square, color] of Object.entries(marks.squares || {})) {
+      const visual = order.indexOf(square);
+      if (visual < 0) continue;
+      const row = Math.floor(visual / 8);
+      const col = visual % 8;
+      context.fillStyle = annotationColorValue(color, .36);
+      context.fillRect(col * squareSize, header + row * squareSize, squareSize, squareSize);
+    }
+    const arrows = [...(marks.arrows || [])];
+    if (multiPvArrowMove) arrows.push({ from: multiPvArrowMove.slice(0, 2), to: multiPvArrowMove.slice(2, 4), color: "cyan" });
+    context.lineWidth = 12;
+    context.lineCap = "round";
+    arrows.slice(0, 24).forEach((arrow) => {
+      const fromIndex = order.indexOf(arrow.from);
+      const toIndex = order.indexOf(arrow.to);
+      if (fromIndex < 0 || toIndex < 0) return;
+      const fx = (fromIndex % 8 + .5) * squareSize;
+      const fy = header + (Math.floor(fromIndex / 8) + .5) * squareSize;
+      const tx = (toIndex % 8 + .5) * squareSize;
+      const ty = header + (Math.floor(toIndex / 8) + .5) * squareSize;
+      context.strokeStyle = annotationColorValue(arrow.color || "amber", .85);
+      context.beginPath();
+      context.moveTo(fx, fy);
+      context.lineTo(tx, ty);
+      context.stroke();
+    });
+  }
+  context.textAlign = "left";
+  context.textBaseline = "alphabetic";
+  context.fillStyle = text;
+  context.font = "700 22px ui-monospace, monospace";
+  const detail = layout === "game"
+    ? `White ${clock(snapshot.white_ms)}   Black ${clock(snapshot.black_ms)}   ${snapshot.moves.length} plies`
+    : `FEN ${state.fen}`;
+  context.fillText(detail.length > 105 ? `${detail.slice(0, 102)}…` : detail, 28, header + size + 48);
+  context.fillStyle = muted;
+  context.font = "18px system-ui";
+  context.fillText("FunChessEngine · local analysis, studies, and training", 28, header + size + 88);
+  context.fillStyle = accent;
+  context.fillRect(28, header + size + 108, 160, 4);
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+  if (!blob) throw new Error("Could not create the share image.");
+  return blob;
+}
+
+async function saveShareImage() {
+  try {
+    const blob = await renderShareCard();
+    await downloadBlob(blob, `funchess-share-${new Date().toISOString().replace(/[:.]/g, "-")}.png`);
+    setStatus("Share image exported.", "success");
+  } catch (error) {
+    setStatus(error.message, "error");
+  }
+}
+
+function maskFeatures(mask, size = 32) {
+  const rows = Array(8).fill(0);
+  const cols = Array(8).fill(0);
+  let ink = 0;
+  let xSum = 0;
+  let ySum = 0;
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      if (!mask[y * size + x]) continue;
+      ink += 1;
+      xSum += x;
+      ySum += y;
+      rows[Math.min(7, Math.floor(y * 8 / size))] += 1;
+      cols[Math.min(7, Math.floor(x * 8 / size))] += 1;
+    }
+  }
+  const norm = Math.max(1, ink);
+  return {
+    occupancy: ink / (size * size),
+    cx: ink ? xSum / ink / size : .5,
+    cy: ink ? ySum / ink / size : .5,
+    rows: rows.map((value) => value / norm),
+    cols: cols.map((value) => value / norm),
+  };
+}
+
+function glyphTemplateFeatures(symbol) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 32;
+  canvas.height = 32;
+  const context = canvas.getContext("2d");
+  context.fillStyle = "#fff";
+  context.fillRect(0, 0, 32, 32);
+  context.fillStyle = "#000";
+  context.font = '27px "Arial Unicode MS", "Segoe UI Symbol", sans-serif';
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillText(PIECES[symbol], 16, 17);
+  const pixels = context.getImageData(0, 0, 32, 32).data;
+  const mask = new Uint8Array(32 * 32);
+  for (let index = 0; index < mask.length; index += 1) {
+    const offset = index * 4;
+    const luminance = (pixels[offset] + pixels[offset + 1] + pixels[offset + 2]) / 3;
+    mask[index] = luminance < 220 ? 1 : 0;
+  }
+  return maskFeatures(mask);
+}
+
+function featureDistance(left, right) {
+  let distance = Math.abs(left.occupancy - right.occupancy) * 3;
+  distance += Math.abs(left.cx - right.cx) + Math.abs(left.cy - right.cy);
+  for (let index = 0; index < 8; index += 1) {
+    distance += Math.abs(left.rows[index] - right.rows[index]);
+    distance += Math.abs(left.cols[index] - right.cols[index]);
+  }
+  return distance;
+}
+
+async function recognizeBoardImage(file) {
+  const bitmap = await createImageBitmap(file);
+  try {
+    const side = Math.min(bitmap.width, bitmap.height);
+    let sx = Math.round((bitmap.width - side) / 2);
+    let sy = Math.round((bitmap.height - side) / 2);
+    if (bitmap.height > bitmap.width * 1.12 && bitmap.height < bitmap.width * 1.35) {
+      sx = 0;
+      sy = Math.max(0, Math.round((bitmap.height - bitmap.width) * .44));
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = 256;
+    canvas.height = 256;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    context.drawImage(bitmap, sx, sy, side, side, 0, 0, 256, 256);
+    const templates = Object.fromEntries(Object.keys(PIECES).map((symbol) => [symbol, glyphTemplateFeatures(symbol)]));
+    const result = {};
+    let uncertain = 0;
+    for (let row = 0; row < 8; row += 1) {
+      for (let col = 0; col < 8; col += 1) {
+        const data = context.getImageData(col * 32, row * 32, 32, 32).data;
+        const corners = [0, 31, 31 * 32, 32 * 32 - 1];
+        const background = [0, 1, 2].map((channel) => corners.reduce((sum, pixel) => sum + data[pixel * 4 + channel], 0) / corners.length);
+        const mask = new Uint8Array(32 * 32);
+        for (let index = 0; index < mask.length; index += 1) {
+          const offset = index * 4;
+          const delta = Math.sqrt(
+            (data[offset] - background[0]) ** 2
+            + (data[offset + 1] - background[1]) ** 2
+            + (data[offset + 2] - background[2]) ** 2,
+          );
+          mask[index] = delta > 55 ? 1 : 0;
+        }
+        const features = maskFeatures(mask);
+        if (features.occupancy < .045) continue;
+        const ranked = Object.entries(templates)
+          .map(([symbol, template]) => [symbol, featureDistance(features, template)])
+          .sort((left, right) => left[1] - right[1]);
+        const [symbol, distance] = ranked[0];
+        if (distance > 1.75) {
+          uncertain += 1;
+          continue;
+        }
+        const orientation = $("boardImageOrientation")?.value || "white";
+        const fileIndex = orientation === "white" ? col : 7 - col;
+        const rankIndex = orientation === "white" ? 7 - row : row;
+        result[`${String.fromCharCode(97 + fileIndex)}${rankIndex + 1}`] = symbol;
+      }
+    }
+    return { board: result, uncertain };
+  } finally {
+    bitmap.close?.();
+  }
+}
+
+async function importBoardImage(file) {
+  if (!file) return;
+  assertBrowserFileSize(file, MAX_SAVE_BYTES, "Board image");
+  if (file.type === "image/png") {
+    try {
+      extractPngSnapshot(new Uint8Array(await file.arrayBuffer()));
+      await loadGamePng(file);
+      return;
+    } catch (_) {
+      // Ordinary board image; continue to the local visual recognizer.
+    }
+  }
+  $("boardImageStatus").textContent = "Recognizing the 8×8 board locally…";
+  try {
+    const recognized = await recognizeBoardImage(file);
+    await enterSetupMode();
+    setupBoard = recognized.board;
+    $("setupTurn").value = "w";
+    $("setupCastleK").checked = false;
+    $("setupCastleQ").checked = false;
+    $("setupCastlek").checked = false;
+    $("setupCastleq").checked = false;
+    $("setupEp").value = "";
+    renderBoard();
+    const pieces = Object.keys(recognized.board).length;
+    $("boardImageStatus").textContent = `Recognized ${pieces} piece${pieces === 1 ? "" : "s"}${recognized.uncertain ? `; skipped ${recognized.uncertain} uncertain square${recognized.uncertain === 1 ? "" : "s"}` : ""}. Verify every square in Position Setup before applying.`;
+    setStatus("Experimental board-image recognition loaded into Position Setup for verification.", "success");
+  } catch (error) {
+    $("boardImageStatus").textContent = error.message;
+    setStatus(error.message, "error");
   }
 }
 
@@ -3893,6 +4586,17 @@ function render() {
   renderOpeningExplorer();
   renderOpeningPrepReport();
   renderPlayerProfile();
+  renderOpeningDatabase();
+  renderRepertoireGaps();
+  renderStrategicInsights();
+  renderTimeCoaching();
+  renderPerformanceHistory();
+  renderRepertoireTrainer();
+  renderLessons();
+  renderEnginePresets();
+  renderPlugins();
+  renderExternalEngines();
+  renderLanStatus();
   renderAnalysisQueue();
   renderTournament();
   renderEvaluationBreakdown();
@@ -3900,6 +4604,9 @@ function render() {
   renderDeveloperHistory();
   if ($("engineTab").classList.contains("active") && evalBreakdownData?.fen !== view.fen && !evalBreakdownBusy) {
     setTimeout(refreshEvaluationBreakdown, 0);
+  }
+  if ($("engineTab").classList.contains("active") && positionInsightsData?.fen !== view.fen && !positionInsightsBusy) {
+    setTimeout(refreshPositionInsights, 0);
   }
   if (trainerMode) {
     $("statusLine").textContent = $("trainerPrompt").textContent || "Personal trainer active.";
@@ -4603,6 +5310,576 @@ function renderPlayerProfile() {
     cell.append(caption, strong);
     target.appendChild(cell);
   }
+}
+
+function estimatedLocalRating(game) {
+  const accuracy = Number(game?.analysis?.summary?.accuracy);
+  if (!Number.isFinite(accuracy) || accuracy <= 0) return null;
+  return Math.round(Math.max(600, Math.min(2600, 650 + accuracy * 21)) / 50) * 50;
+}
+
+function renderOpeningDatabase() {
+  const target = $("openingDatabaseCount");
+  if (!target) return;
+  const count = recentGames.filter((game) => game.reference_database).length;
+  target.textContent = `${count} database game${count === 1 ? "" : "s"}`;
+}
+
+function repertoirePreparedMoves() {
+  const prepared = new Map();
+  for (const [, workspace] of studyEntries().filter(([, item]) => item.kind === "repertoire")) {
+    for (const node of Object.values(workspace.nodes || {})) {
+      const key = fenPositionKey(node?.snapshot?.fen);
+      if (!key) continue;
+      const moves = prepared.get(key) || new Set();
+      for (const childId of node.children || []) {
+        const child = workspace.nodes?.[childId];
+        if (child?.move_uci) moves.add(child.move_uci);
+      }
+      if (moves.size) prepared.set(key, moves);
+    }
+  }
+  return prepared;
+}
+
+function learnRepertoireConfidence() {
+  const games = recentGames.filter((game) => Array.isArray(game.analysis?.results));
+  let changed = false;
+  for (const [, workspace] of studyEntries().filter(([, item]) => item.kind === "repertoire")) {
+    for (const node of Object.values(workspace.nodes || {})) {
+      const key = fenPositionKey(node?.snapshot?.fen);
+      if (!key) continue;
+      for (const childId of node.children || []) {
+        const child = workspace.nodes?.[childId];
+        if (!child?.move_uci) continue;
+        let played = 0;
+        let scoreSum = 0;
+        for (const game of games) {
+          const score = personalGameScore(game);
+          for (const result of game.analysis.results) {
+            if (fenPositionKey(result.fen_before) !== key || result.played_uci !== child.move_uci) continue;
+            played += 1;
+            if (score !== null) scoreSum += score;
+          }
+        }
+        const confidence = played ? Math.round((scoreSum / Math.max(1, played)) * 60 + Math.min(40, played * 8)) : 50;
+        if (child.confidence !== confidence || child.practice_games !== played) {
+          child.confidence = confidence;
+          child.practice_games = played;
+          changed = true;
+        }
+      }
+    }
+  }
+  if (changed) persistVariationWorkspaces();
+}
+
+function renderRepertoireGaps() {
+  const target = $("repertoireGapReport");
+  if (!target) return;
+  learnRepertoireConfidence();
+  target.innerHTML = "";
+  const prepared = repertoirePreparedMoves();
+  const gaps = new Map();
+  for (const game of recentGames) {
+    for (const result of game.analysis?.results || []) {
+      if (Number(result.ply || 0) > 24 || !result.fen_before || !result.played_uci) continue;
+      const key = fenPositionKey(result.fen_before);
+      const responses = prepared.get(key);
+      if (!responses || responses.has(result.played_uci)) continue;
+      const gapKey = `${key}|${result.played_uci}`;
+      const entry = gaps.get(gapKey) || {
+        played: result.played_san || result.played_uci,
+        best: result.best_san || result.best_uci,
+        count: 0,
+        cpl: 0,
+      };
+      entry.count += 1;
+      entry.cpl += Number(result.cpl || 0);
+      gaps.set(gapKey, entry);
+    }
+  }
+  const rows = [...gaps.values()].sort((a, b) => b.count - a.count || b.cpl - a.cpl).slice(0, 8);
+  if (!rows.length) {
+    target.innerHTML = '<p class="hint">No analyzed departures from saved repertoire lines were found.</p>';
+    return;
+  }
+  rows.forEach((entry) => {
+    const row = document.createElement("div");
+    row.className = "prep-row";
+    row.innerHTML = `<strong>${entry.played}</strong><span>${entry.count} departure${entry.count === 1 ? "" : "s"} · avg ${Math.round(entry.cpl / entry.count)} CPL · prepare ${entry.best}</span>`;
+    target.appendChild(row);
+  });
+}
+
+function fenFeatures(fen) {
+  const board = boardMapFromFen(fen);
+  const counts = {};
+  const pawnFiles = Array(8).fill(0);
+  const kings = { K: "", k: "" };
+  for (const [square, piece] of Object.entries(board)) {
+    counts[piece] = (counts[piece] || 0) + 1;
+    if (piece.toLowerCase() === "p") pawnFiles[square.charCodeAt(0) - 97] += piece === "P" ? 1 : -1;
+    if (piece === "K" || piece === "k") kings[piece] = square;
+  }
+  return { counts, pawnFiles, kings };
+}
+
+function positionSimilarity(leftFen, rightFen) {
+  const left = fenFeatures(leftFen);
+  const right = fenFeatures(rightFen);
+  const pieces = "PNBRQKpnbrqk";
+  let penalty = 0;
+  for (const piece of pieces) penalty += Math.abs((left.counts[piece] || 0) - (right.counts[piece] || 0)) * 0.035;
+  for (let file = 0; file < 8; file += 1) penalty += Math.abs(left.pawnFiles[file] - right.pawnFiles[file]) * 0.035;
+  for (const king of ["K", "k"]) {
+    if (!left.kings[king] || !right.kings[king]) continue;
+    const fileDelta = Math.abs(left.kings[king].charCodeAt(0) - right.kings[king].charCodeAt(0));
+    const rankDelta = Math.abs(Number(left.kings[king][1]) - Number(right.kings[king][1]));
+    penalty += (fileDelta + rankDelta) * 0.012;
+  }
+  return Math.max(0, Math.min(1, 1 - penalty));
+}
+
+function searchSimilarGames() {
+  const target = $("similarGameResults");
+  if (!target || !state) return;
+  const currentFen = currentBoardView()?.fen || state.fen;
+  const matches = [];
+  recentGames.forEach((game, gameIndex) => {
+    const positions = (game.analysis?.results || []).map((item) => ({ fen: item.fen_before, ply: item.ply }));
+    if (game.initial_fen) positions.unshift({ fen: game.initial_fen, ply: 0 });
+    let best = null;
+    positions.forEach((position) => {
+      if (!position.fen) return;
+      const score = positionSimilarity(currentFen, position.fen);
+      if (!best || score > best.score) best = { ...position, score };
+    });
+    if (best && best.score >= 0.68) matches.push({ game, gameIndex, ...best });
+  });
+  matches.sort((a, b) => b.score - a.score);
+  target.innerHTML = "";
+  $("similarGameCount").textContent = `${matches.length} match${matches.length === 1 ? "" : "es"}`;
+  matches.slice(0, 10).forEach((match) => {
+    const button = document.createElement("button");
+    button.className = "compact-list-row";
+    button.innerHTML = `<strong>${Math.round(match.score * 100)}% similar</strong><span>${match.game.opening?.name || "Saved game"} · ply ${match.ply || 0}</span>`;
+    button.addEventListener("click", async () => {
+      await openRecentGame(match.gameIndex);
+      await enterReviewMode(Number(match.ply || 0));
+    });
+    target.appendChild(button);
+  });
+  if (!matches.length) target.innerHTML = '<p class="hint">Analyze more library games to enable structural similarity search.</p>';
+}
+
+function renderStrategicInsights() {
+  const plans = $("humanPlanList");
+  const motifs = $("tacticalMotifs");
+  if (!plans || !motifs) return;
+  plans.innerHTML = "";
+  const planList = positionInsightsData?.plans || state?.plans || [];
+  if (!planList.length) plans.innerHTML = '<p class="hint">Refresh strategic intelligence for this position.</p>';
+  else planList.forEach((plan) => {
+    const row = document.createElement("div");
+    row.className = "prep-row";
+    row.textContent = plan;
+    plans.appendChild(row);
+  });
+  motifs.innerHTML = "";
+  const ply = reviewMode ? Number(reviewSnapshot?.ply || 0) : Number(state?.moves_uci?.length || 0);
+  const insight = ply > 0 ? analysisResultForPly(ply) : null;
+  const labels = Array.isArray(insight?.motifs) ? insight.motifs : [];
+  labels.forEach((label) => {
+    const chip = document.createElement("span");
+    chip.className = "tag-chip";
+    chip.textContent = label;
+    motifs.appendChild(chip);
+  });
+  if (!labels.length) {
+    const chip = document.createElement("span");
+    chip.className = "hint";
+    chip.textContent = insight ? "No forcing tactical motif detected on this move." : "Analyze a game to classify tactical motifs.";
+    motifs.appendChild(chip);
+  }
+}
+
+async function refreshPositionInsights() {
+  const fen = currentBoardView()?.fen || state?.fen;
+  if (!fen || positionInsightsBusy) return;
+  positionInsightsBusy = true;
+  try {
+    positionInsightsData = await api("/api/position-insights", { fen });
+    renderStrategicInsights();
+    renderBoard();
+  } catch (error) {
+    setStatus(error.message, "error");
+  } finally {
+    positionInsightsBusy = false;
+  }
+}
+
+async function probeTablebase() {
+  const fen = currentBoardView()?.fen || state?.fen;
+  if (!fen) return;
+  const target = $("tablebaseResult");
+  target.innerHTML = '<p class="hint">Probing local tablebases…</p>';
+  try {
+    const result = await api("/api/tablebase", { fen, path: $("syzygyPathInput").value.trim() });
+    if (!result.available) target.innerHTML = `<p class="hint">${result.reason || "Tablebase directory unavailable."}</p>`;
+    else if (!result.eligible) target.innerHTML = `<p class="hint">${result.piece_count} pieces · exact Syzygy probing starts at seven pieces or fewer.</p>`;
+    else if (result.missing) target.innerHTML = `<p class="hint">This position is not present in the selected tablebase set.</p>`;
+    else target.innerHTML = `<div class="prep-row"><strong>${capitalize(result.result || "unknown")}</strong><span>WDL ${result.wdl}${result.dtz == null ? "" : ` · DTZ ${result.dtz}`}</span></div>`;
+  } catch (error) {
+    target.innerHTML = `<p class="hint">${error.message}</p>`;
+  }
+}
+
+async function chooseExternalEngine() {
+  const desktop = desktopApi();
+  if (desktop?.openEngine) {
+    const path = await desktop.openEngine();
+    if (path) $("externalEnginePath").value = path;
+    return;
+  }
+  $("externalEnginePath").focus();
+  setStatus("Enter the path to an installed UCI engine executable.");
+}
+
+function renderExternalEngines() {
+  const select = $("externalEngineSelect");
+  if (!select) return;
+  const current = select.value;
+  select.innerHTML = '<option value="">Saved engines…</option>';
+  externalEngines.forEach((engine, index) => {
+    const option = document.createElement("option");
+    option.value = String(index);
+    option.textContent = engine.name || engine.path.split(/[\\/]/).pop() || engine.path;
+    select.appendChild(option);
+  });
+  if ([...select.options].some((option) => option.value === current)) select.value = current;
+}
+
+function saveExternalEnginePath() {
+  const path = $("externalEnginePath").value.trim();
+  if (!path) {
+    setStatus("Choose an external UCI engine first.", "error");
+    return;
+  }
+  const name = path.split(/[\\/]/).pop() || `Engine ${externalEngines.length + 1}`;
+  const existing = externalEngines.findIndex((engine) => engine.path === path);
+  if (existing >= 0) externalEngines.splice(existing, 1);
+  externalEngines.unshift({ name: name.slice(0, 80), path: path.slice(0, 1024) });
+  saveExternalEngines();
+  renderExternalEngines();
+  setStatus(`Saved external engine “${name}”.`, "success");
+}
+
+function selectExternalEngine() {
+  const index = Number($("externalEngineSelect").value);
+  if (Number.isInteger(index) && externalEngines[index]) {
+    $("externalEnginePath").value = externalEngines[index].path;
+  }
+}
+
+async function compareExternalEngine() {
+  const executable = $("externalEnginePath").value.trim();
+  if (!executable) {
+    setStatus("Choose or enter a UCI engine executable first.", "error");
+    return;
+  }
+  const fen = currentBoardView()?.fen || state?.fen;
+  const budget = Math.max(50, Math.min(5000, Number($("externalEngineBudget").value) || 300));
+  const target = $("externalEngineResult");
+  target.innerHTML = '<p class="hint">Comparing engines…</p>';
+  try {
+    const result = await api("/api/external-uci", { executable, fen, budget_ms: budget });
+    target.innerHTML = `<div class="prep-row"><strong>FunChessEngine</strong><span>${result.funchess?.san || result.funchess?.move || "—"} · depth ${result.funchess?.depth ?? "—"}</span></div><div class="prep-row"><strong>External UCI</strong><span>${result.external?.san || result.external?.move || "—"} · ${result.external?.elapsed_ms ?? 0} ms</span></div><p class="hint">${result.agree ? "Both engines chose the same move." : "The engines disagree on the top move."}</p>`;
+  } catch (error) {
+    target.innerHTML = `<p class="hint">${error.message}</p>`;
+  }
+}
+
+function renderTimeCoaching() {
+  const target = $("timeCoachingReport");
+  if (!target) return;
+  const coaching = state?.time_coaching;
+  target.innerHTML = "";
+  if (!coaching) {
+    target.innerHTML = '<p class="hint">Play moves with a clock to build time-management feedback.</p>';
+    return;
+  }
+  const summary = document.createElement("div");
+  summary.className = "prep-row";
+  summary.innerHTML = `<strong>Average think</strong><span>White ${Math.round(Number(coaching.average_think_ms?.white || 0) / 100) / 10}s · Black ${Math.round(Number(coaching.average_think_ms?.black || 0) / 100) / 10}s</span>`;
+  target.appendChild(summary);
+  (coaching.advice || []).forEach((text) => {
+    const row = document.createElement("p");
+    row.className = "hint";
+    row.textContent = text;
+    target.appendChild(row);
+  });
+}
+
+function reportGameRows() {
+  return recentGames.slice(0, 500).map((game) => ({
+    date: game.saved_at ? new Date(game.saved_at).toLocaleDateString() : "",
+    opening: game.opening?.name || game.opening?.eco || game.pgn_headers?.Opening || "Unclassified",
+    result: game.result || game.manual_result || "*",
+    accuracy: Number.isFinite(Number(game.analysis?.summary?.accuracy)) ? `${Number(game.analysis.summary.accuracy).toFixed(1)}%` : "—",
+  }));
+}
+
+async function exportAnnotatedPgn() {
+  try {
+    const result = await api("/api/export-annotated-pgn", {});
+    const text = `${String(result.pgn || "").trim()}\n`;
+    const desktop = desktopApi();
+    if (desktop?.savePgn) await desktop.savePgn("funchess-annotated.pgn", text);
+    else await downloadBlob(new Blob([text], { type: "application/x-chess-pgn;charset=utf-8" }), "funchess-annotated.pgn");
+    setStatus("Annotated PGN exported.", "success");
+  } catch (error) {
+    setStatus(error.message, "error");
+  }
+}
+
+async function exportHtmlReport() {
+  try {
+    const analyzed = recentGames.filter((game) => Number.isFinite(Number(game.analysis?.summary?.accuracy)));
+    const ratings = analyzed.map(estimatedLocalRating).filter((value) => value !== null);
+    const result = await api("/api/export-html-report", {
+      title: "FunChessEngine local performance report",
+      games: reportGameRows(),
+      profile: {
+        Games: recentGames.length,
+        Analyzed: analyzed.length,
+        "Estimated rating": ratings.length ? ratings.at(-1) : "Unrated",
+        "Training positions": trainerItems.length,
+        Repertoires: studyEntries().filter(([, workspace]) => workspace.kind === "repertoire").length,
+      },
+    });
+    await downloadBlob(new Blob([result.html], { type: "text/html;charset=utf-8" }), "funchess-report.html");
+    setStatus("HTML performance report exported.", "success");
+  } catch (error) {
+    setStatus(error.message, "error");
+  }
+}
+
+function timeControlBucket(game) {
+  const base = Number(game.base_clock_ms || 0);
+  if (base <= 120_000) return "Bullet";
+  if (base <= 300_000) return "Blitz";
+  if (base <= 900_000) return "Rapid";
+  return "Classical";
+}
+
+function renderPerformanceHistory() {
+  const target = $("timeControlPerformance");
+  const rating = $("performanceRating");
+  const canvas = $("ratingHistoryGraph");
+  if (!target || !rating || !canvas) return;
+  target.innerHTML = "";
+  const buckets = new Map();
+  for (const game of recentGames) {
+    const name = timeControlBucket(game);
+    const entry = buckets.get(name) || { games: 0, scores: [] };
+    entry.games += 1;
+    const score = personalGameScore(game);
+    if (score !== null) entry.scores.push(score);
+    buckets.set(name, entry);
+  }
+  for (const name of ["Bullet", "Blitz", "Rapid", "Classical"]) {
+    const entry = buckets.get(name) || { games: 0, scores: [] };
+    const cell = document.createElement("div");
+    const score = entry.scores.length
+      ? `${Math.round(entry.scores.reduce((sum, value) => sum + value, 0) / entry.scores.length * 100)}%`
+      : "—";
+    cell.innerHTML = `<span>${name}</span><strong>${entry.games} · ${score}</strong>`;
+    target.appendChild(cell);
+  }
+  const points = recentGames
+    .map((game) => ({ date: new Date(game.saved_at || 0).getTime(), rating: estimatedLocalRating(game) }))
+    .filter((item) => item.rating && Number.isFinite(item.date))
+    .sort((a, b) => a.date - b.date);
+  rating.textContent = points.length ? `~${points.at(-1).rating}` : "Unrated";
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.max(240, Math.round(rect.width || 360));
+  const height = 110;
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
+  const context = canvas.getContext("2d");
+  if (!context) return;
+  context.scale(dpr, dpr);
+  context.clearRect(0, 0, width, height);
+  if (!points.length) return;
+  const min = Math.min(...points.map((item) => item.rating)) - 100;
+  const max = Math.max(...points.map((item) => item.rating)) + 100;
+  context.beginPath();
+  points.forEach((item, index) => {
+    const x = points.length === 1 ? width / 2 : 10 + index * (width - 20) / (points.length - 1);
+    const y = 10 + (max - item.rating) * (height - 20) / Math.max(1, max - min);
+    if (index === 0) context.moveTo(x, y);
+    else context.lineTo(x, y);
+  });
+  context.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "currentColor";
+  context.lineWidth = 2;
+  context.stroke();
+}
+
+async function calibrateEngineFromHistory() {
+  const ratings = recentGames.map(estimatedLocalRating).filter((value) => value !== null);
+  if (!ratings.length) {
+    setStatus("Analyze some games before calibrating engine strength.", "error");
+    return;
+  }
+  const estimate = ratings.slice(-12).reduce((sum, value) => sum + value, 0) / Math.min(12, ratings.length);
+  const targets = [[20, 800], [40, 1200], [60, 1600], [70, 1900], [85, 2200], [100, 2600]];
+  const [skill, label] = targets.reduce((best, item) => Math.abs(item[1] - estimate) < Math.abs(best[1] - estimate) ? item : best, targets[0]);
+  const config = await api("/api/engine-config", { profile: engineProfileForSkill(skill), skill });
+  state.engine_profile = config.profile;
+  state.engine_skill = config.skill;
+  renderEngineStrength();
+  setStatus(`Engine calibrated near your ~${Math.round(estimate / 50) * 50} local estimate using the ${label} target.`, "success");
+}
+
+function repertoireEntries() {
+  return studyEntries().filter(([, workspace]) => workspace.kind === "repertoire");
+}
+
+function renderRepertoireTrainer() {
+  const select = $("repertoireTrainerSelect");
+  if (!select) return;
+  const current = select.value;
+  select.innerHTML = '<option value="">Choose repertoire…</option>';
+  let lines = 0;
+  repertoireEntries().forEach(([key, workspace]) => {
+    const option = document.createElement("option");
+    option.value = key;
+    option.textContent = workspace.name || "Untitled repertoire";
+    select.appendChild(option);
+    lines += Object.values(workspace.nodes || {}).filter((node) => node?.children?.length).length;
+  });
+  if ([...select.options].some((option) => option.value === current)) select.value = current;
+  $("repertoireTrainerCount").textContent = `${lines} line${lines === 1 ? "" : "s"}`;
+}
+
+function startRepertoireTraining() {
+  const key = $("repertoireTrainerSelect").value;
+  const workspace = savedVariationWorkspaces[key];
+  if (!workspace) {
+    setStatus("Choose a saved repertoire first.", "error");
+    return;
+  }
+  let added = 0;
+  Object.values(workspace.nodes || {}).forEach((node) => {
+    const child = workspace.nodes?.[node?.children?.[0]];
+    if (!node?.snapshot?.fen || !child?.move_uci) return;
+    const itemKey = `repertoire:${key}:${node.id}:${child.move_uci}`;
+    if (trainerItems.some((item) => item.key === itemKey)) return;
+    trainerItems.unshift({
+      key: itemKey,
+      fen: node.snapshot.fen,
+      best_uci: child.move_uci,
+      best_san: child.move_san || child.move_uci,
+      classification: "Repertoire",
+      cpl: Math.max(0, 100 - Number(child.confidence || 50)),
+      phase: "opening",
+      explanation: child.comment || `Recall the prepared move from ${workspace.name || "your repertoire"}.`,
+      source: `repertoire:${workspace.name || key}`,
+      created_at: new Date().toISOString(),
+      attempts: 0,
+      solved: 0,
+      due_at: Date.now(),
+    });
+    added += 1;
+  });
+  saveTrainerItems();
+  renderTrainerPanel();
+  startTrainer("opening");
+  setStatus(`Added ${added} repertoire card${added === 1 ? "" : "s"} to training.`, "success");
+}
+
+async function addCurrentFlashcard() {
+  const fen = currentBoardView()?.fen || state?.fen;
+  if (!fen) return;
+  let move = multiPvData?.fen === fen ? multiPvData.lines?.[0]?.move : null;
+  let san = multiPvData?.fen === fen ? multiPvData.lines?.[0]?.san : null;
+  if (!move) {
+    const result = await api("/api/multipv", { fen, lines: 1, budget_ms: 200 });
+    move = result.lines?.[0]?.move;
+    san = result.lines?.[0]?.san;
+  }
+  if (!move) throw new Error("Could not determine a solution move for this flashcard.");
+  lessonDraftCards.push({
+    fen,
+    best_uci: move,
+    best_san: san || move,
+    note: $("lessonNoteInput").value.trim().slice(0, 240),
+    due_at: Date.now(),
+    solved: 0,
+  });
+  $("lessonNoteInput").value = "";
+  renderLessons();
+  setStatus("Current position added to the lesson draft.", "success");
+}
+
+function saveLesson() {
+  const title = $("lessonTitleInput").value.trim().slice(0, 60);
+  if (!title || !lessonDraftCards.length) {
+    setStatus("Give the lesson a title and add at least one flashcard.", "error");
+    return;
+  }
+  lessons.unshift({ id: globalThis.crypto?.randomUUID?.() || `${Date.now()}`, title, cards: lessonDraftCards, updated_at: new Date().toISOString() });
+  lessonDraftCards = [];
+  $("lessonTitleInput").value = "";
+  saveLessons();
+  renderLessons();
+  setStatus("Lesson saved locally.", "success");
+}
+
+function renderLessons() {
+  const target = $("lessonList");
+  if (!target) return;
+  target.innerHTML = "";
+  $("lessonCount").textContent = `${lessons.length} lesson${lessons.length === 1 ? "" : "s"}${lessonDraftCards.length ? ` · ${lessonDraftCards.length} draft cards` : ""}`;
+  lessons.slice(0, 8).forEach((lesson) => {
+    const row = document.createElement("div");
+    row.className = "compact-list-row static-row";
+    row.innerHTML = `<strong>${lesson.title}</strong><span>${lesson.cards?.length || 0} cards</span>`;
+    target.appendChild(row);
+  });
+}
+
+function studyDueFlashcards() {
+  let added = 0;
+  lessons.forEach((lesson) => {
+    (lesson.cards || []).forEach((card, index) => {
+      if (Number(card.due_at || 0) > Date.now()) return;
+      const key = `lesson:${lesson.id}:${index}`;
+      if (trainerItems.some((item) => item.key === key)) return;
+      trainerItems.unshift({
+        key,
+        fen: card.fen,
+        best_uci: card.best_uci,
+        best_san: card.best_san,
+        classification: "Lesson",
+        cpl: 100,
+        phase: "middlegame",
+        explanation: card.note || `Recall this card from ${lesson.title}.`,
+        source: `lesson:${lesson.title}`,
+        created_at: new Date().toISOString(),
+        attempts: 0,
+        solved: 0,
+        due_at: Date.now(),
+      });
+      added += 1;
+    });
+  });
+  saveTrainerItems();
+  renderTrainerPanel();
+  if (added || trainerItems.length) startTrainer("due");
+  else setStatus("No lesson flashcards are due yet.");
 }
 
 function scoreText(value) {
@@ -5409,7 +6686,7 @@ function orientForHuman() {
 }
 
 function commandDefinitions() {
-  return [
+  const builtins = [
     { label: "New game", hint: "⌘N", action: () => $("newGameBtn").click() },
     { label: "Open PGN", hint: "Files", action: openPgnFile },
     { label: "Open FEN", hint: "Files", action: openFenFile },
@@ -5428,7 +6705,36 @@ function commandDefinitions() {
     { label: "Play engine move", hint: "E", action: engineMove },
     { label: "Appearance", hint: "Themes and pieces", action: () => document.querySelector('[data-tab="display"]')?.click() },
     { label: "Recent games", hint: "Local library", action: () => document.querySelector('[data-tab="position"]')?.click() },
+    { label: "Find similar games", hint: "Library structure search", action: async () => { await activateTab(document.querySelector('[data-tab="position"]')); searchSimilarGames(); } },
+    { label: "Find repertoire gaps", hint: "Opening preparation", action: async () => { await activateTab(document.querySelector('[data-tab="engine"]')); renderRepertoireGaps(); } },
+    { label: "Refresh strategic plans", hint: "Threat map and plans", action: async () => { await activateTab(document.querySelector('[data-tab="engine"]')); await refreshPositionInsights(); } },
+    { label: "Probe Syzygy tablebase", hint: "Exact endgame", action: async () => { await activateTab(document.querySelector('[data-tab="engine"]')); await probeTablebase(); } },
+    { label: "Compare external UCI engine", hint: "Engine comparison", action: async () => { await activateTab(document.querySelector('[data-tab="engine"]')); await compareExternalEngine(); } },
+    { label: "Export annotated PGN", hint: "Analysis report", action: exportAnnotatedPgn },
+    { label: "Export HTML performance report", hint: "Library report", action: exportHtmlReport },
+    { label: "Start repertoire trainer", hint: "Opening flashcards", action: startRepertoireTraining },
+    { label: "Study lesson flashcards", hint: "Spaced repetition", action: studyDueFlashcards },
+    { label: "Import board image", hint: "Experimental local vision", action: () => $("boardImageInput").click() },
+    { label: "Export encrypted sync file", hint: "AES-GCM workspace", action: exportEncryptedSync },
+    { label: lanInfo.running ? "Stop LAN multiplayer" : "Start LAN multiplayer", hint: "Private network", action: toggleLanSharing },
+    { label: "Install data-only plugin", hint: "Local extension", action: () => $("pluginInput").click() },
   ];
+  const pluginCommands = pluginManifests
+    .filter((plugin) => plugin.enabled && plugin.kind === "commands")
+    .flatMap((plugin) => (plugin.items || []).map((item) => ({
+      label: item.label,
+      hint: `Plugin · ${plugin.name}`,
+      action: () => runSafePluginAction(item.action),
+    })));
+  return [...builtins, ...pluginCommands];
+}
+
+async function runSafePluginAction(action) {
+  if (action === "open-analysis") await activateTab(document.querySelector('[data-tab="engine"]'));
+  else if (action === "open-training") await activateTab(document.querySelector('[data-tab="train"]'));
+  else if (action === "start-engine") await engineMove();
+  else if (action === "start-repertoire-training") startRepertoireTraining();
+  else if (action === "export-report") await exportHtmlReport();
 }
 
 function renderCommandPalette() {
@@ -5672,6 +6978,8 @@ $("variationNag").addEventListener("change", () => { saveVariationMetadata(); re
 $("variationComment").addEventListener("input", saveVariationMetadata);
 $("studyNameInput").addEventListener("change", saveStudyIdentity);
 $("studyKindSelect").addEventListener("change", saveStudyIdentity);
+$("studyFolderInput").addEventListener("change", saveStudyIdentity);
+$("studyTagsInput").addEventListener("change", saveStudyIdentity);
 $("studyFavoriteBtn").addEventListener("click", toggleCurrentStudyFavorite);
 $("exportStudyBtn").addEventListener("click", () => exportStudyWorkspace());
 $("bookmarkPositionBtn").addEventListener("click", bookmarkCurrentPosition);
@@ -5735,6 +7043,18 @@ $("bulkPgnInput").addEventListener("change", async (event) => {
 $("analyzeLibraryBtn").addEventListener("click", runLibraryAnalysisQueue);
 $("cancelQueueBtn").addEventListener("click", () => { analysisQueueCancel = true; });
 $("searchPositionBtn").addEventListener("click", renderPositionSearch);
+$("searchSimilarGamesBtn").addEventListener("click", searchSimilarGames);
+$("openingDatabaseImportBtn").addEventListener("click", () => $("openingDatabaseInput").click());
+$("openingDatabaseInput").addEventListener("change", async (event) => {
+  const files = event.target.files;
+  event.target.value = "";
+  try {
+    await importOpeningDatabaseFiles(files);
+  } catch (error) {
+    setStatus(error.message, "error");
+  }
+});
+$("refreshRepertoireGapsBtn").addEventListener("click", renderRepertoireGaps);
 $("refreshPrepBtn").addEventListener("click", () => { renderOpeningPrepReport(); renderPlayerProfile(); });
 $("copyFenBtn").addEventListener("click", copyFen);
 $("downloadFenBtn").addEventListener("click", downloadFen);
@@ -5778,6 +7098,12 @@ $("loadFenFileInput").addEventListener("change", async (event) => {
   } catch (error) {
     setStatus(error.message, "error");
   }
+});
+$("boardImageImportBtn").addEventListener("click", () => $("boardImageInput").click());
+$("boardImageInput").addEventListener("change", async (event) => {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (file) await importBoardImage(file);
 });
 
 $("setupModeBtn").addEventListener("click", enterSetupMode);
@@ -5864,6 +7190,8 @@ $("humanSide").addEventListener("change", async () => {
 });
 $("engineStrengthSelect").addEventListener("change", applyEngineStrength);
 $("applyEngineConfigBtn").addEventListener("click", applyEngineConfig);
+$("saveEnginePresetBtn").addEventListener("click", saveCurrentEnginePreset);
+$("enginePresetSelect").addEventListener("change", applySavedEnginePreset);
 $("startTournamentBtn").addEventListener("click", startTournament);
 $("stopTournamentBtn").addEventListener("click", () => stopTournament(false));
 $("variantSelect").addEventListener("change", () => {
@@ -5947,6 +7275,21 @@ $("clearAnalysisCacheBtn").addEventListener("click", () => {
   renderMultiPvPanel();
   setStatus("Persistent position-analysis cache cleared.", "success");
 });
+$("refreshInsightsBtn").addEventListener("click", refreshPositionInsights);
+$("threatMapToggle").addEventListener("change", () => { refreshPositionInsights(); renderBoard(); });
+$("heatMapToggle").addEventListener("change", () => renderBoard());
+$("probeTablebaseBtn").addEventListener("click", probeTablebase);
+$("chooseExternalEngineBtn").addEventListener("click", chooseExternalEngine);
+$("saveExternalEngineBtn").addEventListener("click", saveExternalEnginePath);
+$("externalEngineSelect").addEventListener("change", selectExternalEngine);
+$("compareExternalEngineBtn").addEventListener("click", compareExternalEngine);
+$("exportAnnotatedPgnBtn").addEventListener("click", exportAnnotatedPgn);
+$("exportHtmlReportBtn").addEventListener("click", exportHtmlReport);
+$("startRepertoireTrainerBtn").addEventListener("click", startRepertoireTraining);
+$("addFlashcardBtn").addEventListener("click", () => addCurrentFlashcard().catch((error) => setStatus(error.message, "error")));
+$("saveLessonBtn").addEventListener("click", saveLesson);
+$("studyFlashcardsBtn").addEventListener("click", studyDueFlashcards);
+$("calibrateEngineBtn").addEventListener("click", () => calibrateEngineFromHistory().catch((error) => setStatus(error.message, "error")));
 $("backupWorkspaceBtn").addEventListener("click", backupWorkspace);
 $("restoreWorkspaceBtn").addEventListener("click", restoreWorkspace);
 $("restoreWorkspaceInput").addEventListener("change", async (event) => {
@@ -5961,7 +7304,22 @@ $("restoreWorkspaceInput").addEventListener("change", async (event) => {
   }
 });
 $("copyShareBtn").addEventListener("click", copyShareText);
-$("shareImageBtn").addEventListener("click", saveGamePng);
+$("shareImageBtn").addEventListener("click", saveShareImage);
+$("exportEncryptedSyncBtn").addEventListener("click", exportEncryptedSync);
+$("importEncryptedSyncBtn").addEventListener("click", () => $("encryptedSyncInput").click());
+$("encryptedSyncInput").addEventListener("change", async (event) => {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (file) await importEncryptedSyncFile(file);
+});
+$("toggleLanBtn").addEventListener("click", toggleLanSharing);
+$("copyLanLinkBtn").addEventListener("click", () => copyLanLink().catch((error) => setStatus(error.message, "error")));
+$("installPluginBtn").addEventListener("click", () => $("pluginInput").click());
+$("pluginInput").addEventListener("change", async (event) => {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (file) await installPluginFile(file);
+});
 $("showOnboardingBtn").addEventListener("click", () => showOnboarding(true));
 $("onboardingCloseBtn").addEventListener("click", closeOnboarding);
 $("onboardingPrevBtn").addEventListener("click", () => {

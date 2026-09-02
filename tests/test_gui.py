@@ -8,11 +8,21 @@ import time
 import unittest
 from http.server import ThreadingHTTPServer
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
 import chess
 import chess.pgn
 
-from gui.server import DEFAULT_CLOCK_MS, DEFAULT_INCREMENT_MS, SESSION, GameSession, Handler
+from gui.server import (
+    DEFAULT_CLOCK_MS,
+    DEFAULT_INCREMENT_MS,
+    SESSION,
+    GameSession,
+    Handler,
+    _detect_tactical_motifs,
+    _start_lan_server,
+    _stop_lan_server,
+)
 
 
 class GameSessionTests(unittest.TestCase):
@@ -640,6 +650,39 @@ class GameSessionTests(unittest.TestCase):
         self.assertEqual(state["captured_by_black"], [])
         self.assertEqual(state["material_balance"], 1)
 
+    def test_tactical_motifs_and_human_plans_are_exposed(self) -> None:
+        board = chess.Board("4k3/8/8/3q4/3R4/8/8/4K3 w - - 0 1")
+        move = chess.Move.from_uci("d4d5")
+        motifs = _detect_tactical_motifs(board, move)
+        self.assertIn("capture", motifs)
+
+        insights = self.game.position_insights(chess.STARTING_FEN)
+        self.assertEqual(insights["phase"], "opening")
+        self.assertTrue(insights["plans"])
+        self.assertIn("white", insights["attacks"])
+        self.assertIn("black", insights["passed_pawns"])
+        self.assertTrue(self.game.state()["plans"])
+
+    def test_tablebase_probe_is_optional_and_local(self) -> None:
+        result = self.game.tablebase_probe("8/8/8/8/8/3k4/8/3K4 w - - 0 1", "/no/such/path")
+        self.assertFalse(result["available"])
+        self.assertIn("Syzygy", result["reason"])
+
+    def test_time_management_coaching_uses_recorded_clocks_and_analysis(self) -> None:
+        self.game.reset(clock_ms=60_000, increment_ms=1_000)
+        self.game.recorded_initial_clocks = (60_000, 60_000)
+        self.game.recorded_clocks = [(59_900, 60_000), (59_900, 50_000)]
+        self.game.board.push_uci("e2e4")
+        self.game.board.push_uci("e7e5")
+        self.game.analysis_results = [
+            {"ply": 1, "cpl": 160},
+            {"ply": 2, "cpl": 0},
+        ]
+        coaching = self.game.time_management_coaching()
+        self.assertEqual(coaching["impulsive_errors"], 1)
+        self.assertGreater(coaching["average_think_ms"]["black"], 0)
+        self.assertTrue(coaching["advice"])
+
 
 class HandlerSecurityTests(unittest.TestCase):
     @classmethod
@@ -654,6 +697,39 @@ class HandlerSecurityTests(unittest.TestCase):
         cls.server.shutdown()
         cls.server.server_close()
         cls.thread.join(timeout=2)
+
+    def test_explicit_lan_server_requires_random_token_cookie(self) -> None:
+        status = _start_lan_server()
+        try:
+            self.assertTrue(status["running"])
+            parsed = urlsplit(status["url"])
+            token = parse_qs(parsed.query)["token"][0]
+            connection = http.client.HTTPConnection("127.0.0.1", int(status["port"]), timeout=2)
+            connection.request(
+                "GET",
+                f"/?token={token}",
+                headers={"Host": f"127.0.0.1:{status['port']}"},
+            )
+            response = connection.getresponse()
+            response.read()
+            self.assertEqual(response.status, 302)
+            cookie = response.getheader("Set-Cookie")
+            self.assertIn("fce_lan=", cookie or "")
+            connection.request(
+                "GET",
+                "/api/state",
+                headers={
+                    "Host": f"127.0.0.1:{status['port']}",
+                    "Cookie": (cookie or "").split(";", 1)[0],
+                },
+            )
+            api_response = connection.getresponse()
+            payload = json.loads(api_response.read())
+            self.assertEqual(api_response.status, 200)
+            self.assertIn("fen", payload)
+            connection.close()
+        finally:
+            _stop_lan_server()
 
     def setUp(self) -> None:
         SESSION.reset()

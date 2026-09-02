@@ -6,7 +6,7 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:">
   <title>FunChessEngine · Default Lab</title>
   <link rel="icon" href="/app-mark.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/style.css?v=11">
+  <link rel="stylesheet" href="/style.css?v=12">
 </head>
 <body>
   <a class="skip-link" href="#board" hidden>Skip to chessboard</a>
@@ -277,6 +277,21 @@
             <div id="positionSearchResults" class="compact-list"></div>
           </details>
 
+          <details class="file-card position-search-card">
+            <summary><span>Similar games</span><span id="similarGameCount" class="setting-value">0 matches</span></summary>
+            <p class="hint">Find structurally similar library positions using material, pawn files, king placement, and phase rather than requiring an exact FEN.</p>
+            <button id="searchSimilarGamesBtn" class="secondary full">Find similar positions</button>
+            <div id="similarGameResults" class="compact-list"></div>
+          </details>
+
+          <details class="file-card opening-database-card">
+            <summary><span>Opening database &amp; repertoire lab</span><span id="openingDatabaseCount" class="setting-value">0 database games</span></summary>
+            <p class="hint">Import PGN collections as a local reference database, detect repertoire gaps, and reinforce lines that have produced poor results.</p>
+            <div class="row two compact-row"><button id="openingDatabaseImportBtn" class="secondary">Import reference PGN…</button><button id="refreshRepertoireGapsBtn" class="secondary">Find repertoire gaps</button></div>
+            <input id="openingDatabaseInput" type="file" accept=".pgn,application/x-chess-pgn,text/plain" multiple hidden>
+            <div id="repertoireGapReport" class="mini-report"><p class="hint">Add a repertoire study and library games to detect missing responses.</p></div>
+          </details>
+
           <details class="file-card study-library-card" open>
             <summary><span>Studies &amp; repertoires</span><span id="studyLibraryCount" class="setting-value">0</span></summary>
             <p class="hint">Named analysis trees are saved locally with comments, NAGs, and board markup.</p>
@@ -362,6 +377,14 @@
             </div>
           </div>
 
+          <details class="file-card image-import-card">
+            <summary><span>Board image import</span><span class="setting-value">Experimental local vision</span></summary>
+            <p class="hint">Import a FunChessEngine board image or a tightly cropped digital board. Embedded saved-game PNGs restore exactly; other images use a local 8×8 glyph recognizer and open the result in Position Setup for verification.</p>
+            <div class="row two compact-row"><button id="boardImageImportBtn" class="secondary">Choose board image…</button><select id="boardImageOrientation"><option value="white">White at bottom</option><option value="black">Black at bottom</option></select></div>
+            <input id="boardImageInput" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+            <p id="boardImageStatus" class="hint">No image selected.</p>
+          </details>
+
           <div class="list-heading position-heading"><span>Position</span><span class="setting-value">FEN</span></div>
           <label for="fenInput">FEN</label>
           <textarea id="fenInput" rows="5" spellcheck="false"></textarea>
@@ -415,6 +438,10 @@
               <div class="study-identity">
                 <div><label for="studyNameInput">Study name</label><input id="studyNameInput" type="text" maxlength="80" placeholder="Untitled study"></div>
                 <div><label for="studyKindSelect">Type</label><select id="studyKindSelect"><option value="study">Study</option><option value="repertoire">Repertoire</option></select></div>
+              </div>
+              <div class="study-identity">
+                <div><label for="studyFolderInput">Folder</label><input id="studyFolderInput" type="text" maxlength="48" placeholder="e.g. Sicilian"></div>
+                <div><label for="studyTagsInput">Tags</label><input id="studyTagsInput" type="text" maxlength="120" placeholder="tactics, tournament, rook ending"></div>
               </div>
               <div class="variation-toolbar">
                 <button id="variationBackBtn" class="secondary compact">← Parent</button>
@@ -521,6 +548,34 @@
             <div class="setting-heading"><span class="label">Player profile</span><span id="profileRating" class="setting-value">Unrated</span></div>
             <div id="playerProfile" class="profile-grid"></div>
           </div>
+          <div class="opening-explorer-card strategic-insights-card">
+            <div class="setting-heading"><span class="label">Strategic intelligence</span><button id="refreshInsightsBtn" class="text-button" type="button">Refresh</button></div>
+            <div class="row two compact-row"><label class="analysis-auto"><input id="threatMapToggle" type="checkbox"> <span><strong>Threat map</strong><small>Mark attacked and loose squares.</small></span></label><label class="analysis-auto"><input id="heatMapToggle" type="checkbox"> <span><strong>Move heatmap</strong><small>Shade candidate destinations.</small></span></label></div>
+            <div id="humanPlanList" class="mini-report"><p class="hint">Strategic plans for the current position will appear here.</p></div>
+            <div id="tacticalMotifs" class="tag-row"></div>
+          </div>
+          <details class="advanced-details tablebase-card">
+            <summary>Syzygy tablebases</summary>
+            <div class="advanced-body">
+              <label for="syzygyPathInput">Local tablebase directory</label><input id="syzygyPathInput" type="text" placeholder="/path/to/syzygy">
+              <button id="probeTablebaseBtn" class="secondary full">Probe current position</button>
+              <div id="tablebaseResult" class="mini-report"><p class="hint">Exact WDL/DTZ is available for installed tablebase positions up to seven pieces.</p></div>
+            </div>
+          </details>
+          <details class="advanced-details external-engine-card">
+            <summary>External UCI engine comparison</summary>
+            <div class="advanced-body">
+              <label for="externalEnginePath">Engine executable</label><div class="row two compact-row"><input id="externalEnginePath" type="text" placeholder="/path/to/uci-engine"><button id="chooseExternalEngineBtn" class="secondary">Choose…</button></div>
+              <div class="row two compact-row"><select id="externalEngineSelect"><option value="">Saved engines…</option></select><button id="saveExternalEngineBtn" class="secondary">Save engine</button></div>
+              <div class="row two compact-row"><div><label for="externalEngineBudget">Move time (ms)</label><input id="externalEngineBudget" type="number" min="50" max="5000" step="50" value="300"></div><button id="compareExternalEngineBtn" class="secondary align-end">Compare engines</button></div>
+              <div id="externalEngineResult" class="mini-report"><p class="hint">FunChessEngine and the selected local UCI engine will analyze the same position independently.</p></div>
+            </div>
+          </details>
+          <div class="opening-explorer-card">
+            <div class="setting-heading"><span class="label">Time-management coach</span><span class="setting-value">Local clock history</span></div>
+            <div id="timeCoachingReport" class="mini-report"></div>
+          </div>
+          <div class="row two compact-row report-actions"><button id="exportAnnotatedPgnBtn" class="secondary">Export annotated PGN…</button><button id="exportHtmlReportBtn" class="secondary">Export HTML report…</button></div>
           <div class="setting-group">
             <label for="evalPerspectiveSelect">Evaluation perspective</label>
             <select id="evalPerspectiveSelect"><option value="white">White</option><option value="turn">Side to move</option></select>
@@ -533,6 +588,7 @@
                 <div><label for="engineMoveCapInput">Move cap (ms)</label><input id="engineMoveCapInput" type="number" min="50" max="10000" step="50" value="2500"></div>
               </div>
               <button id="applyEngineConfigBtn" class="secondary full">Apply engine configuration</button>
+              <div class="engine-preset-editor"><label for="enginePresetName">Custom preset name</label><div class="row two compact-row"><input id="enginePresetName" type="text" maxlength="40" placeholder="My analysis preset"><button id="saveEnginePresetBtn" class="secondary">Save preset</button></div><select id="enginePresetSelect"><option value="">Saved presets…</option></select></div>
             </div>
           </details>
           <button id="engineBtn" class="primary full" title="Play engine move (E)">Play engine move</button>
@@ -614,6 +670,24 @@
             <div class="row two compact-row"><div><label for="visionModeSelect">Board vision</label><select id="visionModeSelect"><option value="normal">Normal</option><option value="blindfold">Blindfold</option><option value="hide-white">Hide White</option><option value="hide-black">Hide Black</option></select></div><button id="coordinateDrillBtn" class="secondary align-end">Start coordinate drill</button></div>
             <p id="coordinatePrompt" class="hint">Coordinate drill will ask you to click named squares on the board.</p>
           </div>
+          <div class="trainer-card repertoire-trainer-card">
+            <div class="setting-heading"><span class="label">Opening book trainer</span><span id="repertoireTrainerCount" class="setting-value">0 lines</span></div>
+            <p class="hint">Turn saved repertoire branches into spaced-repetition “what would you play?” cards. Confidence rises when you answer correctly and falls after misses.</p>
+            <div class="row two compact-row"><select id="repertoireTrainerSelect"><option value="">Choose repertoire…</option></select><button id="startRepertoireTrainerBtn" class="secondary">Train repertoire</button></div>
+          </div>
+          <div class="trainer-card flashcard-card">
+            <div class="setting-heading"><span class="label">Study flashcards &amp; lessons</span><span id="lessonCount" class="setting-value">0 lessons</span></div>
+            <div class="row two compact-row"><input id="lessonTitleInput" type="text" maxlength="60" placeholder="Lesson title"><button id="addFlashcardBtn" class="secondary">Add current position</button></div>
+            <textarea id="lessonNoteInput" rows="2" maxlength="240" placeholder="Teaching note or question"></textarea>
+            <div class="row two compact-row"><button id="saveLessonBtn" class="secondary">Save lesson</button><button id="studyFlashcardsBtn" class="secondary">Study due cards</button></div>
+            <div id="lessonList" class="compact-list"></div>
+          </div>
+          <div class="trainer-card performance-card">
+            <div class="setting-heading"><span class="label">Performance &amp; rating history</span><span id="performanceRating" class="setting-value">Unrated</span></div>
+            <div id="timeControlPerformance" class="profile-grid"></div>
+            <canvas id="ratingHistoryGraph" class="eval-graph" height="110" role="img" aria-label="Estimated local rating history"></canvas>
+            <button id="calibrateEngineBtn" class="secondary full">Calibrate strength from recent games</button>
+          </div>
         </div>
 
         <div id="displayTab" class="tab-panel" role="tabpanel" aria-labelledby="displayTabButton">
@@ -651,7 +725,28 @@
             <input id="restoreWorkspaceInput" type="file" accept=".fce,.json,application/json" hidden>
           </div>
           <div class="file-card settings-data-card">
+            <div class="setting-heading"><span class="label">Encrypted folder sync</span><span class="setting-value">Portable local file</span></div>
+            <p class="hint">Encrypt the complete workspace with a passphrase, then store the resulting .fcex file in iCloud Drive, Dropbox, OneDrive, or any synced folder. No FunChessEngine account or server is involved.</p>
+            <input id="syncPassphraseInput" type="password" minlength="8" maxlength="128" placeholder="Passphrase (8+ characters)">
+            <div class="row two compact-row"><button id="exportEncryptedSyncBtn" class="secondary">Export encrypted sync…</button><button id="importEncryptedSyncBtn" class="secondary">Import encrypted sync…</button></div>
+            <input id="encryptedSyncInput" type="file" accept=".fcex,application/json" hidden>
+          </div>
+          <div class="file-card settings-data-card">
+            <div class="setting-heading"><span class="label">LAN multiplayer</span><span id="lanStatus" class="setting-value">Off</span></div>
+            <p class="hint">Explicitly host the current local session on your private network behind a random access token. Anyone with the generated link shares this board; turning it off closes the LAN server.</p>
+            <div class="row two compact-row"><button id="toggleLanBtn" class="secondary">Start LAN sharing</button><button id="copyLanLinkBtn" class="secondary" disabled>Copy join link</button></div>
+            <code id="lanLink" class="breakable-code">Not running</code>
+          </div>
+          <div class="file-card settings-data-card">
+            <div class="setting-heading"><span class="label">Data-only plugins</span><span id="pluginCount" class="setting-value">0 installed</span></div>
+            <p class="hint">Install bounded JSON manifests that contribute training positions, opening data, or command metadata. Plugin files are never executed as JavaScript or Python.</p>
+            <button id="installPluginBtn" class="secondary full">Install plugin manifest…</button><input id="pluginInput" type="file" accept=".json,application/json" hidden>
+            <div id="pluginList" class="compact-list"></div>
+          </div>
+          <div class="file-card settings-data-card">
             <div class="setting-heading"><span class="label">Share current game</span><span class="setting-value">Local export</span></div>
+            <div class="row two compact-row"><input id="shareImageTitle" type="text" maxlength="60" placeholder="Share-card title"><select id="shareImageLayout"><option value="game">Game + clocks</option><option value="position">Position focus</option><option value="study">Study card</option></select></div>
+            <label class="analysis-auto"><input id="shareAnnotationsToggle" type="checkbox" checked> <span><strong>Include board annotations</strong><small>Draw saved highlights/arrows and engine candidate arrow on the exported card.</small></span></label>
             <div class="row two compact-row"><button id="copyShareBtn" class="secondary">Copy share text</button><button id="shareImageBtn" class="secondary">Save share image</button></div>
           </div>
           <button id="showOnboardingBtn" class="secondary full">Show getting-started tour</button>
@@ -710,6 +805,6 @@
     </div>
   </dialog>
   <div id="dropOverlay" class="drop-overlay" hidden><div><strong>Open in FunChessEngine</strong><span>Drop PGN, FEN, or saved PNG</span></div></div>
-  <script src="/app.js?v=11"></script>
+  <script src="/app.js?v=12"></script>
 </body>
 </html>

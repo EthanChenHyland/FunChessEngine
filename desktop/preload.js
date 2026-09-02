@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld("engineLabDesktop", {
   openFen: () => ipcRenderer.invoke("file:open-fen"),
   openPgn: () => ipcRenderer.invoke("file:open-pgn"),
   openPng: () => ipcRenderer.invoke("file:open-png"),
+  openEngine: () => ipcRenderer.invoke("file:open-engine"),
   openBundle: () => ipcRenderer.invoke("file:open-bundle"),
   saveText: (filename, text) => ipcRenderer.invoke("file:save-text", { filename, text }),
   savePgn: (filename, text) => ipcRenderer.invoke("file:save-pgn", { filename, text }),

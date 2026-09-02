@@ -546,6 +546,24 @@ function registerFileHandlers() {
     return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
   });
 
+  ipcMain.handle("file:open-engine", async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: "Choose UCI Engine Executable",
+      properties: ["openFile"],
+      filters: process.platform === "win32"
+        ? [{ name: "Executable", extensions: ["exe"] }]
+        : [{ name: "UCI engine executable", extensions: ["*"] }],
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+    const candidate = path.resolve(result.filePaths[0]);
+    const stats = fs.statSync(candidate);
+    if (!stats.isFile()) throw new Error("UCI engine selection must be a file.");
+    if (process.platform !== "win32") {
+      fs.accessSync(candidate, fs.constants.X_OK);
+    }
+    return candidate;
+  });
+
   ipcMain.handle("file:save-text", async (_event, payload) => {
     if (!payload || typeof payload.text !== "string") return false;
     if (Buffer.byteLength(payload.text, "utf8") > MAX_FEN_BYTES) throw new Error("FEN export is too large.");

@@ -14,27 +14,36 @@ from __future__ import annotations
 import argparse
 import errno
 import io
+import ipaddress
 import json
 import math
+import os
+import secrets
+import socket
 import subprocess
 import sys
 import threading
 import time
 import webbrowser
+from contextlib import suppress
 from dataclasses import asdict
 from http import HTTPStatus
+from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import chess
 import chess.pgn
+import chess.syzygy
 
 import agent
 from harness import benchmark as benchmark_harness
 from harness.referee import FAILED_TERMINATIONS, play_match
 from harness.sandbox import local
+from integrations.uci_client import ExternalUCIEngine
+from reporting.generator import annotated_pgn, html_report
 
 if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
     ROOT = Path(str(sys._MEIPASS)) / "gui"
@@ -44,6 +53,11 @@ DEFAULT_CLOCK_MS = 120_000
 DEFAULT_INCREMENT_MS = 500
 MAX_API_BODY_BYTES = 4 * 1024 * 1024
 OPENING_DATA_PATH = ROOT / "openings.json"
+DEFAULT_SYZYGY_PATH = os.environ.get("FUNCHESS_SYZYGY_PATH", "").strip()
+LAN_LOCK = threading.RLock()
+LAN_SERVER: ThreadingHTTPServer | None = None
+LAN_THREAD: threading.Thread | None = None
+LAN_TOKEN = ""
 
 
 def _board_from_fen(fen: str, *, chess960: bool = False) -> chess.Board:
@@ -242,6 +256,184 @@ def _move_explanation(
     return lead
 
 
+def _detect_tactical_motifs(board: chess.Board, move: chess.Move) -> list[str]:
+    """Return deterministic tactical labels for a legal move."""
+
+    if move not in board.legal_moves:
+        return []
+    mover = board.turn
+    motifs: list[str] = []
+    if board.is_capture(move):
+        motifs.append("capture")
+    if move.promotion:
+        motifs.append("promotion")
+    before_pins = {
+        square
+        for square, piece in board.piece_map().items()
+        if piece.color != mover and board.is_pinned(piece.color, square)
+    }
+    child = board.copy(stack=False)
+    child.push(move)
+    if child.is_checkmate():
+        motifs.append("mate")
+    elif child.is_check():
+        motifs.append("check")
+    moved_piece = child.piece_at(move.to_square)
+    if moved_piece is not None:
+        attacked_targets = []
+        for square in child.attacks(move.to_square):
+            target = child.piece_at(square)
+            if target is not None and target.color != mover and target.piece_type != chess.PAWN:
+                attacked_targets.append(target.piece_type)
+        if len(attacked_targets) >= 2:
+            motifs.append("fork")
+        if moved_piece.piece_type in {chess.ROOK, chess.QUEEN}:
+            enemy_king = child.king(not mover)
+            if (
+                enemy_king is not None
+                and chess.square_rank(enemy_king) in {0, 7}
+                and child.is_check()
+            ):
+                motifs.append("back-rank pressure")
+    after_pins = {
+        square
+        for square, piece in child.piece_map().items()
+        if piece.color != mover and child.is_pinned(piece.color, square)
+    }
+    if after_pins - before_pins:
+        motifs.append("pin")
+    if board.is_capture(move):
+        captured_square = move.to_square
+        if board.is_en_passant(move):
+            captured_square += -8 if mover == chess.WHITE else 8
+        captured = board.piece_at(captured_square)
+        if captured is not None and not board.is_attacked_by(captured.color, captured_square):
+            motifs.append("hanging piece")
+    return motifs
+
+
+def _passed_pawns(board: chess.Board, color: chess.Color) -> list[str]:
+    enemy_pawns = board.pieces(chess.PAWN, not color)
+    result: list[str] = []
+    for square in board.pieces(chess.PAWN, color):
+        file_index = chess.square_file(square)
+        rank_index = chess.square_rank(square)
+        files = {file_index}
+        if file_index > 0:
+            files.add(file_index - 1)
+        if file_index < 7:
+            files.add(file_index + 1)
+        blocked = False
+        for enemy in enemy_pawns:
+            if chess.square_file(enemy) not in files:
+                continue
+            enemy_rank = chess.square_rank(enemy)
+            if (color == chess.WHITE and enemy_rank > rank_index) or (
+                color == chess.BLACK and enemy_rank < rank_index
+            ):
+                blocked = True
+                break
+        if not blocked:
+            result.append(chess.square_name(square))
+    return result
+
+
+def _human_plan(board: chess.Board) -> list[str]:
+    """Produce compact strategic plan suggestions from board features."""
+
+    plans: list[str] = []
+    color = board.turn
+    king = board.king(color)
+    if king is not None and board.has_castling_rights(color) and board.fullmove_number <= 15:
+        plans.append("Complete development and consider castling before starting operations.")
+    passed = _passed_pawns(board, color)
+    if passed:
+        plans.append(f"Support and advance the passed pawn on {passed[0]} when tactics allow.")
+    files_with_no_pawns: list[str] = []
+    for file_index in range(8):
+        if not any(
+            chess.square_file(square) == file_index
+            for square in (
+                board.pieces(chess.PAWN, chess.WHITE) | board.pieces(chess.PAWN, chess.BLACK)
+            )
+        ):
+            files_with_no_pawns.append(chr(ord("a") + file_index))
+    if files_with_no_pawns:
+        plans.append(f"Contest the open {files_with_no_pawns[0]}-file with a rook or queen.")
+    enemy_king = board.king(not color)
+    if enemy_king is not None:
+        attackers = len(board.attackers(color, enemy_king))
+        if attackers:
+            plans.append("Keep pieces near the enemy king and look for forcing checks or captures.")
+    if _phase_name(board) == "endgame":
+        plans.append(
+            "Activate the king; king activity is often worth more than passive material defense."
+        )
+    if not plans:
+        plans.append("Improve the least active piece and avoid creating new pawn weaknesses.")
+    return plans[:4]
+
+
+def _position_insights(board: chess.Board) -> dict[str, Any]:
+    attacks: dict[str, list[str]] = {"white": [], "black": []}
+    loose: list[str] = []
+    for square, piece in board.piece_map().items():
+        color_name = "white" if piece.color == chess.WHITE else "black"
+        for target in board.attacks(square):
+            name = chess.square_name(target)
+            if name not in attacks[color_name]:
+                attacks[color_name].append(name)
+        if piece.piece_type != chess.KING and not board.is_attacked_by(piece.color, square):
+            loose.append(chess.square_name(square))
+    return {
+        "fen": board.fen(),
+        "plans": _human_plan(board),
+        "attacks": attacks,
+        "loose_pieces": loose,
+        "passed_pawns": {
+            "white": _passed_pawns(board, chess.WHITE),
+            "black": _passed_pawns(board, chess.BLACK),
+        },
+        "phase": _phase_name(board),
+    }
+
+
+def _tablebase_probe(fen: str, path: str = "") -> dict[str, Any]:
+    tablebase_path = Path(path or DEFAULT_SYZYGY_PATH).expanduser()
+    if not str(tablebase_path) or not tablebase_path.is_dir():
+        return {"available": False, "reason": "Configure a local Syzygy directory first."}
+    board = chess.Board(fen)
+    if not board.is_valid():
+        raise ValueError("Tablebase lookup requires a valid position.")
+    piece_count = len(board.piece_map())
+    if piece_count > 7:
+        return {"available": True, "eligible": False, "piece_count": piece_count}
+    try:
+        with chess.syzygy.open_tablebase(str(tablebase_path)) as tablebase:
+            wdl = int(tablebase.probe_wdl(board))
+            try:
+                dtz = int(tablebase.probe_dtz(board))
+            except KeyError:
+                dtz = None
+    except (KeyError, OSError) as exc:
+        return {
+            "available": True,
+            "eligible": True,
+            "piece_count": piece_count,
+            "missing": True,
+            "reason": str(exc),
+        }
+    labels = {-2: "loss", -1: "cursed loss", 0: "draw", 1: "blessed win", 2: "win"}
+    return {
+        "available": True,
+        "eligible": True,
+        "piece_count": piece_count,
+        "wdl": wdl,
+        "result": labels.get(wdl, str(wdl)),
+        "dtz": dtz,
+    }
+
+
 def _captured_name(board: chess.Board, move: chess.Move) -> str | None:
     square = move.to_square
     if board.is_en_passant(move):
@@ -353,6 +545,7 @@ def _run_analysis_worker(payload: dict[str, Any]) -> None:
             "fen_before": fen_before,
             "phase": phase,
             "explanation": explanation,
+            "motifs": _detect_tactical_motifs(board, move),
             "best_uci": best_uci,
             "best_san": best_san,
             "classification": classification,
@@ -765,6 +958,128 @@ class GameSession:
                 "skill": self.engine_skill,
                 "move_time_cap_ms": self.engine_move_time_cap_ms,
             }
+
+    def time_management_coaching(self) -> dict[str, Any]:
+        """Summarize clock usage and analysis quality without mutating the game."""
+
+        with self.lock:
+            initial_white, initial_black = self.recorded_initial_clocks
+            previous = [initial_white, initial_black]
+            replay = _board_from_fen(self.initial_fen, chess960=self.chess960)
+            think_times: dict[str, list[int]] = {"white": [], "black": []}
+            long_thinks = 0
+            time_trouble_errors = 0
+            impulsive_errors = 0
+            analysis_by_ply = {
+                int(item.get("ply", -1)): item
+                for item in self.analysis_results
+                if isinstance(item, dict)
+            }
+            for ply, clocks in enumerate(self.recorded_clocks, start=1):
+                mover = replay.turn
+                side_index = 0 if mover == chess.WHITE else 1
+                side_name = "white" if mover == chess.WHITE else "black"
+                before = previous[side_index]
+                after = clocks[side_index]
+                spent = 0
+                if before is not None and after is not None:
+                    bonus = self.increment_ms if self.clock_mode == "increment" else 0
+                    spent = max(0, int(before) + bonus - int(after))
+                    think_times[side_name].append(spent)
+                    base = (
+                        self.white_base_clock_ms
+                        if mover == chess.WHITE
+                        else self.black_base_clock_ms
+                    )
+                    if spent > max(5_000, int(base * 0.18)):
+                        long_thinks += 1
+                    item = analysis_by_ply.get(ply)
+                    cpl = int(item.get("cpl", 0)) if item else 0
+                    if cpl >= 120 and spent < 1_200:
+                        impulsive_errors += 1
+                    if cpl >= 120 and int(after) < max(5_000, int(base * 0.12)):
+                        time_trouble_errors += 1
+                previous = [clocks[0], clocks[1]]
+                if ply <= len(self.board.move_stack):
+                    replay.push(self.board.move_stack[ply - 1])
+
+            averages = {
+                side: round(sum(values) / len(values)) if values else 0
+                for side, values in think_times.items()
+            }
+            advice: list[str] = []
+            if impulsive_errors:
+                advice.append(
+                    f"You made {impulsive_errors} analyzed error(s) after thinking under "
+                    "1.2 seconds."
+                )
+            if time_trouble_errors:
+                advice.append(
+                    f"{time_trouble_errors} analyzed error(s) happened with less than 12% "
+                    "of the clock left."
+                )
+            if long_thinks >= 3:
+                advice.append(
+                    "Several moves used over 18% of the starting clock; reserve time for later "
+                    "decisions."
+                )
+            if not advice:
+                advice.append(
+                    "Clock usage is balanced so far; keep matching thinking time to position "
+                    "complexity."
+                )
+            return {
+                "average_think_ms": averages,
+                "long_thinks": long_thinks,
+                "impulsive_errors": impulsive_errors,
+                "time_trouble_errors": time_trouble_errors,
+                "advice": advice,
+            }
+
+    def position_insights(self, fen: str) -> dict[str, Any]:
+        board = _board_from_fen(fen, chess960=self.chess960)
+        if not board.is_valid():
+            raise ValueError("Position insights require a valid board.")
+        return _position_insights(board)
+
+    def tablebase_probe(self, fen: str, path: str = "") -> dict[str, Any]:
+        return _tablebase_probe(fen, path)
+
+    def compare_external_uci(
+        self,
+        executable: str,
+        fen: str,
+        budget_ms: int = 300,
+    ) -> dict[str, Any]:
+        """Compare FunChessEngine with a user-selected local UCI executable."""
+
+        budget = max(50, min(5_000, int(budget_ms)))
+        board = _board_from_fen(fen, chess960=self.chess960)
+        if not board.is_valid() or board.is_game_over(claim_draw=True):
+            raise ValueError("Engine comparison requires a valid non-terminal position.")
+        ours = self.multipv_fen(board.fen(), 1, budget)
+        with ExternalUCIEngine(executable, timeout_s=max(3.0, budget / 1_000 + 2.0)) as external:
+            external.new_game(chess960=self.chess960)
+            theirs = external.bestmove(board.fen(), budget, chess960=self.chess960)
+        our_line = ours.get("lines", [{}])[0] if ours.get("lines") else {}
+        return {
+            "fen": board.fen(),
+            "budget_ms": budget,
+            "funchess": {
+                "move": our_line.get("move"),
+                "san": our_line.get("san"),
+                "score": our_line.get("score"),
+                "depth": ours.get("depth"),
+                "nodes": ours.get("nodes"),
+            },
+            "external": {
+                "move": theirs.move,
+                "san": board.san(board.parse_uci(theirs.move)),
+                "elapsed_ms": theirs.elapsed_ms,
+                "info": list(theirs.info[-20:]),
+            },
+            "agree": our_line.get("move") == theirs.move,
+        }
 
     @staticmethod
     def _profile_static_score(board: chess.Board, move: chess.Move, profile: str) -> int:
@@ -1795,6 +2110,8 @@ class GameSession:
                 "analysis_total": self.analysis_total,
                 "phase": _phase_name(board),
                 "opening": opening,
+                "plans": _human_plan(board),
+                "time_coaching": self.time_management_coaching(),
             }
 
     @staticmethod
@@ -2053,6 +2370,14 @@ class Handler(SimpleHTTPRequestHandler):
             return
         try:
             payload = self._body()
+            if self.__class__.__name__ == "LanHandler" and self.path in {
+                "/api/external-uci",
+                "/api/tablebase",
+                "/api/dev-benchmark",
+                "/api/dev-arena",
+                "/api/lan",
+            }:
+                raise ValueError("This host-local action is unavailable to LAN guests.")
             if self.path == "/api/move":
                 SESSION.play_move(str(payload.get("move", "")))
             elif self.path == "/api/engine":
@@ -2129,6 +2454,31 @@ class Handler(SimpleHTTPRequestHandler):
             elif self.path == "/api/export-pgn":
                 self._json({"pgn": SESSION.export_pgn()})
                 return
+            elif self.path == "/api/export-annotated-pgn":
+                self._json(
+                    {
+                        "pgn": annotated_pgn(
+                            SESSION.export_pgn(),
+                            list(SESSION.analysis_results),
+                        )
+                    }
+                )
+                return
+            elif self.path == "/api/export-html-report":
+                games = payload.get("games", [])
+                profile = payload.get("profile", {})
+                if not isinstance(games, list) or not isinstance(profile, dict):
+                    raise ValueError("Report data is invalid.")
+                self._json(
+                    {
+                        "html": html_report(
+                            str(payload.get("title", "FunChessEngine report")),
+                            games,
+                            profile,
+                        )
+                    }
+                )
+                return
             elif self.path == "/api/review":
                 self._json(SESSION.review_state(int(payload.get("ply", 0))))
                 return
@@ -2176,6 +2526,33 @@ class Handler(SimpleHTTPRequestHandler):
                         str(payload.get("fen", chess.STARTING_FEN))
                     )
                 )
+                return
+            elif self.path == "/api/position-insights":
+                self._json(
+                    SESSION.position_insights(str(payload.get("fen", chess.STARTING_FEN)))
+                )
+                return
+            elif self.path == "/api/tablebase":
+                self._json(
+                    SESSION.tablebase_probe(
+                        str(payload.get("fen", chess.STARTING_FEN)),
+                        str(payload.get("path", "")),
+                    )
+                )
+                return
+            elif self.path == "/api/external-uci":
+                self._json(
+                    SESSION.compare_external_uci(
+                        str(payload.get("executable", "")),
+                        str(payload.get("fen", chess.STARTING_FEN)),
+                        int(payload.get("budget_ms", 300)),
+                    )
+                )
+                return
+            elif self.path == "/api/lan":
+                if self.__class__.__name__ == "LanHandler":
+                    raise ValueError("LAN hosting can only be controlled from the host computer.")
+                self._json(_lan_control(str(payload.get("action", "status"))))
                 return
             elif self.path == "/api/dev-benchmark":
                 self._json(
@@ -2230,6 +2607,141 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+
+def _private_ip(value: str | None) -> bool:
+    if not value:
+        return False
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return value == "localhost"
+    return address.is_private or address.is_loopback or address.is_link_local
+
+
+class LanHandler(Handler):
+    """Token-authenticated handler used only by the explicitly enabled LAN server."""
+
+    def _lan_cookie_valid(self) -> bool:
+        cookie = SimpleCookie()
+        try:
+            cookie.load(self.headers.get("Cookie", ""))
+        except KeyError:
+            return False
+        value = cookie.get("fce_lan")
+        return bool(value and LAN_TOKEN and secrets.compare_digest(value.value, LAN_TOKEN))
+
+    def _request_is_local(self) -> bool:
+        if not _private_ip(self.client_address[0]):
+            return False
+        host_header = self.headers.get("Host", "")
+        try:
+            host = urlsplit(f"//{host_header}")
+            if not _private_ip(host.hostname) or host.port != self.server.server_port:
+                return False
+        except ValueError:
+            return False
+        origin_header = self.headers.get("Origin")
+        if origin_header:
+            try:
+                origin = urlsplit(origin_header)
+                if (
+                    origin.scheme != "http"
+                    or not _private_ip(origin.hostname)
+                    or origin.port != self.server.server_port
+                ):
+                    return False
+            except ValueError:
+                return False
+        return self._lan_cookie_valid()
+
+    def do_GET(self) -> None:
+        parts = urlsplit(self.path)
+        token = parse_qs(parts.query).get("token", [""])[0]
+        if token and LAN_TOKEN and secrets.compare_digest(token, LAN_TOKEN):
+            self.send_response(HTTPStatus.FOUND)
+            self.send_header("Location", "/")
+            self.send_header("Set-Cookie", f"fce_lan={LAN_TOKEN}; Path=/; SameSite=Strict")
+            self.end_headers()
+            return
+        super().do_GET()
+
+
+def _lan_host_ip() -> str:
+    candidates: list[str] = []
+    with suppress(OSError):
+        candidates.extend(
+            item[4][0]
+            for item in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+            if item[4]
+        )
+    for candidate in candidates:
+        if _private_ip(candidate) and not ipaddress.ip_address(candidate).is_loopback:
+            return candidate
+    return "127.0.0.1"
+
+
+def _lan_status() -> dict[str, Any]:
+    with LAN_LOCK:
+        server = LAN_SERVER
+        if server is None:
+            return {"running": False}
+        host = _lan_host_ip()
+        return {
+            "running": True,
+            "host": host,
+            "port": server.server_port,
+            "url": f"http://{host}:{server.server_port}/?token={LAN_TOKEN}",
+        }
+
+
+def _start_lan_server() -> dict[str, Any]:
+    global LAN_SERVER, LAN_THREAD, LAN_TOKEN
+    with LAN_LOCK:
+        if LAN_SERVER is not None:
+            return _lan_status()
+        token = secrets.token_urlsafe(18)
+        port = 8766
+        while True:
+            try:
+                server = ThreadingHTTPServer(("0.0.0.0", port), LanHandler)
+                break
+            except OSError as exc:
+                if exc.errno != errno.EADDRINUSE or port >= 8786:
+                    raise
+                port += 1
+        LAN_TOKEN = token
+        LAN_SERVER = server
+        LAN_THREAD = threading.Thread(target=server.serve_forever, daemon=True)
+        LAN_THREAD.start()
+        return _lan_status()
+
+
+def _stop_lan_server() -> dict[str, Any]:
+    global LAN_SERVER, LAN_THREAD, LAN_TOKEN
+    with LAN_LOCK:
+        server = LAN_SERVER
+        thread = LAN_THREAD
+        LAN_SERVER = None
+        LAN_THREAD = None
+        LAN_TOKEN = ""
+    if server is not None:
+        server.shutdown()
+        server.server_close()
+    if thread is not None:
+        thread.join(timeout=2.0)
+    return {"running": False}
+
+
+def _lan_control(action: str) -> dict[str, Any]:
+    normalized = action.strip().lower()
+    if normalized == "start":
+        return _start_lan_server()
+    if normalized == "stop":
+        return _stop_lan_server()
+    if normalized == "status":
+        return _lan_status()
+    raise ValueError("LAN action must be start, stop, or status.")
 
 
 def main() -> None:
@@ -2307,6 +2819,7 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        _stop_lan_server()
         server.server_close()
 
 

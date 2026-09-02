@@ -395,6 +395,79 @@ class FrontendTransitionContractTests(unittest.TestCase):
         self.assertIn("windows-latest", self.desktop_builds)
         self.assertIn("actions/upload-artifact@v4", self.desktop_builds)
 
+    def test_chess_intelligence_maps_tablebases_and_external_engines_are_wired(self) -> None:
+        for control in (
+            "threatMapToggle",
+            "heatMapToggle",
+            "humanPlanList",
+            "tacticalMotifs",
+            "syzygyPathInput",
+            "externalEnginePath",
+            "externalEngineSelect",
+        ):
+            self.assertIn(f'id="{control}"', self.html)
+        self.assert_function_contains("refreshPositionInsights", 'api("/api/position-insights"')
+        self.assert_function_contains("probeTablebase", 'api("/api/tablebase"')
+        self.assert_function_contains("compareExternalEngine", 'api("/api/external-uci"')
+        self.assert_function_contains("renderBoard", 'button.classList.add("engine-heat")')
+        self.assertIn(
+            'openEngine: () => ipcRenderer.invoke("file:open-engine")',
+            self.desktop_preload,
+        )
+        self.assertIn('ipcMain.handle("file:open-engine"', self.desktop_main)
+
+    def test_repertoire_similarity_lessons_and_rating_history_are_durable(self) -> None:
+        for control in (
+            "similarGameResults",
+            "openingDatabaseInput",
+            "repertoireGapReport",
+            "repertoireTrainerSelect",
+            "lessonList",
+            "ratingHistoryGraph",
+            "studyFolderInput",
+            "studyTagsInput",
+        ):
+            self.assertIn(f'id="{control}"', self.html)
+        self.assert_function_contains("searchSimilarGames", "positionSimilarity")
+        self.assert_function_contains("renderRepertoireGaps", "repertoirePreparedMoves")
+        self.assert_function_contains("learnRepertoireConfidence", "child.confidence")
+        self.assert_function_contains("startRepertoireTraining", "trainerItems.unshift")
+        self.assert_function_contains("renderPerformanceHistory", "timeControlBucket")
+        self.assertIn("LESSONS_KEY", self.source)
+
+    def test_reports_image_import_share_editor_and_encrypted_sync_are_local(self) -> None:
+        for control in (
+            "boardImageInput",
+            "shareImageTitle",
+            "shareAnnotationsToggle",
+            "exportAnnotatedPgnBtn",
+            "exportHtmlReportBtn",
+            "syncPassphraseInput",
+            "encryptedSyncInput",
+        ):
+            self.assertIn(f'id="{control}"', self.html)
+        self.assert_function_contains("recognizeBoardImage", "createImageBitmap")
+        self.assert_function_contains("renderShareCard", "currentAnnotations")
+        self.assert_function_contains("exportAnnotatedPgn", 'api("/api/export-annotated-pgn"')
+        self.assert_function_contains("exportHtmlReport", 'api("/api/export-html-report"')
+        self.assert_function_contains("exportEncryptedSync", 'name: "AES-GCM"')
+        self.assert_function_contains("syncEncryptionKey", "PBKDF2")
+
+    def test_plugins_lan_presets_and_command_palette_are_expanded_safely(self) -> None:
+        for control in (
+            "pluginInput",
+            "pluginList",
+            "lanStatus",
+            "lanLink",
+            "enginePresetSelect",
+        ):
+            self.assertIn(f'id="{control}"', self.html)
+        self.assert_function_contains("validatePluginManifestClient", "SAFE_PLUGIN_ACTIONS")
+        self.assert_function_contains("toggleLanSharing", 'api("/api/lan"')
+        self.assert_function_contains("saveCurrentEnginePreset", "saveEnginePresets")
+        self.assert_function_contains("commandDefinitions", "pluginManifests")
+        self.assertIn("data-only", self.html.lower())
+
     def test_mac_notarization_hook_is_opt_in_and_credential_gated(self) -> None:
         self.assertIn('"afterSign": "scripts/notarize.js"', self.desktop_package)
         for name in ("APPLE_ID", "APPLE_APP_SPECIFIC_PASSWORD", "APPLE_TEAM_ID"):
