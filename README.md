@@ -214,3 +214,5 @@ The harness provides repeatable local matches, clock handling, legality checks, 
 
 The [40 workstation additions](docs/WORKSTATION40_FEATURES.md) cover piece sets, board
 customization, scrolling, motion, database layouts, and opening-preparation tools.
+The [customization studio](docs/CUSTOMIZATION_STUDIO.md) adds visibility scoring, independent
+piece styling, 12 board palettes, six textures, interface controls, and portable looks.

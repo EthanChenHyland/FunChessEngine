@@ -139,7 +139,7 @@ async function run() {
   if (!fenLoaded) throw new Error("FEN setup action did not complete successfully.");
   await waitFor(
     window,
-    `!busy && state?.board?.a7 === "P" && document.querySelector('[data-square="a7"] .piece')?.textContent === "♙"`,
+    `!busy && state?.board?.a7 === "P" && document.querySelector('[data-square="a7"] .piece')?.dataset.piece === "P"`,
   );
   await window.webContents.executeJavaScript(`
     document.querySelector('[data-square="a7"]').click();

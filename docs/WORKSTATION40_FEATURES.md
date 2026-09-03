@@ -1,5 +1,8 @@
 # 40 workstation additions and improvements
 
+The later [customization studio expansion](CUSTOMIZATION_STUDIO.md) adds contrast scoring,
+independent side styling, palettes, surfaces, and interface controls.
+
 Open **Settings → Workstation appearance & navigation** for the new visual and
 scrolling options. The game browser has new **Preview tools** and opening-tree
 **Tree display & preparation** sections. Everything runs locally.
@@ -103,7 +106,7 @@ previous 20-feature batch are not counted again.
 
 ## Validation
 
-Local validation passed with **204 Python tests and 52 JavaScript tests**.
+Local validation passed with **204 Python tests and 56 JavaScript tests**.
 The release gate covers lint/type checks,
 engine package isolation, a short engine arena, desktop syntax checks, dependency
 audit, and the Electron smoke suite. Workstation smoke coverage exercises actual

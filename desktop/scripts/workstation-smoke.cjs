@@ -12,9 +12,13 @@ module.exports=async function workstationSmoke(window,waitFor) {
     check(document.querySelectorAll('#board .ws-art-piece svg').length>0,'Live vector pieces missing');
     if(wbTree.result)check(document.querySelectorAll('#wbTreeBoard svg').length>0,'Tree vector pieces missing');
     wsSet({pieceSet:'letters'});check(document.querySelector('#wbBoard svg text').textContent==='R','Lettered piece set missing');
-    change('white','#ffeedd');change('black','#203040');change('outline',2);change('customPalette',true);change('light','#ddd5c0');change('dark','#507868');change('texture','linen');change('frame',4);
+    change('whiteSet','letters');change('blackSet','vector');check(document.querySelector('#wbBoard .white-piece svg text') && !document.querySelector('#wbBoard .black-piece svg text'),'Independent side piece sets missing');
+    document.querySelector('#wsPiecePresets button').click();check(!document.querySelector('#wsContrastGrid .low'),'Maximum-clarity preset has low contrast');
+    document.querySelectorAll('#wsBoardPresets button')[4].click();check(wsPrefs().customPalette && wsPrefs().light==='#efd6c1','Board palette did not apply');
+    change('fontSymbols','classic');change('pieceFinish','gloss');change('whiteOutline','#112233');change('blackOutline','#ddeeff');change('pieceShadow',64);change('pieceOpacity',92);change('pieceY',2);change('pieceWidth',108);change('pieceGlow',true);
+    change('white','#ffeedd');change('black','#203040');change('outline',2);change('customPalette',true);change('light','#ddd5c0');change('dark','#507868');change('texture','marble');change('frame',4);change('frameColor','#334455');change('radius',18);change('boardShadow',60);change('boardBrightness',105);change('boardSaturation',115);change('lastColor','#aabb22');change('selectColor','#22bbaa');change('targetColor','#663399');change('checkColor','#dd3344');change('targetStyle','ring');change('coordsTone','dark');change('coordSize',14);change('turnGlow',true);change('uiDensity','compact');change('fontScale',110);change('panelRadius',16);change('glassPanels',true);change('scrollbar','slim');change('hoverMotion',false);change('reduceTransparency',true);
     check(document.documentElement.style.getPropertyValue('--light-square')==='#ddd5c0','Custom board colors missing');
-    check(getComputedStyle(document.querySelector('#wbBoard .white-piece')).color==='rgb(255, 238, 221)','Piece colors missing');
+    check(getComputedStyle(document.querySelector('#wbBoard .white-piece')).color==='rgb(255, 238, 221)','Piece colors missing');check(document.documentElement.dataset.wsTargetStyle==='ring' && document.documentElement.dataset.wsTexture==='marble','Board details were not applied');check(document.documentElement.style.getPropertyValue('--ws-white-outline')==='#112233','Piece outline color missing');
     wsSet({motion:'full',duration:500});wb.ply=0;wbRenderPreview();wbStep(1);
     check([...document.querySelectorAll('#wbBoard [data-piece]')].some(piece=>piece.getAnimations().length),'Piece move animation missing');
     change('motion','reduced');check(wsReduced(),'Reduced motion ignored');change('duration',240);change('transitions',false);change('smooth',false);
@@ -41,8 +45,8 @@ module.exports=async function workstationSmoke(window,waitFor) {
     change('treeHidden',true);check(document.getElementById('wbTreeBoard').hidden,'Tree visibility ignored');change('treeHidden',false);change('treeScores',true);check(!document.querySelector('.ws-both-scores').hidden,'Both scores missing');
     document.getElementById('wsTreeQuery').value='impossible';document.getElementById('wsTreeQuery').dispatchEvent(new Event('input'));check([...document.querySelectorAll('#wbTreeMoves [data-san]')].every(row=>row.hidden),'SAN filter failed');document.getElementById('wsTreeQuery').value='';wsTreeTools();
     const exports=[],originalDownload=downloadBlob;downloadBlob=async(blob,name)=>exports.push({name,text:await blob.text()});
-    try {document.getElementById('wsDownloadGame').click();document.getElementById('wsCitations').click();await new Promise(resolve=>setTimeout(resolve,20));}finally{downloadBlob=originalDownload;}
-    check(exports.some(item=>item.name.endsWith('.pgn') && item.text.includes('[White')),'Single game PGN export missing');check(exports.some(item=>item.name.endsWith('.txt') && item.text.includes('Reference #')),'Citations export missing');
+    try {document.getElementById('wsDownloadGame').click();document.getElementById('wsCitations').click();await wsExportCustomization();await new Promise(resolve=>setTimeout(resolve,20));}finally{downloadBlob=originalDownload;}
+    check(exports.some(item=>item.name.endsWith('.pgn') && item.text.includes('[White')),'Single game PGN export missing');check(exports.some(item=>item.name.endsWith('.txt') && item.text.includes('Reference #')),'Citations export missing');const customization=exports.find(item=>item.name.endsWith('customization.json'));check(JSON.parse(customization.text).settings.targetStyle==='ring','Customization export missing settings');await wsImportCustomization({size:customization.text.length,text:async()=>customization.text});
     const oldFilters={...wb.filters};document.getElementById('wsWhiteGames').click();window.wsSmokeFilters=oldFilters;
   })()`,true);
   await waitFor(window,`!wb.searching && wb.filters.exact_players===true`);
@@ -55,13 +59,17 @@ module.exports=async function workstationSmoke(window,waitFor) {
     if(!variationMode || variationNode().snapshot.fen!==treeFen)throw new Error('Tree study did not use tree position');
     if(JSON.stringify([state.fen,state.moves_uci])!==window.wsSmokeLive)throw new Error('Tree study changed live game');
     await exitVariationWorkspace();await activateTab(document.querySelector('[data-tab="display"]'));
-    document.querySelector('#wsSettings details').open=true;document.getElementById('displayTab').scrollTop=0;
+    document.querySelectorAll('#wsSettings details')[0].open=true;document.querySelectorAll('#wsSettings details')[1].open=true;document.getElementById('displayTab').scrollTop=0;
     display=window.wsSmokeSaved;saveDisplaySettings();applyDisplaySettings();
     wsSet({pieceSet:'vector',motion:'reduced'});wbRenderPreview();if(wbTree.result)wbTreeRender();
   })()`,true);
   if(process.env.FUNCHESS_SMOKE_SCREENSHOT) {
     window.setSize(1400,950);await new Promise(resolve=>setTimeout(resolve,150));
     require('node:fs').writeFileSync(process.env.FUNCHESS_SMOKE_SCREENSHOT.replace(/\.png$/,'-settings.png'),(await window.webContents.capturePage()).toPNG());
+    window.setSize(390,844);await new Promise(resolve=>setTimeout(resolve,150));
+    const overflow=await window.webContents.executeJavaScript(`document.documentElement.scrollWidth>document.documentElement.clientWidth+1`,true);
+    if(overflow)throw new Error('Customization settings overflow the narrow window');
+    require('node:fs').writeFileSync(process.env.FUNCHESS_SMOKE_SCREENSHOT.replace(/\.png$/,'-settings-mobile.png'),(await window.webContents.capturePage()).toPNG());
   }
   await window.webContents.executeJavaScript(`openDatabaseWorkbench()`,true);
 };

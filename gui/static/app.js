@@ -2026,6 +2026,7 @@ function renderBoard() {
     if (square === lastFrom || square === lastTo) button.classList.add("last");
     if (targets.has(square)) button.classList.add("target");
     if (symbol) button.classList.add("occupied");
+    if (!setupMode && view?.check && symbol?.toLowerCase() === "k" && ((view.turn === "white") === (symbol === symbol.toUpperCase()))) button.classList.add("check-king");
     if (threatMap && attackedWhite.has(square)) button.classList.add("threat-white");
     if (threatMap && attackedBlack.has(square)) button.classList.add("threat-black");
     if (threatMap && looseSquares.has(square)) button.classList.add("loose-piece");

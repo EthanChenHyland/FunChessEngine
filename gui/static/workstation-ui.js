@@ -1,8 +1,19 @@
 // Local workstation preferences and preview tools. No engine or live-game mutations.
-const WS_DEFAULTS={pieceSet:'font',white:'#fff8e7',black:'#202c38',outline:1.4,customPalette:false,light:'#e7dfcc',dark:'#66847a',texture:'none',frame:1,motion:'system',duration:180,transitions:true,follow:true,scrollLock:false,smooth:true,wheel:false,notationHeight:220,previewWidth:360,layout:'split',sticky:true,practice:false,orient:false,treeHidden:false,treeScores:false};
-const WS_ENUMS={pieceSet:['font','vector','letters'],texture:['none','grain','linen'],motion:['system','reduced','full'],layout:['split','stack','preview']};
-const WS_RANGES={outline:[0,3],frame:[0,12],duration:[80,500],notationHeight:[120,480],previewWidth:[280,520]};
-let wsReady=false;
+const WS_DEFAULTS={pieceSet:'vector',whiteSet:'vector',blackSet:'vector',fontSymbols:'solid',pieceFinish:'matte',white:'#fffdf4',black:'#182431',whiteOutline:'#263746',blackOutline:'#fffdf4',outline:2,pieceShadow:42,pieceOpacity:100,pieceY:0,pieceWidth:100,pieceGlow:false,customPalette:false,light:'#e7dfcc',dark:'#66847a',texture:'none',frame:1,frameColor:'#465046',radius:11,boardShadow:38,boardBrightness:100,boardSaturation:100,lastColor:'#b9d85a',selectColor:'#8fe06d',targetColor:'#24351f',checkColor:'#d95757',targetStyle:'dot',coordsTone:'auto',coordSize:11,turnGlow:false,uiDensity:'cozy',fontScale:100,panelRadius:12,glassPanels:false,scrollbar:'standard',hoverMotion:true,reduceTransparency:false,motion:'system',duration:180,transitions:true,follow:true,scrollLock:false,smooth:true,wheel:false,notationHeight:220,previewWidth:360,layout:'split',sticky:true,practice:false,orient:false,treeHidden:false,treeScores:false};
+const WS_ENUMS={pieceSet:['font','vector','letters'],whiteSet:['font','vector','letters'],blackSet:['font','vector','letters'],fontSymbols:['solid','classic'],pieceFinish:['matte','flat','gloss','glass'],texture:['none','grain','linen','marble','carbon','dots'],targetStyle:['dot','ring','fill'],coordsTone:['auto','dark','light'],uiDensity:['compact','cozy','airy'],scrollbar:['slim','standard','wide'],motion:['system','reduced','full'],layout:['split','stack','preview']};
+const WS_RANGES={outline:[0,4],pieceShadow:[0,100],pieceOpacity:[50,100],pieceY:[-8,8],pieceWidth:[80,120],frame:[0,12],radius:[0,24],boardShadow:[0,100],boardBrightness:[70,130],boardSaturation:[0,160],coordSize:[7,18],fontScale:[85,125],panelRadius:[0,24],duration:[80,500],notationHeight:[120,480],previewWidth:[280,520]};
+const WS_BOARD_PRESETS=[
+  ['Classic','#f0d9b5','#b58863'],['Tournament','#e8ebd2','#779455'],['Midnight','#9ca7b8','#364152'],['Ocean glass','#d9eef0','#4e8190'],['Rosewood','#efd6c1','#955f59'],['Amethyst','#e8dded','#806b91'],['High contrast','#f7f4dc','#3e6045'],['Monochrome','#dedede','#60656b'],['Sandstone','#eee0bd','#ad8057'],['Candy','#f4d8e4','#9c7498'],['Blueprint','#dbe7f5','#5876a3'],['Coffee','#e8d5bd','#785944']
+];
+const WS_PIECE_PRESETS=[
+  ['Maximum clarity',{whiteSet:'vector',blackSet:'vector',white:'#ffffff',black:'#101820',whiteOutline:'#101820',blackOutline:'#ffffff',outline:2.6,pieceShadow:55,pieceFinish:'matte'}],
+  ['Tournament',{whiteSet:'vector',blackSet:'vector',white:'#fff4d6',black:'#17212b',whiteOutline:'#29323b',blackOutline:'#ede3cc',outline:1.8,pieceShadow:35,pieceFinish:'gloss'}],
+  ['Flat modern',{whiteSet:'vector',blackSet:'vector',white:'#f7f7f2',black:'#222831',whiteOutline:'#222831',blackOutline:'#f7f7f2',outline:1.2,pieceShadow:0,pieceFinish:'flat'}],
+  ['Study letters',{whiteSet:'letters',blackSet:'letters',white:'#ffffff',black:'#15283b',whiteOutline:'#15283b',blackOutline:'#ffffff',outline:2,pieceShadow:25,pieceFinish:'matte'}],
+  ['Classic solid',{whiteSet:'font',blackSet:'font',fontSymbols:'solid',white:'#fffdf4',black:'#15202b',whiteOutline:'#17222d',blackOutline:'#f4eddd',outline:2,pieceShadow:48,pieceFinish:'matte'}],
+  ['Glass tokens',{whiteSet:'letters',blackSet:'letters',white:'#eaf8ff',black:'#17304a',whiteOutline:'#244158',blackOutline:'#dcefff',outline:1.4,pieceShadow:62,pieceFinish:'glass'}]
+];
+let wsReady=false,wsUndo=[];
 const wsScrollKeys=new WeakMap(),wsBoardFrames=new WeakMap();
 let wsTreeFlipped=false,wsWheelTotal=0,wsWheelTime=0;
 function wsSanitize(raw) {
@@ -15,18 +26,23 @@ function wsSanitize(raw) {
     else if(typeof fallback==='boolean') {if(typeof value==='boolean')result[key]=value;}
     else if(typeof value==='string' && /^#[0-9a-f]{6}$/i.test(value))result[key]=value;
   }
+  for(const key of ['whiteSet','blackSet'])if(!(key in raw) && WS_ENUMS.pieceSet.includes(raw.pieceSet))result[key]=raw.pieceSet;
   return result;
 }
 function wsPrefs() { return wsSanitize(display.workstation); }
 function wsPresets() {
   const rows=display.workstation?.presets;
-  return Array.isArray(rows)?rows.filter(row=>row && typeof row.name==='string' && row.name.trim()).slice(0,6).map(row=>({name:row.name.trim().slice(0,40),settings:wsSanitize(row.settings)})):[];
+  return Array.isArray(rows)?rows.filter(row=>row && typeof row.name==='string' && row.name.trim()).slice(0,12).map(row=>({name:row.name.trim().slice(0,40),settings:wsSanitize(row.settings)})):[];
 }
 function wsReduced() {
   return wsPrefs().motion==='reduced' || (wsPrefs().motion==='system' && matchMedia('(prefers-reduced-motion: reduce)').matches);
 }
-function wsSet(patch) {
-  display.workstation={...wsSanitize({...wsPrefs(),...patch}),presets:wsPresets()};
+function wsSet(patch,remember=true) {
+  const previous=wsPrefs();
+  if(WS_ENUMS.pieceSet.includes(patch.pieceSet)){patch={...patch,whiteSet:patch.whiteSet || patch.pieceSet,blackSet:patch.blackSet || patch.pieceSet};}
+  const next=wsSanitize({...previous,...patch});
+  if(remember && JSON.stringify(previous)!==JSON.stringify(next)){wsUndo.push(previous);if(wsUndo.length>20)wsUndo.shift();}
+  display.workstation={...next,presets:wsPresets()};
   saveDisplaySettings();wsApply();
   if(state)render();
   wbRenderPreview();if(wbTree.result)wbTreeRender();
@@ -34,11 +50,12 @@ function wsSet(patch) {
 function wsApply() {
   if(!wsReady)return;
   const prefs=wsPrefs(),root=document.documentElement;
-  for(const key of ['texture','layout','sticky','transitions'])root.dataset[`ws${key[0].toUpperCase()+key.slice(1)}`]=String(prefs[key]);
+  for(const key of ['texture','layout','sticky','transitions','pieceFinish','pieceGlow','targetStyle','coordsTone','uiDensity','glassPanels','scrollbar','hoverMotion','reduceTransparency'])root.dataset[`ws${key[0].toUpperCase()+key.slice(1)}`]=String(prefs[key]);
   root.dataset.wsReduced=String(wsReduced());
   if(wsReduced())for(const piece of document.querySelectorAll('[data-piece]'))for(const animation of piece.getAnimations())animation.cancel();
-  for(const [key,unit] of [['outline',''],['frame','px'],['duration','ms'],['notationHeight','px'],['previewWidth','px']])root.style.setProperty(`--ws-${key}`,`${prefs[key]}${unit}`);
+  for(const [key,unit] of [['outline',''],['pieceShadow',''],['pieceOpacity','%'],['pieceY','px'],['pieceWidth',''],['frame','px'],['radius','px'],['boardShadow',''],['boardBrightness','%'],['boardSaturation','%'],['coordSize','px'],['fontScale',''],['panelRadius','px'],['duration','ms'],['notationHeight','px'],['previewWidth','px']])root.style.setProperty(`--ws-${key}`,`${prefs[key]}${unit}`);
   root.style.setProperty('--ws-white',prefs.white);root.style.setProperty('--ws-black',prefs.black);
+  for(const [key,property] of [['whiteOutline','--ws-white-outline'],['blackOutline','--ws-black-outline'],['frameColor','--ws-frame-color'],['lastColor','--ws-last'],['selectColor','--ws-select'],['targetColor','--ws-target'],['checkColor','--ws-check']])root.style.setProperty(property,prefs[key]);
   for(const [key,property] of [['light','--light-square'],['dark','--dark-square']]) {
     if(prefs.customPalette)root.style.setProperty(property,prefs[key]);else root.style.removeProperty(property);
   }
@@ -49,7 +66,7 @@ function wsApply() {
   }
   $('wsPresetList').replaceChildren(new Option('Choose a saved look…',''));
   wsPresets().forEach((preset,index)=>$('wsPresetList').add(new Option(preset.name,String(index))));
-  wsGallery();wsPreviewTools();
+  wsGallery();wsReadability();wsPreviewTools();
 }
 // Original silhouette paths. Fixed markup only; imported game text never enters SVG markup.
 const WS_SHAPES={
@@ -60,13 +77,14 @@ const WS_SHAPES={
  q:'M13 15 L18 24 L24 10 L30 24 L35 15 L31 32 L35 36 L35 40 L13 40 L13 36 L17 32 Z M10 12 A3 3 0 1 0 16 12 A3 3 0 1 0 10 12 M21 7 A3 3 0 1 0 27 7 A3 3 0 1 0 21 7 M32 12 A3 3 0 1 0 38 12 A3 3 0 1 0 32 12',
  k:'M22 3 L26 3 L26 7 L30 7 L30 11 L26 11 L26 15 C36 11 38 21 30 27 L30 32 L35 36 L35 40 L13 40 L13 36 L18 32 L18 27 C10 21 12 11 22 15 L22 11 L18 11 L18 7 L22 7 Z'
 };
-function wsPaintPiece(element,symbol,set=wsPrefs().pieceSet) {
+function wsPaintPiece(element,symbol,set=null) {
+  const prefs=wsPrefs(),white=Boolean(symbol) && symbol===symbol.toUpperCase();set=set || (white?prefs.whiteSet:prefs.blackSet) || prefs.pieceSet;
   element.dataset.piece=symbol;
   element.classList.toggle('ws-art-piece',set!=='font');
   element.classList.toggle('white-piece',Boolean(symbol) && symbol===symbol.toUpperCase());
   element.classList.toggle('black-piece',Boolean(symbol) && symbol!==symbol.toUpperCase());
   if(!symbol){element.replaceChildren();return;}
-  if(set==='font'){element.textContent=PIECES[symbol] || '';return;}
+  if(set==='font'){element.textContent=PIECES[prefs.fontSymbols==='solid'?symbol.toLowerCase():symbol] || '';return;}
   const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
   svg.setAttribute('viewBox','0 0 48 48');svg.setAttribute('aria-hidden','true');svg.setAttribute('focusable','false');
   const shape=document.createElementNS(svg.namespaceURI,set==='letters'?'circle':'path');
@@ -80,13 +98,14 @@ function wsPaintPiece(element,symbol,set=wsPrefs().pieceSet) {
 }
 function wsGallery() {
   const target=$('wsPieceGallery'),focused=target.contains(document.activeElement)?document.activeElement.dataset.wsSet:null;target.replaceChildren();
-  for(const [set,label] of [['font','Font'],['vector','Sculpted'],['letters','Letters']]) {
-    const button=wbButton('',()=>wsSet({pieceSet:set}),'ws-set-card');button.dataset.wsSet=set;button.setAttribute('aria-label',`Use ${label} pieces`);button.setAttribute('aria-pressed',String(wsPrefs().pieceSet===set));
+  for(const [set,label] of [['font','Solid glyphs'],['vector','Sculpted'],['letters','Letters']]) {
+    const button=wbButton('',()=>wsSet({pieceSet:set,whiteSet:set,blackSet:set}),'ws-set-card');button.dataset.wsSet=set;button.setAttribute('aria-label',`Use ${label} pieces`);button.setAttribute('aria-pressed',String(wsPrefs().whiteSet===set && wsPrefs().blackSet===set));
     for(const symbol of ['K','Q','n']) {const piece=wbElement('span',undefined,'ws-gallery-piece');wsPaintPiece(piece,symbol,set);button.append(piece);}
     button.append(wbElement('small',label));target.append(button);if(focused===set)button.focus({preventScroll:true});
   }
 }
 function wsAnimateBoard(board,fen,orientation=false) {
+  board.dataset.turn=fen?.split(' ')[1] || '';
   const cells=[...board.querySelectorAll('[data-square]')];
   const map=new Map(cells.map(cell=>[cell.dataset.square,{piece:cell.querySelector('[data-piece]')?.dataset.piece || '',rect:cell.getBoundingClientRect()}]));
   const previous=wsBoardFrames.get(board);wsBoardFrames.set(board,{fen,orientation,map});
@@ -188,11 +207,38 @@ async function wsRandomGame() {
 function wsCitations(games) {
   return games.map(game=>`${game.white || 'White'} — ${game.black || 'Black'} (${game.result || '*'}). ${[game.event,game.site,game.game_date,game.eco].filter(Boolean).join(' · ')}. Reference #${game.id}`).join('\n');
 }
+function wsLinear(hex) {
+  const values=[1,3,5].map(index=>parseInt(hex.slice(index,index+2),16)/255).map(value=>value<=.04045?value/12.92:((value+.055)/1.055)**2.4);
+  return .2126*values[0]+.7152*values[1]+.0722*values[2];
+}
+function wsContrastRatio(a,b) {const x=wsLinear(a),y=wsLinear(b);return (Math.max(x,y)+.05)/(Math.min(x,y)+.05);}
+function wsReadability() {
+  if(!wsReady || !$('wsContrastGrid'))return;
+  const prefs=wsPrefs(),light=prefs.customPalette?prefs.light:getComputedStyle(document.documentElement).getPropertyValue('--light-square').trim(),dark=prefs.customPalette?prefs.dark:getComputedStyle(document.documentElement).getPropertyValue('--dark-square').trim();
+  const rows=[['White / light',prefs.white,light,prefs.whiteOutline],['White / dark',prefs.white,dark,prefs.whiteOutline],['Black / light',prefs.black,light,prefs.blackOutline],['Black / dark',prefs.black,dark,prefs.blackOutline]];
+  $('wsContrastGrid').replaceChildren(...rows.map(([label,fill,square,stroke])=>{const ratio=Math.max(wsContrastRatio(fill,square),prefs.outline?wsContrastRatio(stroke,square):1),quality=ratio>=7?'Excellent':ratio>=4.5?'Strong':ratio>=3?'Usable':'Low';const item=wbElement('div',undefined,`ws-contrast ${quality==='Low'?'low':''}`);item.append(wbElement('span',label),wbElement('strong',`${quality} · ${ratio.toFixed(1)}:1`));return item;}));
+}
+function wsApplyBoardPreset(index) {const preset=WS_BOARD_PRESETS[index];if(preset)wsSet({customPalette:true,light:preset[1],dark:preset[2]});}
+function wsApplyPiecePreset(index) {const preset=WS_PIECE_PRESETS[index];if(preset)wsSet(preset[1]);}
+function wsUndoCustomization() {const previous=wsUndo.pop();if(previous)wsSet(previous,false);else setStatus('No recent customization change to undo.');}
+function wsSurprise() {
+  const board=WS_BOARD_PRESETS[Math.floor(Math.random()*WS_BOARD_PRESETS.length)],piece=WS_PIECE_PRESETS[Math.floor(Math.random()*WS_PIECE_PRESETS.length)];
+  wsSet({...piece[1],customPalette:true,light:board[1],dark:board[2],texture:['none','grain','linen','marble','carbon','dots'][Math.floor(Math.random()*6)],radius:[0,6,11,18,24][Math.floor(Math.random()*5)]});
+}
+function wsExportCustomization() {
+  const payload={format:'FunChessEngine customization',version:1,settings:wsPrefs()};
+  return downloadBlob(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}),'FunChessEngine-customization.json');
+}
+async function wsImportCustomization(file) {
+  if(!file)return;if(file.size>65536)throw new Error('Customization files are limited to 64 KB.');
+  const payload=JSON.parse(await file.text());if(payload?.format!=='FunChessEngine customization' || payload.version!==1 || !payload.settings || typeof payload.settings!=='object')throw new Error('This is not a supported FunChessEngine customization file.');
+  wsSet(payload.settings);setStatus('Customization imported.','success');
+}
 async function wsSavePreset() {
   const name=$('wsPresetName').value.trim().slice(0,40);
   if(!name)throw new Error('Name this look before saving it.');
   const presets=wsPresets(),existing=presets.findIndex(preset=>preset.name===name);
-  if(existing<0 && presets.length===6)throw new Error('Six looks are saved. Delete one or reuse a name.');
+  if(existing<0 && presets.length===12)throw new Error('Twelve looks are saved. Delete one or reuse a name.');
   const preset={name,settings:wsPrefs()};if(existing<0)presets.push(preset);else presets[existing]=preset;
   display.workstation={...wsPrefs(),presets};saveDisplaySettings();wsApply();$('wsPresetList').value=String(existing<0?presets.length-1:existing);
   setStatus(`Saved look: ${name}.`,'success');
@@ -213,17 +259,23 @@ function wsBind() {
   const card=wbElement('section',undefined,'file-card ws-settings');card.id='wsSettings';card.append(wbElement('h3','Workstation appearance & navigation'),wbElement('p','Customize your boards, motion, and reading space. These settings apply to this profile.','hint'));
   $('displayTab').prepend(card);
   const gallery=wbElement('div',undefined,'ws-piece-gallery');gallery.id='wsPieceGallery';card.append(gallery);
-  const appearance=wsDetails('Piece and board details',card),motion=wsDetails('Motion and scrolling',card),layout=wsDetails('Database layout',card);
+  const visibility=wsDetails('Visibility dashboard',card),appearance=wsDetails('Piece and board details',card),motion=wsDetails('Motion and scrolling',card),layout=wsDetails('Database layout',card);
+  const contrast=wbElement('div',undefined,'ws-contrast-grid');contrast.id='wsContrastGrid';visibility.append(contrast,wbElement('p','The score includes the piece fill and its outline against both square colors. Strong or Excellent is recommended.','hint'));
+  const piecePresets=wbElement('div',undefined,'ws-preset-grid');piecePresets.id='wsPiecePresets';WS_PIECE_PRESETS.forEach((preset,index)=>piecePresets.append(wbButton(preset[0],()=>wsApplyPiecePreset(index),'ws-preset-button')));appearance.append(piecePresets);
+  const boardPresets=wbElement('div',undefined,'ws-palette-grid');boardPresets.id='wsBoardPresets';WS_BOARD_PRESETS.forEach((preset,index)=>{const button=wbButton(preset[0],()=>wsApplyBoardPreset(index),'ws-palette-button');button.style.setProperty('--swatch-light',preset[1]);button.style.setProperty('--swatch-dark',preset[2]);boardPresets.append(button);});appearance.append(boardPresets);
   const controls=[
-    [appearance,'white','White pieces','color'],[appearance,'black','Black pieces','color'],[appearance,'outline','Piece outline','range'],
+    [appearance,'whiteSet','White piece set','select',[['vector','Sculpted'],['font','Solid glyphs'],['letters','Letters']]],[appearance,'blackSet','Black piece set','select',[['vector','Sculpted'],['font','Solid glyphs'],['letters','Letters']]],[appearance,'fontSymbols','Glyph style','select',[['solid','Filled for contrast'],['classic','Traditional white/black symbols']]],[appearance,'pieceFinish','Piece finish','select',[['matte','Matte'],['flat','Flat'],['gloss','Gloss'],['glass','Glass']]],[appearance,'white','White pieces','color'],[appearance,'black','Black pieces','color'],[appearance,'whiteOutline','White outline','color'],[appearance,'blackOutline','Black outline','color'],[appearance,'outline','Piece outline','range'],[appearance,'pieceShadow','Piece shadow','range'],[appearance,'pieceOpacity','Piece opacity','range'],[appearance,'pieceY','Vertical position','range'],[appearance,'pieceWidth','Piece width','range'],[appearance,'pieceGlow','Glow pieces','checkbox'],
     [appearance,'customPalette','Use custom square colors','checkbox'],[appearance,'light','Light squares','color'],[appearance,'dark','Dark squares','color'],
-    [appearance,'texture','Board texture','select',[['none','Plain'],['grain','Wood grain'],['linen','Linen']]], [appearance,'frame','Board frame (px)','range'],
+    [appearance,'texture','Board texture','select',[['none','Plain'],['grain','Wood grain'],['linen','Linen'],['marble','Marble'],['carbon','Carbon'],['dots','Dot grid']]],[appearance,'frame','Board frame (px)','range'],[appearance,'frameColor','Frame color','color'],[appearance,'radius','Board corners','range'],[appearance,'boardShadow','Board shadow','range'],[appearance,'boardBrightness','Board brightness','range'],[appearance,'boardSaturation','Board saturation','range'],[appearance,'lastColor','Last move','color'],[appearance,'selectColor','Selected square','color'],[appearance,'targetColor','Legal target','color'],[appearance,'checkColor','King in check','color'],[appearance,'targetStyle','Legal-move style','select',[['dot','Dots and rings'],['ring','Rings'],['fill','Filled squares']]],[appearance,'coordsTone','Coordinate contrast','select',[['auto','Automatic'],['dark','Always dark'],['light','Always light']]],[appearance,'coordSize','Coordinate size','range'],[appearance,'turnGlow','Glow for side to move','checkbox'],
     [motion,'motion','Motion preference','select',[['system','Follow system'],['reduced','Reduced motion'],['full','Full motion']]],
     [motion,'duration','Move animation (ms)','range'],[motion,'transitions','Animate tab entry','checkbox'],[motion,'follow','Follow current move','checkbox'],[motion,'scrollLock','Lock notation scroll','checkbox'],[motion,'smooth','Smooth scrolling','checkbox'],[motion,'wheel','Scroll wheel steps preview moves','checkbox'],
     [layout,'notationHeight','Notation height (px)','range'],[layout,'previewWidth','Preview width (px)','range'],[layout,'layout','Database arrangement','select',[['split','Side by side'],['stack','Stacked'],['preview','Preview focus']]], [layout,'sticky','Sticky database table tools','checkbox']
   ];
+  const interfaceControls=wsDetails('Interface surfaces',card);controls.push([interfaceControls,'uiDensity','Control spacing','select',[['compact','Compact'],['cozy','Cozy'],['airy','Airy']]],[interfaceControls,'fontScale','Interface text scale','range'],[interfaceControls,'panelRadius','Panel corners','range'],[interfaceControls,'glassPanels','Translucent panels','checkbox'],[interfaceControls,'scrollbar','Scrollbar width','select',[['slim','Slim'],['standard','Standard'],['wide','Wide']]],[interfaceControls,'hoverMotion','Hover motion','checkbox'],[interfaceControls,'reduceTransparency','Reduce transparency','checkbox']);
   controls.forEach(([parent,...args])=>parent.append(wsControl(...args)));
-  const looks=wsDetails('Saved looks (up to six)',card);
+  const quick=wbElement('div',undefined,'ws-quick-actions');card.append(quick);quick.append(wbButton('Surprise me',wsSurprise),wbButton('Undo customization',wsUndoCustomization),wbButton('Reset customization',()=>wsSet(WS_DEFAULTS)));
+  const exportButton=wbButton('Export customization…',wsExportCustomization),importButton=wbButton('Import customization…',()=>$('wsImportFile').click()),importFile=document.createElement('input');importFile.id='wsImportFile';importFile.type='file';importFile.accept='.json,application/json';importFile.hidden=true;importFile.addEventListener('change',()=>wbAction(()=>wsImportCustomization(importFile.files[0])).finally(()=>{importFile.value='';}));quick.append(exportButton,importButton,importFile);
+  const looks=wsDetails('Saved looks (up to twelve)',card);
   const name=document.createElement('input');name.id='wsPresetName';name.maxLength=40;name.placeholder='Name this look';name.setAttribute('aria-label','Saved look name');
   const select=document.createElement('select');select.id='wsPresetList';select.setAttribute('aria-label','Saved look');
   looks.append(name,select,wbButton('Save look',wsSavePreset),wbButton('Apply look',()=>{const preset=wsPresets()[Number(select.value)];if(select.value!=='' && preset)wsSet(preset.settings);}),wbButton('Delete look',()=>{if(select.value==='')return;const presets=wsPresets();presets.splice(Number(select.value),1);display.workstation={...wsPrefs(),presets};saveDisplaySettings();wsApply();}));
