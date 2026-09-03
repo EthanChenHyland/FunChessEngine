@@ -63,16 +63,19 @@ function wbTreeRender() {
   $('wbTreeStatus').textContent=`${result.games.toLocaleString()} matching games · ${result.ended.toLocaleString()} end at this position`;
   wbDisabled('wbTreeBack',wbTree.path.length<2);wbDisabled('wbTreeGames',false);wbDisabled('wbTreeCopy',false);
   const board=$('wbTreeBoard');board.replaceChildren();
-  for(const square of wbBoardSquares(result.fen)) {
+  for(const square of wbBoardSquares(result.fen,typeof wsTreeFlipped!=='undefined' && wsTreeFlipped)) {
     const cell=wbElement('div',undefined,`wb-square ${square.dark?'dark':'light'}`);
     cell.append(wbElement('span',PIECES[square.piece] || '',`wb-piece ${square.piece===square.piece.toUpperCase()?'white-piece':'black-piece'}`));
+    cell.dataset.square=square.square;
+    if(typeof wsPaintPiece==='function')wsPaintPiece(cell.firstChild,square.piece);
     cell.title=square.square;board.append(cell);
   }
   board.setAttribute('aria-label',`Opening tree position. ${result.fen}`);
   const perspective=$('wbTreePerspective').value,shown=wbTreeRows(result,$('wbTreeSort').value,$('wbTreeMinimum').value,perspective);
   $('wbTreeStatus').textContent+=` · ${shown.length}/${result.moves.length} continuations shown`;
   for(const move of shown) {
-    const row=wbElement('div',undefined,'wb-tree-row');
+    const row=wbElement('div',undefined,'wb-tree-row');row.dataset.san=move.san;
+    const both=wbElement('small',move.white_score==null?'No finished-game score':`White ${(move.white_score*100).toFixed(1)}% · Black ${((1-move.white_score)*100).toFixed(1)}%`,'hint ws-both-scores');both.hidden=true;
     const next={fen:move.fen,variant:result.variant,label:move.san,uci:move.move_uci,comment:`Reference sample: ${move.games} games; White wins ${move.white_wins}, draws ${move.draws}, Black wins ${move.black_wins}, unfinished ${move.unfinished}.`};
     row.append(wbButton(move.san,()=>wbTreeLoad([...wbTree.path,next],wbTree.filters)));
     const percent=result.games?move.games/result.games*100:0;
@@ -90,8 +93,10 @@ function wbTreeRender() {
       const save=wbButton('Save to book',()=>wbTreeSaveBook(result.fen,move.move_uci));save.classList.add('wb-tree-book-save');row.append(save);
     }
     const example=wbButton('Preview example',()=>wbPreviewExample(move.example_id,result.fen,move.move_uci));example.classList.add('wb-tree-example');row.append(example);
-    target.append(row);
+    row.append(both);target.append(row);
   }
+  if(typeof wsTreeTools==='function')wsTreeTools();
+  if(typeof wsAnimateBoard==='function')wsAnimateBoard(board,result.fen,typeof wsTreeFlipped!=='undefined' && wsTreeFlipped);
   if(!shown.length)target.append(wbElement('p',result.moves.length?'No continuations meet the minimum-game count.':'No recorded continuations for these filters.','hint'));
 }
 async function wbTreeSaveBook(fen,move) {

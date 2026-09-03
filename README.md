@@ -211,3 +211,6 @@ Local games start from the normal position unless you pass `--fen`. Automated lo
 curated neutral positions.
 
 The harness provides repeatable local matches, clock handling, legality checks, and regression testing.
+
+The [40 workstation additions](docs/WORKSTATION40_FEATURES.md) cover piece sets, board
+customization, scrolling, motion, database layouts, and opening-preparation tools.

@@ -80,6 +80,7 @@ module.exports=async function databaseSmoke(window,waitFor) {
     if(result.moves[0].learn!==10 || !document.getElementById('wbTreeStatus').textContent.includes('already exists'))throw new Error('Saving tree move overwrote book metadata');
   })()`,true);
   await require('./productivity-smoke.cjs')(window,waitFor);
+  await require('./workstation-smoke.cjs')(window,waitFor);
   if(process.env.FUNCHESS_SMOKE_SCREENSHOT) {
     await window.webContents.executeJavaScript(`document.querySelector('.wb-collections').open=false;document.querySelector('.wb-filters').open=false;document.getElementById('wbReports').open=false;document.getElementById('wbComparison').hidden=true;document.querySelector('.wb-browser').scrollTop=0;document.querySelector('.wb-preview').scrollTop=0;`,true);
     window.setSize(1400,950);

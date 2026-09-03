@@ -434,3 +434,53 @@ test('next-game and matching-selection actions do nothing while a page is loadin
   const c=loadProductivity(['wbNextGame','wbSelectMatching'],{wb,wbPreview:()=>assert.fail('Navigated old page'),wbApi:()=>assert.fail('Selected old page')});
   await c.wbNextGame(1);await c.wbSelectMatching();
 });
+
+function loadWorkstation(globals={}) {
+  const script=fs.readFileSync(require('node:path').join(__dirname,'../gui/static/workstation-ui.js'),'utf8').replace(/\nwsBind\(\);\s*$/,'');
+  const context=vm.createContext({console,display:{},matchMedia:()=>({matches:false}),...globals});vm.runInContext(script,context);return context;
+}
+test('workstation preferences reject corrupt imports and clamp all dimensions',()=>{
+  const c=loadWorkstation();const prefs=c.wsSanitize({pieceSet:'<script>',white:'red;url(x)',black:'#123abc',duration:Infinity,frame:90,outline:-10,notationHeight:900,previewWidth:0,motion:'reduced',wheel:'yes',practice:true,unknown:1});
+  assert.equal(prefs.pieceSet,'font');assert.equal(prefs.black,'#123abc');assert.equal(prefs.white,'#fff8e7');assert.equal(prefs.duration,180);assert.equal(prefs.frame,12);assert.equal(prefs.outline,0);assert.equal(prefs.notationHeight,480);assert.equal(prefs.previewWidth,280);assert.equal(prefs.wheel,false);assert.equal(prefs.practice,true);assert.equal(prefs.unknown,undefined);assert.equal(c.wsSanitize(null).motion,'system');
+});
+test('saved workstation looks stay bounded and cannot recursively persist presets',()=>{
+  const c=loadWorkstation({display:{workstation:{presets:Array.from({length:20},(_,i)=>({name:'x'.repeat(90),settings:{pieceSet:'vector',presets:[{}]}}))}}});
+  const presets=c.wsPresets();assert.equal(presets.length,6);assert.equal(presets[0].name.length,40);assert.equal(presets[0].settings.pieceSet,'vector');assert.equal(presets[0].settings.presets,undefined);
+});
+test('SAN copying respects black-to-move roots and excludes future moves',()=>{
+  const c=loadWorkstation();const positions=[{fen:'8/8/8/8/8/8/8/8 b - - 0 17'},{fen:'8/8/8/8/8/8/8/8 w - - 1 18',san:'Nc6'},{fen:'8/8/8/8/8/8/8/8 b - - 2 18',san:'O-O'}];
+  assert.equal(c.wsSanLine(positions,1),'17... Nc6');assert.equal(c.wsSanLine(positions,99),'17... Nc6 18. O-O');assert.equal(c.wsSanLine(positions,0),'');
+});
+test('notation redraws preserve manual scroll; only changed positions follow',()=>{
+  const centers=[];const c=loadWorkstation();c.wsCenterMove=(target,selector)=>centers.push(selector);
+  const target={scrollTop:0};c.wsFollow(target,'game:1','.active',80);assert.equal(centers.length,1);assert.equal(target.scrollTop,80);
+  c.wsFollow(target,'game:1','.active',35);assert.equal(centers.length,1);assert.equal(target.scrollTop,35);
+  c.display.workstation={scrollLock:true};c.wsFollow(target,'game:2','.active',35);assert.equal(centers.length,1);
+  c.display.workstation={follow:false};c.wsFollow(target,'game:3','.active',35);assert.equal(centers.length,1);
+});
+test('system reduced motion controls scrolling and explicit preference overrides it',()=>{
+  const calls=[];const c=loadWorkstation({matchMedia:()=>({matches:true})});const target={scrollTo:options=>calls.push(options)};
+  c.wsScrollTo(target,60);assert.equal(calls[0].behavior,'instant');
+  c.display.workstation={motion:'full'};c.wsScrollTo(target,70);assert.equal(calls[1].behavior,'smooth');
+  c.display.workstation={motion:'reduced'};assert.equal(c.wsReduced(),true);
+});
+test('ply navigation rejects empty, fractional and out-of-range entries',()=>{
+  const c=loadWorkstation();for(const value of ['',-1,1.5,5,'n/a'])assert.throws(()=>c.wsJumpPly(value,5));assert.equal(c.wsJumpPly('0',5),0);assert.equal(c.wsJumpPly('4',5),4);
+  assert.equal(c.wsNoteStats('  King 👑\n pawn ').words,3);assert.equal(c.wsNoteStats('👑').characters,1);
+});
+test('random preview ignores superseded search and newer preview navigation',async()=>{
+  let resolve;const calls=[];const wb={searching:false,total:30,sequence:1,previewSequence:2,filters:{player:'A'}};
+  const c=loadWorkstation({wb,wbApi:()=>new Promise(done=>resolve=done),wbPreview:id=>calls.push(id),wbStatus:()=>{}});
+  const request=c.wsRandomGame();wb.previewSequence++;resolve({games:[{id:1}],offset:0,total:30});await request;assert.equal(calls.length,0);
+  const second=c.wsRandomGame();wb.sequence++;resolve({games:[{id:2}],offset:0,total:30});await second;assert.equal(calls.length,0);
+});
+test('creating a study preserves edits typed during its position request',async()=>{
+  let resolve,started,editor='old',confirmations=0;const ready=new Promise(done=>started=done);
+  const c=loadWorkbench(['wbCreateStudy'],{wb:{previewSequence:1},busy:false,setupMode:false,trainerMode:false,retryMode:false,wbDiscardEdits:async()=>++confirmations===1,wbEditorState:()=>editor,api:()=>new Promise(done=>{resolve=done;started();})});
+  const request=c.wbCreateStudy('fen','standard','Study');await ready;editor='new draft';resolve({fen:'fen'});await request;assert.equal(confirmations,2);
+});
+test('random matching game samples the requested index on a partial last page',async()=>{
+  const selected=[],requests=[];const math=Object.create(Math);math.random=()=>.99;
+  const c=loadWorkstation({Math:math,wb:{searching:false,total:34,sequence:1,previewSequence:1,filters:{}},wbApi:async(action,payload)=>{requests.push(payload);return {total:34,offset:30,games:[{id:31},{id:32},{id:33},{id:34}]};},wbPreview:id=>selected.push(id),wbStatus:()=>{}});
+  await c.wsRandomGame();assert.equal(requests[0].offset,30);assert.equal(requests[0].limit,10);assert.deepEqual(selected,[34]);
+});

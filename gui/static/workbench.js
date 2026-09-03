@@ -31,7 +31,7 @@ async function wbAction(callback,button=null) {
   if(button) button.disabled=true;
   try { await callback(); }
   catch(error) { wbStatus(error.message,true); }
-  finally { if(button) button.disabled=button.dataset.wbDisabled==='true'; }
+  finally { if(button) button.disabled=button.dataset.wbDisabled==='true'; if(typeof wsEditorBadges==='function')wsEditorBadges(); }
 }
 async function openDatabaseWorkbench() {
   if(state && !state.paused && !state.game_over) {
@@ -157,21 +157,29 @@ function wbCloseWorkspace() {
 }
 async function wbStudyPosition() {
   const preview=wbRequirePreview();
+  return wbCreateStudy(preview.positions[wb.ply].fen,preview.game.variant,`${preview.game.white} – ${preview.game.black} · ply ${wb.ply}`);
+}
+async function wbCreateStudy(fen,variant,name) {
   if(busy || setupMode || trainerMode || retryMode) throw new Error('Exit the current board workspace before creating a study.');
   if(!await wbDiscardEdits()) return;
-  const fen=preview.positions[wb.ply].fen;
-  const snapshot=await api('/api/position',{fen,chess960:preview.game.variant==='chess960'});
+  const previewSequence=wb.previewSequence,editorState=wbEditorState();
+  const snapshot=await api('/api/position',{fen,chess960:variant==='chess960'});
+  if(previewSequence!==wb.previewSequence)return;
+  if(editorState!==wbEditorState() && !await wbDiscardEdits())return;
+  if(previewSequence!==wb.previewSequence)return;
+  if(busy || setupMode || trainerMode || retryMode)throw new Error('The board workspace changed while the study was loading. Try again.');
   if(variationMode) saveCurrentVariationWorkspace();
   wbCloseWorkspace();
   if(launcherVisible()) await enterWorkbench('engine',false);
   else await activateTab(document.querySelector('[data-tab="engine"]'));
   if(reviewMode) await exitReviewMode(false);
-  const root=newVariationNode(snapshot),key=`database-study:${preview.game.id}:${wb.ply}:${Date.now()}`;
-  variationWorkspace={root:root.id,origin_ply:0,storage_key:key,kind:'study',name:`${preview.game.white} – ${preview.game.black} · ply ${wb.ply}`.slice(0,80),nodes:{[root.id]:root},edges:{}};
+  const root=newVariationNode(snapshot),key=`database-study:${Date.now()}:${root.id}`;
+  variationWorkspace={root:root.id,origin_ply:0,storage_key:key,kind:'study',name:name.slice(0,80),nodes:{[root.id]:root},edges:{}};
   variationNodeId=root.id;variationMode=true;selected=null;
   saveCurrentVariationWorkspace();render();scheduleAutoPositionAnalysis(true);
-  setStatus('Created a study from the preview position.','success');
+  setStatus('Created a study from the selected position.','success');
 }
+
 function wbStop() {clearInterval(wb.timer);wb.timer=null;$('wbAutoplay').textContent='Play';}
 function wbEditorState() {
   return JSON.stringify([wb.preview?.game.id,$('wbNotes').value,...WB_HEADERS.map(header=>$(`wbHeader-${header}`).value)]);
@@ -241,9 +249,12 @@ function wbBoardSquares(fen,flipped=false) {
 function wbRenderPreview() {
   const target=$('wbBoard');target.replaceChildren();
   const current=wb.preview?.positions[wb.ply];
+  if(typeof wsPrefs==='function' && wsPrefs().orient && current)wb.flipped=current.fen.split(' ')[1]==='b';
   for(const square of wbBoardSquares(current?.fen || STARTING_FEN,wb.flipped)) {
     const cell=wbElement('div',undefined,`wb-square ${square.dark?'dark':'light'}`);
     const piece=wbElement('span',PIECES[square.piece] || '',`wb-piece ${square.piece===square.piece.toUpperCase()?'white-piece':'black-piece'}`);
+    cell.dataset.square=square.square;
+    if(typeof wsPaintPiece==='function')wsPaintPiece(piece,square.piece);
     cell.append(piece);
     if(current?.uci?.slice(0,2)===square.square || current?.uci?.slice(2,4)===square.square) cell.classList.add('last-move');
     if($('wbCoordinates').checked && (square.row===7 || square.col===0)) cell.append(wbElement('small',square.square));
@@ -257,13 +268,14 @@ function wbRenderPreview() {
   wbDisabled('wbAutoplay',!last);
   $('wbPositionMeta').textContent=current?`${wb.ply}/${last} plies · ${current.fen.split(' ')[1]==='w'?'White':'Black'} to move${current.check?' · Check':''}${current.clock!=null?` · Recorded clock ${current.clock.toFixed(1)}s`:''}`:'Choose a game from the table.';
   $('wbComment').textContent=current?[current.comment,(current.nags || []).map(n=>({1:'!',2:'?',3:'!!',4:'??',5:'!?',6:'?!'}[n] || `$${n}`)).join(' '),current.alternatives?`${current.alternatives} alternative variation(s) preserved in PGN`:''].filter(Boolean).join('\n'):'';
-  const moves=$('wbMoves');moves.replaceChildren();
+  const moves=$('wbMoves'),previousTop=moves.scrollTop;moves.replaceChildren();
   wb.preview?.positions.forEach((position,ply)=>{
     const button=wbButton(position.label || 'Start',()=>{wbStop();wb.ply=ply;wbRenderPreview();},'wb-move');
     button.dataset.wbPly=ply;button.classList.toggle('active',ply===wb.ply);button.setAttribute('aria-current',ply===wb.ply?'step':'false');moves.append(button);
   });
-  const active=moves.querySelector('.active');
-  if(active) moves.scrollTop=active.offsetTop-moves.offsetTop-moves.clientHeight/2;
+  if(typeof wsPreviewTools==='function')wsPreviewTools();
+  if(typeof wsFollow==='function')wsFollow(moves,`${wb.preview?.game.id}:${wb.ply}`,'.active',previousTop);
+  if(typeof wsAnimateBoard==='function')wsAnimateBoard(target,current?.fen,wb.flipped);
   if(typeof wbRenderPreviewTools==='function')wbRenderPreviewTools();
 }
 function wbStep(delta) {if(!wb.preview)return;wb.ply=Math.max(0,Math.min(wb.preview.positions.length-1,wb.ply+delta));wbRenderPreview();}
@@ -286,6 +298,7 @@ async function wbLoadCollections() {
   const sequence=wb.collectionsSequence=(wb.collectionsSequence || 0)+1;
   const result=await wbApi('collections');
   if(sequence!==wb.collectionsSequence)return;
+  if(typeof wsCollections==='function')wsCollections(result);
   const target=$('wbCollections');target.replaceChildren();
   for(const [label,count,filters] of [['All games',result.games,{}],['Favorites',result.favorites,{favorite:true}],['Unfiled',result.unfiled,{unfiled:true}]]) {
     target.append(wbButton(`${label} · ${count}`,()=>wbChooseCollection(filters)));
@@ -434,7 +447,7 @@ function bindDatabaseWorkbench() {
   $('wbViews').addEventListener('change',()=>wbAction(async()=>{const view=wb.views.find(row=>row.name===$('wbViews').value);if(view){wbApplyFilters(view.filters);$('wbViewName').value=view.name;await wbSearch();}}));
   for(const [id,delta] of [['wbFirst',-10000],['wbBack',-1],['wbForward',1],['wbLast',10000]]) on(id,()=>{wbStop();wbStep(delta);});
   on('wbAutoplay',wbPlay);$('wbSpeed').addEventListener('change',()=>{if(wb.timer){wbStop();wbPlay();}});
-  on('wbFlip',()=>{wb.flipped=!wb.flipped;wbRenderPreview();});$('wbCoordinates').addEventListener('change',wbRenderPreview);
+  on('wbFlip',()=>{if(typeof wsPrefs==='function' && wsPrefs().orient)wsSet({orient:false});wb.flipped=!wb.flipped;wbRenderPreview();});$('wbCoordinates').addEventListener('change',wbRenderPreview);
   $('wbPly').addEventListener('input',()=>{wbStop();wb.ply=Number($('wbPly').value);wbRenderPreview();});
   on('wbCopyFen',async()=>{const preview=wbRequirePreview();await navigator.clipboard.writeText(preview.positions[wb.ply].fen);wbStatus('Preview FEN copied.');});
   on('wbCopyPgn',async()=>{await navigator.clipboard.writeText(wbRequirePreview().game.pgn);wbStatus('PGN copied with its annotations and variations.');});

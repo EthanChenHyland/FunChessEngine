@@ -1908,6 +1908,7 @@ function applyDisplaySettings(renderAfter = true) {
   if ($("visionModeSelect")) $("visionModeSelect").value = display.visionMode || "normal";
   applyAnalysisPreset(display.analysisPreset || "balanced", false);
 
+  if (typeof wsApply === "function") wsApply();
   if (renderAfter && state) render();
 }
 
@@ -2071,6 +2072,7 @@ function renderBoard() {
       const piece = document.createElement("span");
       piece.className = `piece ${symbol === symbol.toUpperCase() ? "white-piece" : "black-piece"}`;
       piece.textContent = PIECES[symbol];
+      if (typeof wsPaintPiece === "function") wsPaintPiece(piece, symbol);
       piece.draggable = setupMode || canHumanMovePiece(symbol);
       piece.addEventListener("dragstart", (event) => {
         if (!piece.draggable) return;
@@ -2128,6 +2130,7 @@ function renderBoard() {
   }
   renderBestMoveArrow();
   renderAnnotationArrows();
+  if (typeof wsAnimateBoard === "function") wsAnimateBoard(board, view?.fen, flipped);
 }
 
 function handleBoardSquareKeydown(event, square) {
@@ -2168,6 +2171,7 @@ function choosePromotion(candidates, turn = state?.turn) {
   document.querySelectorAll("[data-promotion-icon]").forEach((icon) => {
     const piece = icon.dataset.promotionIcon;
     icon.textContent = PIECES[isWhite ? piece.toUpperCase() : piece] || "";
+    if (typeof wsPaintPiece === "function") wsPaintPiece(icon, isWhite ? piece.toUpperCase() : piece);
   });
   dialog.returnValue = "cancel";
   return new Promise((resolve) => {
@@ -5120,6 +5124,7 @@ function render() {
 
 function renderMoves() {
   const target = $("moves");
+  const previousTop = target.scrollTop;
   target.innerHTML = "";
   const plies = state.pgn.length;
   const reviewLinksLocked = busy || setupMode || trainerMode || variationMode || retryMode;
@@ -5173,7 +5178,10 @@ function renderMoves() {
     } else black.disabled = true;
     target.appendChild(black);
   }
-  target.scrollTop = target.scrollHeight;
+  if (typeof wsFollow === "function") {
+    const ply = reviewMode ? reviewSnapshot?.ply : state.pgn.length;
+    wsFollow(target, `${state.fen}:${state.pgn.length}:${ply}`, `[data-ply="${ply}"]`, previousTop);
+  }
 }
 
 function analysisResultForPly(ply) {

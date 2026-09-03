@@ -61,6 +61,7 @@ release-gate: gate verify-zip
 	node --check gui/static/workflows.js
 	node --check gui/static/workbench.js
 	node --check gui/static/database-explorer.js
+	node --check gui/static/workstation-ui.js
 	node --check gui/static/database-productivity.js
 	cd desktop && npm run check
 	cd desktop && npm audit
