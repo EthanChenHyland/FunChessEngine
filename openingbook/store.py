@@ -19,6 +19,10 @@ def default_book_path() -> Path:
     return default_data_dir() / "opening-book.sqlite3"
 
 
+def normalize_profile(profile: str) -> str:
+    return str(profile or "default").strip()[:48] or "default"
+
+
 class OpeningBook:
     """Small SQLite opening book kept outside the competition engine package."""
 
@@ -88,6 +92,7 @@ class OpeningBook:
         learn: int = 0,
         source: str = "local",
         profile: str = "default",
+        overwrite: bool = True,
     ) -> dict[str, Any]:
         board = chess.Board(fen)
         try:
@@ -100,16 +105,18 @@ class OpeningBook:
         normalized = board.uci(move)
         bounded_weight = max(0, min(65_535, int(weight)))
         bounded_learn = max(-2_000_000_000, min(2_000_000_000, int(learn)))
-        profile_name = str(profile or "default").strip()[:48] or "default"
+        profile_name = normalize_profile(profile)
+        conflict = (
+            "DO UPDATE SET weight=excluded.weight, learn=excluded.learn, source=excluded.source"
+            if overwrite
+            else "DO NOTHING"
+        )
         with self._connect() as connection:
-            connection.execute(
-                """
+            cursor = connection.execute(
+                f"""
                 INSERT INTO book_moves(profile, fen_key, move_uci, weight, learn, source)
                 VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(profile, fen_key, move_uci) DO UPDATE SET
-                    weight=excluded.weight,
-                    learn=excluded.learn,
-                    source=excluded.source
+                ON CONFLICT(profile, fen_key, move_uci) {conflict}
                 """,
                 (
                     profile_name,
@@ -121,6 +128,7 @@ class OpeningBook:
                 ),
             )
         return {
+            "saved": cursor.rowcount > 0,
             "profile": profile_name,
             "fen_key": key,
             "move": normalized,
@@ -129,13 +137,44 @@ class OpeningBook:
             "source": str(source)[:80],
         }
 
+    def update_weight(
+        self,
+        fen: str,
+        move_uci: str,
+        weight: int,
+        *,
+        profile: str = "default",
+        expected_weight: int | None = None,
+    ) -> dict[str, Any]:
+        """Edit priority without replacing a move's learned score or import source."""
+        if type(weight) is not int or not 0 <= weight <= 65_535:
+            raise ValueError("Book weight must be an integer from 0 to 65535.")
+        board = chess.Board(fen)
+        move = board.parse_uci(move_uci)
+        with self._connect() as connection:
+            clause = " AND weight=?" if expected_weight is not None else ""
+            cursor = connection.execute(
+                "UPDATE book_moves SET weight=? WHERE profile=? AND fen_key=? AND move_uci=?"
+                + clause,
+                [
+                    weight,
+                    normalize_profile(profile),
+                    fen_key(board.fen()),
+                    board.uci(move),
+                    *([expected_weight] if expected_weight is not None else []),
+                ],
+            )
+            if not cursor.rowcount:
+                raise ValueError("Book move changed or was removed. Refresh before saving.")
+        return {"updated": True, "weight": weight, "move": board.uci(move)}
+
     def remove_move(self, fen: str, move_uci: str, *, profile: str = "default") -> bool:
         board = chess.Board(fen)
         move = board.parse_uci(move_uci)
         with self._connect() as connection:
             cursor = connection.execute(
                 "DELETE FROM book_moves WHERE profile=? AND fen_key=? AND move_uci=?",
-                (str(profile or "default")[:48], fen_key(board.fen()), board.uci(move)),
+                (normalize_profile(profile), fen_key(board.fen()), board.uci(move)),
             )
             return cursor.rowcount > 0
 
@@ -157,7 +196,7 @@ class OpeningBook:
                 WHERE profile=? AND fen_key=?
                 ORDER BY weight DESC, learn DESC, move_uci
                 """,
-                (str(profile or "default")[:48], fen_key(board.fen())),
+                (normalize_profile(profile), fen_key(board.fen())),
             ).fetchall()
         result: list[dict[str, Any]] = []
         for row in rows:
@@ -198,7 +237,7 @@ class OpeningBook:
                 SET learn=MAX(-2000000000, MIN(2000000000, learn + ?))
                 WHERE profile=? AND fen_key=? AND move_uci=?
                 """,
-                (delta, str(profile or "default")[:48], fen_key(board.fen()), board.uci(move)),
+                (delta, normalize_profile(profile), fen_key(board.fen()), board.uci(move)),
             )
             return cursor.rowcount > 0
 
@@ -270,7 +309,7 @@ class OpeningBook:
                     SELECT COUNT(*) AS moves, COUNT(DISTINCT fen_key) AS positions
                     FROM book_moves WHERE profile=?
                     """,
-                    (str(profile)[:48],),
+                    (normalize_profile(profile),),
                 ).fetchone()
             else:
                 row = connection.execute(

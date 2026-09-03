@@ -3435,13 +3435,27 @@ class Handler(SimpleHTTPRequestHandler):
                             profile=profile,
                         )
                     }
-                elif action == "add":
+                elif action in {"add", "ensure"}:
+                    if payload.get("variant", "standard") != "standard":
+                        raise ValueError(
+                            "The editable opening book currently supports Standard chess."
+                        )
                     result = book.add_move(
                         str(payload.get("fen", chess.STARTING_FEN)),
                         str(payload.get("move", "")),
                         weight=int(payload.get("weight", 1)),
                         learn=int(payload.get("learn", 0)),
                         profile=profile,
+                        overwrite=action == "add",
+                        source="database explorer" if action == "ensure" else "local",
+                    )
+                elif action == "weight":
+                    result = book.update_weight(
+                        str(payload.get("fen", chess.STARTING_FEN)),
+                        str(payload.get("move", "")),
+                        payload.get("weight", -1),
+                        profile=profile,
+                        expected_weight=payload.get("expected_weight"),
                     )
                 elif action == "remove":
                     result = {
@@ -3471,7 +3485,8 @@ class Handler(SimpleHTTPRequestHandler):
                     )
                 else:
                     raise ValueError(
-                        "Opening-book action must be stats, query, add, remove, learn, "
+                        "Opening-book action must be stats, query, add, ensure, weight, "
+                        "remove, learn, "
                         "or import_polyglot."
                     )
                 self._json(result)

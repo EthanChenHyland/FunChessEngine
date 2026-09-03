@@ -336,3 +336,24 @@ test('opening tree uses its own position and variant without altering search fil
   assert.equal(JSON.stringify(c.wbTreeFilters()),JSON.stringify({tag:'model',favorite:true}));
   assert.equal(filters.fen,'search position');
 });
+test('book weights preserve zero and reject invalid priorities',()=>{
+  const c=load(['openingBookWeight']);
+  assert.equal(c.openingBookWeight('0'),0);assert.equal(c.openingBookWeight('65535'),65535);
+  for(const value of ['','-1','1.5','Infinity','65536','x'])assert.throws(()=>c.openingBookWeight(value));
+});
+test('slow opening-book responses cannot replace a newer position',async()=>{
+  const pending=[],rendered=[],requests=[];
+  const c=load(['refreshOpeningBook'],{openingBookSequence:0,currentBoardView:()=>({fen:'position'}),state:{engine_profile:'default'},$:()=>({}),renderOpeningBook:(...args)=>rendered.push(args),api:(_url,payload)=>{requests.push(payload);return new Promise(resolve=>pending.push(resolve));}});
+  const old=c.refreshOpeningBook(),fresh=c.refreshOpeningBook();
+  pending[2]({moves:1});pending[3]({moves:['new']});await fresh;
+  pending[0]({moves:2});pending[1]({moves:['old']});await old;
+  assert.equal(rendered.length,1);assert.equal(rendered[0][3].moves[0],'new');
+  assert.equal(requests[1].depth_limit,undefined,'The editor must also show stored late-game positions');
+});
+test('adding a zero-weight book move preserves a newer move draft',async()=>{
+  let resolve,payload;
+  const fields={openingBookMove:{value:'e2e4'},openingBookWeight:{value:'0'}};
+  const c=load(['openingBookWeight','addCurrentOpeningBookMove'],{currentBoardView:()=>({fen:'position',variant:'standard'}),state:{engine_profile:'default'},$:id=>fields[id],setStatus:()=>{},refreshOpeningBook:async()=>{},api:(_url,request)=>{payload=request;return new Promise(r=>resolve=r);}});
+  const saving=c.addCurrentOpeningBookMove();fields.openingBookMove.value='d2d4';resolve({});await saving;
+  assert.equal(payload.weight,0);assert.equal(fields.openingBookMove.value,'d2d4');
+});

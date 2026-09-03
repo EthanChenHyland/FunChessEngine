@@ -6,7 +6,7 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:">
   <title>FunChessEngine · Default Lab</title>
   <link rel="icon" href="/app-mark.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/style.css?v=16">
+  <link rel="stylesheet" href="/style.css?v=17">
 </head>
 <body>
   <a class="skip-link" href="#board" hidden>Skip to chessboard</a>
@@ -313,6 +313,8 @@
               <summary><span>Editable opening book</span><span id="openingBookCount" class="setting-value">0 moves</span></summary>
               <div class="row three compact-row"><input id="openingBookMove" type="text" maxlength="5" placeholder="e2e4" aria-label="Opening book UCI move"><input id="openingBookWeight" type="number" min="0" max="65535" value="10" aria-label="Opening book weight"><button id="addOpeningBookMoveBtn" class="secondary">Add current</button></div>
               <div class="row two compact-row"><input id="polyglotPathInput" type="text" placeholder="/path/to/book.bin" aria-label="Polyglot opening book path"><button id="importPolyglotBtn" class="secondary">Import for indexed positions</button></div>
+              <button id="refreshOpeningBookBtn" class="secondary compact">Refresh current position</button>
+              <p id="openingBookPosition" class="hint"></p><p class="hint">Edit weights without resetting learned scores. Book entries use Standard chess rules.</p>
               <div id="openingBookMoves" class="compact-list"><p class="hint">Book moves for the current position will appear here.</p></div>
             </details>
           </details>
@@ -942,8 +944,8 @@
   <div id="dropOverlay" class="drop-overlay" hidden><div><strong>Open in FunChessEngine</strong><span>Drop PGN, FEN, or saved PNG</span></div></div>
   <section class="background-jobs" aria-label="Background work"><div id="backgroundJobs" aria-live="polite"></div></section>
   <script src="/workflows.js?v=2"></script>
-  <script src="/app.js?v=15"></script>
+  <script src="/app.js?v=16"></script>
   <script src="/workbench.js?v=3"></script>
-  <script src="/database-explorer.js?v=1"></script>
+  <script src="/database-explorer.js?v=2"></script>
 </body>
 </html>

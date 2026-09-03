@@ -80,6 +80,11 @@ position or choose **From preview**, which retains that game's Standard/Chess960
 has its own small board and never moves the preview or live board.
 
 - Click a move to explore its continuations; **Back** returns to the previous position.
+- **Save to book** adds a Standard-chess continuation to the current engine profile’s local
+  editable book with weight 10. Existing moves retain their weight, learned score, and source.
+  In Library → Editable opening book, change a weight with **Save weight**, or use
+  **Refresh current position** after moving the board. Zero is a valid weight; edits preserve
+  learning and source and reject stale weights. The editor also shows entries after move 20.
 - Each row shows game count, frequency, White score, a White/draw/Black/unfinished result bar,
   average Elo, and the most recent recorded year.
 - **Show matching games** searches the current tree position with the same collection filters.
@@ -132,7 +137,7 @@ comparison, saved searches, player reports, study creation, additive/removal tag
 collection counts, position searches, persistent undo, and opening-tree navigation. Optional screenshots inspect desktop
 and narrow-screen layouts. Engine search is unchanged.
 
-Local validation passed with **193 Python tests and 30 JavaScript tests**, plus the Electron
+Local validation passed with **200 Python tests and 33 JavaScript tests**, plus the Electron
 workflow and layout checks. A single synthetic 10,000-game benchmark (12 plies per game) imported
 130,000 positions in 12.13 seconds. Measured database calls took 3.44 ms for browser search,
 5.95 ms for duplicate search, and 5.98 ms for reports. These are local timings on repeated opening

@@ -6931,38 +6931,56 @@ async function generateLibraryPuzzles() {
   setStatus(`Generated ${added} tactical puzzle${added === 1 ? "" : "s"}.`, added ? "success" : "info");
 }
 
+let openingBookSequence=0;
 async function refreshOpeningBook() {
-  if (!$("openingBookMoves")) return;
-  const fen = currentBoardView()?.fen || state?.fen || STARTING_FEN;
-  const profile = state?.engine_profile || "default";
+  if (!$('openingBookMoves')) return;
+  const fen=currentBoardView()?.fen || state?.fen || STARTING_FEN;
+  const profile=state?.engine_profile || 'default',sequence=++openingBookSequence;
   try {
-    const [stats, result] = await Promise.all([
-      api("/api/opening-book", { action: "stats", profile }),
-      api("/api/opening-book", { action: "query", fen, depth_limit: 40, profile }),
+    const [stats,result]=await Promise.all([
+      api('/api/opening-book',{action:'stats',profile}),
+      api('/api/opening-book',{action:'query',fen,profile}),
     ]);
-    $("openingBookCount").textContent = `${profile} · ${stats.moves || 0} move${Number(stats.moves || 0) === 1 ? "" : "s"}`;
-    const target = $("openingBookMoves");
-    target.innerHTML = "";
-    (result.moves || []).forEach((row) => {
-      const line = document.createElement("div");
-      line.className = "compact-list-row static-row";
-      const info = document.createElement("div");
-      info.innerHTML = `<strong>${escapeHtml(row.san || row.move)}</strong><span>weight ${escapeHtml(row.weight)} · learn ${escapeHtml(row.learn)} · ${escapeHtml(row.source || "local")}</span>`;
-      const remove = document.createElement("button");
-      remove.type = "button";
-      remove.className = "text-button compact";
-      remove.textContent = "Remove";
-      remove.addEventListener("click", async () => {
-        await api("/api/opening-book", { action: "remove", fen, move: row.move, profile });
-        await refreshOpeningBook();
-      });
-      line.append(info, remove);
-      target.appendChild(line);
-    });
-    if (!(result.moves || []).length) target.innerHTML = '<p class="hint">No local book moves saved for this position.</p>';
-  } catch (error) {
-    $("openingBookMoves").innerHTML = `<p class="hint">${escapeHtml(error.message)}</p>`;
+    if(sequence!==openingBookSequence)return;
+    renderOpeningBook(fen,profile,stats,result);
+  } catch(error) {
+    if(sequence===openingBookSequence)$('openingBookMoves').innerHTML=`<p class="hint">${escapeHtml(error.message)}</p>`;
   }
+}
+function openingBookWeight(value) {
+  const weight=Number(value);
+  if(String(value).trim()==='' || !Number.isInteger(weight) || weight<0 || weight>65535)throw new Error('Book weight must be an integer from 0 to 65535.');
+  return weight;
+}
+function renderOpeningBook(fen,profile,stats,result) {
+  const fields=fen.split(' ');
+  $('openingBookPosition').textContent=`${fields[1]==='w'?'White':'Black'} to move · move ${fields[5] || '1'}`;
+  $('openingBookPosition').title=fen;
+  $('openingBookCount').textContent=`${profile} · ${stats.moves || 0} moves`;
+  const target=$('openingBookMoves');target.replaceChildren();
+  for(const row of result.moves || []) {
+    const line=document.createElement('div');line.className='compact-list-row static-row book-edit-row';
+    const info=document.createElement('div');info.innerHTML=`<strong>${escapeHtml(row.san || row.move)}</strong><span>learn ${escapeHtml(row.learn)} · ${escapeHtml(row.source || 'local')}</span>`;
+    const weight=document.createElement('input');weight.type='number';weight.min='0';weight.max='65535';weight.value=row.weight;
+    weight.setAttribute('aria-label',`Weight for ${row.san || row.move}`);
+    const save=document.createElement('button');save.type='button';save.className='secondary compact';save.textContent='Save weight';
+    save.addEventListener('click',async()=>{
+      save.disabled=true;
+      try {
+        const submitted=openingBookWeight(weight.value);
+        await api('/api/opening-book',{action:'weight',fen,profile,move:row.move,weight:submitted,expected_weight:row.weight});
+        row.weight=submitted;setStatus('Book weight saved; learning and source retained.','success');
+      } catch(error) {setStatus(error.message,'error');} finally {save.disabled=false;}
+    });
+    const remove=document.createElement('button');remove.type='button';remove.className='text-button compact';remove.textContent='Remove';
+    remove.addEventListener('click',async()=>{
+      remove.disabled=true;
+      try {await api('/api/opening-book',{action:'remove',fen,move:row.move,profile});await refreshOpeningBook();}
+      catch(error) {setStatus(error.message,'error');remove.disabled=false;}
+    });
+    line.append(info,weight,save,remove);target.append(line);
+  }
+  if(!(result.moves || []).length)target.innerHTML='<p class="hint">No local book moves saved for this position.</p>';
 }
 
 async function addCurrentOpeningBookMove() {
@@ -6978,9 +6996,10 @@ async function addCurrentOpeningBookMove() {
       fen,
       move,
       profile: state?.engine_profile || "default",
-      weight: Math.max(0, Math.min(65535, Number($("openingBookWeight")?.value) || 1)),
+      weight: openingBookWeight($("openingBookWeight")?.value),
+      variant: currentBoardView()?.variant || state?.variant || "standard",
     });
-    $("openingBookMove").value = "";
+    if($("openingBookMove").value.trim().toLowerCase()===move)$("openingBookMove").value = "";
     await refreshOpeningBook();
     setStatus("Opening-book move saved locally.", "success");
   } catch (error) { setStatus(error.message, "error"); }
@@ -8535,6 +8554,7 @@ $("generateLibraryPuzzlesBtn").addEventListener("click", () => generateLibraryPu
 $("saveSessionGoalsBtn").addEventListener("click", saveSessionGoalTargets);
 $("reviewNextLossBtn").addEventListener("click", () => reviewNextLoss().catch((error) => setStatus(error.message, "error")));
 $("refreshAlternativesBtn").addEventListener("click", () => refreshMoveAlternatives().catch((error) => setStatus(error.message, "error")));
+$("refreshOpeningBookBtn").addEventListener("click", refreshOpeningBook);
 $("addOpeningBookMoveBtn").addEventListener("click", () => addCurrentOpeningBookMove().catch((error) => setStatus(error.message, "error")));
 $("importPolyglotBtn").addEventListener("click", () => importPolyglotBook().catch((error) => setStatus(error.message, "error")));
 $("backupWorkspaceBtn").addEventListener("click", backupWorkspace);

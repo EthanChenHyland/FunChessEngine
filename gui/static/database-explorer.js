@@ -44,9 +44,17 @@ function wbTreeRender() {
     }
     bar.title=bar.getAttribute('aria-label');row.append(bar);
     row.append(wbElement('small',`Average Elo ${move.average_elo==null?'—':Math.round(move.average_elo)} · Latest ${move.latest_year || 'unknown'}`,'hint'));
+    if(result.variant==='standard') {
+      const save=wbButton('Save to book',()=>wbTreeSaveBook(result.fen,move.move_uci));save.classList.add('wb-tree-book-save');row.append(save);
+    }
     target.append(row);
   }
   if(!result.moves.length)target.append(wbElement('p','No recorded continuations for these filters.','hint'));
+}
+async function wbTreeSaveBook(fen,move) {
+  const profile=state?.engine_profile || 'default';
+  const result=await api('/api/opening-book',{action:'ensure',fen,move,weight:10,profile,variant:'standard'});
+  $('wbTreeStatus').textContent=result.saved?`Move saved to the ${profile} opening book.`:`Move already exists in the ${profile} opening book; its settings were retained.`;
 }
 function wbTreeStart() {
   return wbTreeLoad([{fen:STARTING_FEN,variant:'standard',label:'Start'}]);

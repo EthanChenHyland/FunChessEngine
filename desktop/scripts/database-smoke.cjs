@@ -71,6 +71,14 @@ module.exports=async function databaseSmoke(window,waitFor) {
     document.getElementById('wbTreeBack').click();
   })()`,true);
   await waitFor(window,`wbTree.path.length===1 && document.getElementById('wbTreeBack').disabled`);
+  await window.webContents.executeJavaScript(String.raw`(async()=>{
+    const move=wbTree.result.moves[0].move_uci,fen=wbTree.result.fen;
+    await wbTreeSaveBook(fen,move);
+    await api('/api/opening-book',{action:'learn',fen,move,score:1,profile:state.engine_profile || 'default'});
+    await wbTreeSaveBook(fen,move);
+    const result=await api('/api/opening-book',{action:'query',fen,profile:state.engine_profile || 'default'});
+    if(result.moves[0].learn!==10 || !document.getElementById('wbTreeStatus').textContent.includes('already exists'))throw new Error('Saving tree move overwrote book metadata');
+  })()`,true);
   if(process.env.FUNCHESS_SMOKE_SCREENSHOT) {
     await window.webContents.executeJavaScript(`document.querySelector('.wb-collections').open=false;document.querySelector('.wb-filters').open=false;document.getElementById('wbReports').open=false;document.getElementById('wbComparison').hidden=true;document.querySelector('.wb-browser').scrollTop=0;document.querySelector('.wb-preview').scrollTop=0;`,true);
     window.setSize(1400,950);
@@ -89,5 +97,17 @@ module.exports=async function databaseSmoke(window,waitFor) {
     if(!variationMode || variationNode().snapshot.fen!==previewFen)throw new Error('Study did not use preview position');
     if(JSON.stringify([state.fen,state.moves_uci])!==before)throw new Error('Study changed live game');
     await exitVariationWorkspace();
+    const fen=currentBoardView().fen,move=currentBoardView().legal_moves[0],profile=state.engine_profile || 'default';
+    await api('/api/opening-book',{action:'add',fen,move,weight:25,learn:17,profile});
+    await refreshOpeningBook();
+    const row=Array.from(document.querySelectorAll('#openingBookMoves .book-edit-row')).find(row=>row.querySelector('input').value==='25');
+    if(!row)throw new Error('Book weight editor missing');
+    row.querySelector('input').value='0';row.querySelector('button').click();
+
+  })()`,true);
+  await waitFor(window,`Array.from(document.querySelectorAll('#openingBookMoves .book-edit-row button')).every(button=>!button.disabled)`);
+  await window.webContents.executeJavaScript(String.raw`(async()=>{
+    const result=await api('/api/opening-book',{action:'query',fen:currentBoardView().fen,profile:state.engine_profile || 'default'});
+    if(!result.moves.some(move=>move.weight===0 && move.learn===17))throw new Error('Weight editor lost zero or learning');
   })()`,true);
 };

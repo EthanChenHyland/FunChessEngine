@@ -1404,3 +1404,8 @@ html[data-desktop="true"] .board-stage {
 .wb-tree-content {display:grid;grid-template-columns:220px minmax(0,1fr);gap:18px;align-items:start;}
 .wb-tree-position,.wb-tree-results {min-width:0;}
 @media(max-width:1100px) {.wb-tree-content {grid-template-columns:minmax(0,1fr);}}
+
+.book-edit-row {display:flex;flex-wrap:wrap;gap:8px;}
+.book-edit-row>input {width:80px;flex:0 0 80px;}
+.book-edit-row>div {flex:1 1 120px;}
+.wb-tree-row .wb-tree-book-save {grid-column:2;grid-row:auto;justify-self:start;}

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added opening-tree “Save to book” actions that retain existing move settings, plus inline book-weight editing with stale-edit protection and preserved learning/source metadata.
+- Fixed zero book weights becoming one, late-position entries disappearing from the editor, inconsistent profile whitespace handling, and outdated book responses replacing newer results.
+
 - Fixed Windows backup-test cleanup locks by explicitly closing SQLite connections, including snapshot and restore failure paths; added retained-handle regression tests and expanded Windows/macOS database coverage.
 
 - Added a filtered reference opening tree with position navigation, result bars, move frequencies, ratings, matching-game searches, and Standard/Chess960 support.
