@@ -7194,13 +7194,14 @@ async function runDeveloperBenchmark() {
   try {
     const clockMs = Number($("devClockMs").value || 10000);
     const comparePath = $("devComparePath").value.trim();
-    const result = await api("/api/dev-benchmark", { clock_ms: clockMs, compare_path: comparePath });
+    const result = await runBackgroundJob("benchmark", { clock_ms: clockMs, compare_path: comparePath });
     const summary = result.summary || {};
     const comparison = result.comparison || null;
     const detail = comparison
       ? `Mean depth ${Number(summary.mean_depth).toFixed(2)} · ${Number(summary.aggregate_nps).toLocaleString()} NPS · Δdepth ${Number(comparison.depth_delta) >= 0 ? "+" : ""}${Number(comparison.depth_delta).toFixed(2)} · ΔNPS ${Number(comparison.nps_delta) >= 0 ? "+" : ""}${Number(comparison.nps_delta).toLocaleString()} · ${comparison.changed_moves}/12 moves changed.`
       : `Mean depth ${Number(summary.mean_depth).toFixed(2)} · ${Number(summary.aggregate_nps).toLocaleString()} aggregate NPS · ${Number(summary.nodes).toLocaleString()} nodes.`;
     renderDevLabResult("Benchmark complete", detail);
+    showDeveloperResult(result); saveWorkstationResult("benchmark", result);
     benchmarkHistory.unshift({
       kind: "benchmark",
       saved_at: new Date().toISOString(),
@@ -7239,12 +7240,13 @@ async function runDeveloperArena() {
   $("devBenchmarkBtn").disabled = true;
   $("devArenaBtn").disabled = true;
   try {
-    const result = await api("/api/dev-arena", {
+    const result = await runBackgroundJob("arena", {
       opponent_path: opponentPath,
       games: Number($("devArenaGames").value || 6),
       base_ms: 5000,
       increment_ms: 100,
     });
+    showDeveloperResult(result); saveWorkstationResult("arena", result);
     renderDevLabResult(
       "A/B complete",
       `+${result.wins} =${result.draws} -${result.losses} · ${(Number(result.score) * 100).toFixed(1)}% · ${Object.entries(result.terminations || {}).map(([name, count]) => `${name} ${count}`).join(", ")}.`,
@@ -7918,7 +7920,9 @@ function commandDefinitions() {
     { label: "Analyze candidate lines", hint: "MultiPV", action: async () => { await activateTab(document.querySelector('[data-tab="engine"]')); await runMultiPv(); } },
     { label: "Branch from current position", hint: "Variation workspace", action: async () => { await activateTab(document.querySelector('[data-tab="engine"]')); await startVariationWorkspace(); } },
     { label: "Start mistake trainer", hint: "Personal puzzles", action: startTrainer },
-    { label: "Run engine benchmark", hint: "Developer lab", action: async () => { await activateTab(document.querySelector('[data-tab="engine"]')); await runDeveloperBenchmark(); } },
+    { label: "Run engine benchmark", hint: "Tools", action: async () => { await revealWorkflow('developerLab', 'tools'); await runDeveloperBenchmark(); } },
+    { label: "Open tournament manager", hint: "Tools", action: () => revealWorkflow('tournamentTools', 'tools') },
+    { label: "Recent background work", hint: "Tools", action: async () => { await recoverWorkstationJobs(); await revealWorkflow('jobHistory', 'tools'); } },
     { label: "Flip board", hint: "F", action: () => $("flipBtn").click() },
     { label: "Undo live move", hint: "U", action: undoLiveMove },
     { label: "Pause / resume", hint: "Space", action: togglePause },
@@ -8156,6 +8160,7 @@ tabButtons.forEach((button, index) => {
 
 $("homeBtn").addEventListener("click", showLauncher);
 $("startPlayBtn").addEventListener("click", continueFromLauncher);
+$("startToolsBtn").addEventListener("click", () => enterWorkbench("tools", false));
 $("startAnalysisBtn").addEventListener("click", analyzeFromLauncher);
 $("startNewGameBtn").addEventListener("click", startNewGameFromLauncher);
 $("startPgnBtn").addEventListener("click", openPgnFile);
@@ -8636,7 +8641,7 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   if (launcherVisible()) return;
-  if (event.altKey && /^[1-5]$/.test(event.key)) {
+  if (event.altKey && /^[1-6]$/.test(event.key)) {
     event.preventDefault();
     const target = tabButtons[Number(event.key) - 1];
     if (target) activateTab(target, true);

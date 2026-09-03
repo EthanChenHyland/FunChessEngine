@@ -101,6 +101,9 @@ test('desktop metadata is bounded, persists across store instances and rejects u
     assert.throws(()=>metadataStore(folder).set('../outside',{}),/Unknown/);
     assert.throws(()=>metadataStore(folder).set(key,'x'.repeat(33*1024*1024)),/32 MB/);
     assert.equal(metadataStore(folder).get(key).value[0].estimated_elo,1700);
+    metadataStore(folder).set('funChessEngine.recovery.v1','x'.repeat(16*1024*1024));
+    assert.throws(()=>metadataStore(folder).set(key,'x'.repeat(16*1024*1024)),/32 MB/);
+    assert.equal(metadataStore(folder).get(key).value[0].estimated_elo,1700);
   } finally {fs.rmSync(folder,{recursive:true,force:true});}
 });
 test('study validation accepts transpositions and rejects cycles, missing references and prototype keys',()=>{
@@ -129,6 +132,56 @@ test('recovered tournaments and calibrations reveal their actual result panels',
   await c.showRecoveredJob({id:'t1',kind:'tournament',result:{games:[]}});
   await c.showRecoveredJob({id:'c1',kind:'calibration',result:{results:[]}});
   await c.showRecoveredJob({id:'c1',kind:'calibration',result:{results:[]}});
-  assert.deepEqual(revealed,[['advancedTournamentStandings','game'],['calibrationResult','train'],['calibrationResult','train']]);
+  assert.deepEqual(revealed,[['advancedTournamentStandings','tools'],['calibrationResult','train'],['calibrationResult','train']]);
   assert.equal(c.calibrationHistory.length,1);
+});
+
+test('desktop migration preserves newer collections and recovery saves leave histories untouched',()=>{
+  const path=require('node:path'), {metadataStore}=require('../desktop/storage');
+  const folder=fs.mkdtempSync(path.join(require('node:os').tmpdir(),'fce-migrate-'));
+  const history='funChessEngine.calibrationHistory.v1', recovery='funChessEngine.recovery.v1';
+  try {
+    const collections=path.join(folder,'workspace-collections');
+    fs.mkdirSync(collections);
+    fs.writeFileSync(path.join(collections,`${history}.json`),JSON.stringify([{estimated_elo:1900}]));
+    const original=JSON.stringify({[history]:[{estimated_elo:1400}],[recovery]:{fen:'old'}});
+    fs.writeFileSync(path.join(folder,'workspace-metadata.json'),original);
+    const store=metadataStore(folder);
+    assert.equal(store.get(history).value[0].estimated_elo,1900);
+    assert.equal(store.get(recovery).value.fen,'old');
+    const backup=fs.readdirSync(folder).find(name=>name.endsWith('.legacy.json'));
+    assert.equal(fs.readFileSync(path.join(folder,backup),'utf8'),original);
+    const historyFile=path.join(collections,`${history}.json`);
+    const before=fs.statSync(historyFile,{bigint:true});
+    for(let i=0;i<10;i++) store.set(recovery,{clock:i});
+    const after=fs.statSync(historyFile,{bigint:true});
+    assert.equal(after.ino,before.ino); assert.equal(after.mtimeNs,before.mtimeNs);
+    assert.equal(metadataStore(folder).get(recovery).value.clock,9);
+  } finally {fs.rmSync(folder,{recursive:true,force:true});}
+});
+
+test('failed metadata replacement preserves original and removes temporary files',()=>{
+  const path=require('node:path'), {metadataStore}=require('../desktop/storage');
+  const folder=fs.mkdtempSync(path.join(require('node:os').tmpdir(),'fce-write-'));
+  const originalRename=fs.renameSync;
+  try {
+    const store=metadataStore(folder), key='funChessEngine.recovery.v1';
+    store.set(key,{clock:100});
+    fs.renameSync=()=>{throw new Error('Disk full')};
+    assert.throws(()=>store.set(key,{clock:200}),/Disk full/);
+    assert.equal(store.get(key).value.clock,100);
+    assert.equal(fs.readdirSync(path.join(folder,'workspace-collections')).length,1);
+  } finally {fs.renameSync=originalRename;fs.rmSync(folder,{recursive:true,force:true});}
+});
+
+test('interrupted tournament opens partial standings and keeps it distinct from completed result',async()=>{
+  const revealed=[],saved=[];
+  const c=vm.createContext({console});
+  vm.runInContext(fs.readFileSync(require('node:path').join(__dirname,'../gui/static/workflows.js'),'utf8'),c);
+  c.showTournamentResult=result=>assert.equal(result.games.length,1);
+  c.saveWorkstationResult=(kind,result)=>saved.push([kind,result._workstationJobId]);
+  c.revealWorkflow=async(id,tab)=>revealed.push([id,tab]);
+  await c.showRecoveredJob({id:'t1',kind:'tournament',status:'interrupted',progress:{partial:{games:[{}]}}});
+  assert.deepEqual(saved,[['tournament','t1-partial']]);
+  assert.deepEqual(revealed,[['advancedTournamentStandings','tools']]);
 });

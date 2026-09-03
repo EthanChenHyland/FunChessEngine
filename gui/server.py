@@ -55,6 +55,7 @@ from harness.tuner import coordinate_tune
 from integrations.tournament import calibrate_against_uci, run_tournament
 from integrations.uci_client import ExternalUCIEngine
 from librarydb import LibraryDatabase, parse_library_query
+from librarydb.store import default_data_dir
 from openingbook import OpeningBook
 from plugins.manifest import validate_manifest
 from reporting.generator import annotated_pgn, html_report
@@ -3185,6 +3186,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "/api/jobs",
                 "/api/jobs/status",
                 "/api/jobs/cancel",
+                "/api/jobs/dismiss",
                 "/api/workspace-data",
                 "/api/library-upload",
                 "/api/external-uci",
@@ -3263,6 +3265,9 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             elif self.path == "/api/jobs/cancel":
                 self._json(JOBS.cancel(str(payload.get("id", ""))))
+                return
+            elif self.path == "/api/jobs/dismiss":
+                self._json(JOBS.dismiss(str(payload.get("id", ""))))
                 return
             elif self.path == "/api/move":
                 SESSION.play_move(str(payload.get("move", "")))
@@ -3853,6 +3858,7 @@ def main() -> None:
             raise SystemExit(1) from exc
         return
 
+    JOBS.enable_history(default_data_dir() / "job-history")
     port = arguments.port
     while True:
         try:

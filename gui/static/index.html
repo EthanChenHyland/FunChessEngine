@@ -6,7 +6,7 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:">
   <title>FunChessEngine · Default Lab</title>
   <link rel="icon" href="/app-mark.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/style.css?v=12">
+  <link rel="stylesheet" href="/style.css?v=13">
 </head>
 <body>
   <a class="skip-link" href="#board" hidden>Skip to chessboard</a>
@@ -69,6 +69,7 @@
           <button id="startPgnBtn" class="start-quick" type="button"><strong>Open PGN</strong><span>Game file</span></button>
           <button id="startFenBtn" class="start-quick" type="button"><strong>Open FEN</strong><span>Position</span></button>
           <button id="startLibraryBtn" class="start-quick" type="button"><strong>Library</strong><span>Saved games</span></button>
+          <button id="startToolsBtn" class="start-quick" type="button"><strong>Tools</strong><span>Jobs &amp; tournaments</span></button>
           <button id="startSettingsBtn" class="start-quick" type="button"><strong>Settings</strong><span>Appearance</span></button>
         </div>
         <div id="startRecents" class="start-recents" aria-label="Recent games and studies"></div>
@@ -115,6 +116,7 @@
           <button id="engineTabButton" class="tab" data-tab="engine" role="tab" aria-controls="engineTab" aria-selected="false" tabindex="-1">Analysis</button>
           <button id="trainTabButton" class="tab" data-tab="train" role="tab" aria-controls="trainTab" aria-selected="false" tabindex="-1">Training</button>
           <button id="displayTabButton" class="tab" data-tab="display" role="tab" aria-controls="displayTab" aria-selected="false" tabindex="-1">Settings</button>
+          <button id="toolsTabButton" class="tab" data-tab="tools" role="tab" aria-controls="toolsTab" aria-selected="false" tabindex="-1">Tools</button>
         </nav>
 
         <div id="gameTab" class="tab-panel active" role="tabpanel" aria-labelledby="gameTabButton">
@@ -231,17 +233,6 @@
             </div>
             <div class="row two compact-row"><button id="startTournamentBtn" class="secondary">Start series</button><button id="stopTournamentBtn" class="secondary" disabled>Stop</button></div>
             <div id="tournamentProgress" class="mini-report"><p class="hint">No match series has been run.</p></div>
-            <details class="inline-details advanced-tournament-card">
-              <summary>UCI tournament manager</summary>
-              <p class="hint">Run FunChessEngine against saved UCI engines using round-robin, gauntlet, or Swiss scheduling. The live game is not touched.</p>
-              <div class="row three compact-row"><div><label for="advancedTournamentFormat">Format</label><select id="advancedTournamentFormat"><option value="round_robin">Round robin</option><option value="gauntlet">Gauntlet</option><option value="swiss">Swiss</option></select></div><div><label for="advancedTournamentRounds">Swiss rounds</label><input id="advancedTournamentRounds" type="number" min="1" max="8" value="3"></div><div><label for="advancedTournamentMoveTime">Move time ms</label><input id="advancedTournamentMoveTime" type="number" min="20" max="2000" value="80"></div></div>
-              <label class="analysis-auto"><input id="advancedTournamentColorReverse" type="checkbox" checked> <span><strong>Reverse colors</strong><small>Play paired colors in round robin and gauntlet formats.</small></span></label>
-              <div class="setting-heading"><span class="label">Participants</span><span class="setting-value">FunChessEngine is always included</span></div>
-              <div id="advancedTournamentPlayers" class="compact-list"><p class="hint">Save an external UCI engine to add opponents.</p></div>
-              <label for="tournamentOpeningSuite">Opening suite FENs</label><textarea id="tournamentOpeningSuite" rows="3" placeholder="Optional: one FEN per line; blank uses the standard starting position"></textarea>
-              <div class="row two compact-row"><button id="runAdvancedTournamentBtn" class="secondary">Run tournament</button><button id="exportAdvancedTournamentPgnBtn" class="secondary" disabled>Export PGN…</button></div>
-              <div id="advancedTournamentStandings" class="mini-report"><p class="hint">Standings will appear here.</p></div>
-            </details>
           </details>
 
           <div class="list-heading"><span>Moves</span><span id="moveCount" class="setting-value">0 plies</span></div>
@@ -650,32 +641,53 @@
                 <div><span>Allocated</span><strong id="searchBudget">—</strong></div>
                 <div><span>PV changed</span><strong id="pvChanged">—</strong></div>
               </div>
-              <div class="devlab-section">
-                <div class="setting-heading"><span class="label">Engine development lab</span><span id="devLabStatus" class="setting-value">Ready</span></div>
-                <p class="hint">Run isolated regression benchmarks. A/B games execute agent.py from the source checkout and the comparison folder you provide.</p>
-                <div class="row two compact-row">
-                  <div><label for="devClockMs">Benchmark clock</label><input id="devClockMs" type="number" min="1500" max="30000" step="500" value="10000"></div>
-                  <button id="devBenchmarkBtn" class="secondary align-end">Run benchmark</button>
-                </div>
-                <label for="devComparePath">Comparison agent folder</label>
-                <input id="devComparePath" type="text" placeholder="/tmp/fce-baseline">
-                <div class="row two compact-row">
-                  <div><label for="devArenaGames">A/B games</label><input id="devArenaGames" type="number" min="2" max="40" step="2" value="6"></div>
-                  <button id="devArenaBtn" class="secondary align-end">Run A/B</button>
-                </div>
-                <div class="row two compact-row"><div><label for="regressionClockScale">Regression clock scale</label><input id="regressionClockScale" type="number" min="0.1" max="5" step="0.1" value="0.5"></div><button id="runRegressionBtn" class="secondary">Run regression</button></div>
-                <p class="hint">Compare tactical correctness with the most recent saved regression run.</p>
-                <div class="row three compact-row"><div><label for="selfplayGames">Self-play games</label><input id="selfplayGames" type="number" min="1" max="20" value="2"></div><div><label for="selfplayClock">Search clock ms</label><input id="selfplayClock" type="number" min="500" max="30000" value="4000"></div><button id="runSelfplayBtn" class="secondary">Generate data</button></div>
-                <fieldset id="tunerParameters"><legend>Offline parameter experiments</legend><label><input type="checkbox" value="ASPIRATION_WINDOW" checked> Aspiration window</label><label><input type="checkbox" value="EXCHANGE_PRUNE_MARGIN"> Exchange margin</label></fieldset>
-                <button id="runTunerBtn" class="secondary">Explore parameters</button><p class="hint">Suggestions only. Engine source and playing strength are never changed automatically.</p>
-                <pre id="developerResults" class="experiment-output">No result yet.</pre><button id="exportDeveloperResultBtn" class="secondary" disabled>Export result JSON…</button>
-                <details class="inline-details"><summary>Tournament and experiment history</summary><div id="workstationHistory"></div></details>
-                <div id="devLabResult" class="devlab-result"><p class="hint">No experiment run yet.</p></div>
-                <div class="setting-heading dev-history-heading"><span class="label">Benchmark history</span><button id="clearDevHistoryBtn" class="text-button">Clear</button></div>
-                <div id="devBenchmarkHistory" class="dev-history"></div>
-              </div>
             </div>
           </details>
+        </div>
+
+        <div id="toolsTab" class="tab-panel" role="tabpanel" aria-labelledby="toolsTabButton">
+          <h2>Tools</h2>
+          <p class="hint">Run tournaments, compare engine changes, and return to recent background work.</p>
+          <div class="section-card">
+            <div class="setting-heading"><span class="label">Recent background work</span><button id="refreshJobsBtn" class="text-button">Refresh</button></div>
+            <p class="hint">The last 12 jobs are retained on this device across restarts. Open results, export them, or dismiss finished jobs. To resume an interrupted reference import, select the same PGN in Library.</p>
+            <div id="jobHistory"></div>
+          </div>
+          <details id="tournamentTools" class="section-card advanced-tournament-card" open>
+            <summary>UCI tournament manager</summary>
+            <p class="hint">Run FunChessEngine against saved UCI engines using round-robin, gauntlet, or Swiss scheduling. The live game is not touched.</p>
+            <div class="row three compact-row"><div><label for="advancedTournamentFormat">Format</label><select id="advancedTournamentFormat"><option value="round_robin">Round robin</option><option value="gauntlet">Gauntlet</option><option value="swiss">Swiss</option></select></div><div><label for="advancedTournamentRounds">Swiss rounds</label><input id="advancedTournamentRounds" type="number" min="1" max="8" value="3"></div><div><label for="advancedTournamentMoveTime">Move time ms</label><input id="advancedTournamentMoveTime" type="number" min="20" max="2000" value="80"></div></div>
+            <label class="analysis-auto"><input id="advancedTournamentColorReverse" type="checkbox" checked> <span><strong>Reverse colors</strong><small>Play paired colors in round robin and gauntlet formats.</small></span></label>
+            <div class="setting-heading"><span class="label">Participants</span><span class="setting-value">FunChessEngine is always included</span></div>
+            <div id="advancedTournamentPlayers" class="compact-list"><p class="hint">Save an external UCI engine to add opponents.</p></div>
+            <label for="tournamentOpeningSuite">Opening suite FENs</label><textarea id="tournamentOpeningSuite" rows="3" placeholder="Optional: one FEN per line; blank uses the standard starting position"></textarea>
+            <div class="row two compact-row"><button id="runAdvancedTournamentBtn" class="secondary">Run tournament</button><button id="exportAdvancedTournamentPgnBtn" class="secondary" disabled>Export PGN…</button></div>
+            <div id="advancedTournamentStandings" class="mini-report"><p class="hint">Standings will appear here.</p></div>
+          </details>
+          <div id="developerLab" class="section-card">
+            <div class="setting-heading"><span class="label">Engine development lab</span><span id="devLabStatus" class="setting-value">Ready</span></div>
+            <p class="hint">Run isolated regression benchmarks. A/B games execute agent.py from the source checkout and the comparison folder you provide.</p>
+            <div class="row two compact-row">
+              <div><label for="devClockMs">Benchmark clock</label><input id="devClockMs" type="number" min="1500" max="30000" step="500" value="10000"></div>
+              <button id="devBenchmarkBtn" class="secondary align-end">Run benchmark</button>
+            </div>
+            <label for="devComparePath">Comparison agent folder</label>
+            <input id="devComparePath" type="text" placeholder="/tmp/fce-baseline">
+            <div class="row two compact-row">
+              <div><label for="devArenaGames">A/B games</label><input id="devArenaGames" type="number" min="2" max="40" step="2" value="6"></div>
+              <button id="devArenaBtn" class="secondary align-end">Run A/B</button>
+            </div>
+            <div class="row two compact-row"><div><label for="regressionClockScale">Regression clock scale</label><input id="regressionClockScale" type="number" min="0.1" max="5" step="0.1" value="0.5"></div><button id="runRegressionBtn" class="secondary">Run regression</button></div>
+            <p class="hint">Compare tactical correctness with the most recent saved regression run.</p>
+            <div class="row three compact-row"><div><label for="selfplayGames">Self-play games</label><input id="selfplayGames" type="number" min="1" max="20" value="2"></div><div><label for="selfplayClock">Search clock ms</label><input id="selfplayClock" type="number" min="500" max="30000" value="4000"></div><button id="runSelfplayBtn" class="secondary">Generate data</button></div>
+            <fieldset id="tunerParameters"><legend>Offline parameter experiments</legend><label><input type="checkbox" value="ASPIRATION_WINDOW" checked> Aspiration window</label><label><input type="checkbox" value="EXCHANGE_PRUNE_MARGIN"> Exchange margin</label></fieldset>
+            <button id="runTunerBtn" class="secondary">Explore parameters</button><p class="hint">Suggestions only. Engine source and playing strength are never changed automatically.</p>
+            <pre id="developerResults" class="experiment-output">No result yet.</pre><button id="exportDeveloperResultBtn" class="secondary" disabled>Export result JSON…</button>
+            <details class="inline-details"><summary>Tournament and experiment history</summary><div id="workstationHistory"></div></details>
+            <div id="devLabResult" class="devlab-result"><p class="hint">No experiment run yet.</p></div>
+            <div class="setting-heading dev-history-heading"><span class="label">Benchmark history</span><button id="clearDevHistoryBtn" class="text-button">Clear</button></div>
+            <div id="devBenchmarkHistory" class="dev-history"></div>
+          </div>
         </div>
 
         <div id="trainTab" class="tab-panel" role="tabpanel" aria-labelledby="trainTabButton">
@@ -829,7 +841,7 @@
           </div>
           <button id="showOnboardingBtn" class="secondary full">Show getting-started tour</button>
           <button id="resetDisplayBtn" class="secondary full">Reset appearance</button>
-          <p class="shortcut-hint">Keyboard: <kbd>⌘K</kbd> commands · <kbd>Z</kbd> zen · <kbd>Alt+1…5</kbd> tabs · <kbd>F</kbd> flip · <kbd>U</kbd> undo · <kbd>E</kbd> engine · <kbd>Space</kbd> pause · <kbd>Esc</kbd> clear</p>
+          <p class="shortcut-hint">Keyboard: <kbd>⌘K</kbd> commands · <kbd>Z</kbd> zen · <kbd>Alt+1…6</kbd> tabs · <kbd>F</kbd> flip · <kbd>U</kbd> undo · <kbd>E</kbd> engine · <kbd>Space</kbd> pause · <kbd>Esc</kbd> clear</p>
         </div>
       </aside>
     </section>
@@ -884,7 +896,7 @@
   </dialog>
   <div id="dropOverlay" class="drop-overlay" hidden><div><strong>Open in FunChessEngine</strong><span>Drop PGN, FEN, or saved PNG</span></div></div>
   <section class="background-jobs" aria-label="Background work"><div id="backgroundJobs" aria-live="polite"></div></section>
-  <script src="/workflows.js?v=1"></script>
-  <script src="/app.js?v=13"></script>
+  <script src="/workflows.js?v=2"></script>
+  <script src="/app.js?v=14"></script>
 </body>
 </html>

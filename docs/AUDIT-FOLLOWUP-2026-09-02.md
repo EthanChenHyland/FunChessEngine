@@ -32,3 +32,5 @@ This follow-up does not change engine search. Windows/macOS CI coverage remains 
 - Store desktop metadata per collection so frequent clock recovery writes do not rewrite the whole metadata file.
 - Persist background-job summaries across backend restarts, with explicit interrupted status and resumable work where supported.
 - Move tournament management and development tools into a dedicated workspace while preserving ordinary board navigation.
+
+These three recommendations are implemented by the subsequent Tools update. See `docs/GUI.md` for navigation, recovery behavior, and retention limits.

@@ -98,7 +98,7 @@ The server binds to `127.0.0.1:8765` by default and opens the browser automatica
   a phase weakness profile, and lightweight spaced repetition.
 - Cmd/Ctrl+K opens a command palette; PGN, FEN, and FunChessEngine PNG files can also be dropped onto
   the window. Optional move/check/training sounds are generated locally with WebAudio.
-- Advanced diagnostics can launch the repeatable 12-position benchmark in an isolated worker, retain
+- Tools can launch the repeatable 12-position benchmark in an isolated worker, retain
   benchmark history locally, compare against another agent folder, and run paired A/B games from a
   source checkout. Packaged builds retain benchmark support; source A/B intentionally requires agent.py.
 - Keyboard shortcuts for board flip, undo, engine move, pause/resume, and clearing the current selection.
@@ -124,3 +124,33 @@ assets are local. Nothing loads from a CDN or external service. Electron is desk
 `harness/package.py` includes only `agent.py` by default, plus files/weights that are explicitly
 requested. The GUI, desktop shell, harness, tests, and development tools therefore stay outside the
 engine archive. `make verify-zip` asserts that isolation before release.
+
+## Tools and recent background work
+
+Open **Tools** from Home, the sixth workspace tab, or **Alt+6**. Existing Alt+1–5 shortcuts
+keep their previous meaning. The command palette also opens the tournament manager or recent jobs.
+Tools groups UCI tournaments, the development lab, and experiment history. Search telemetry stays in Analysis;
+the internal strength match series stays in Play.
+
+Benchmark and A/B runs use the same cancellable job system as tournaments, reference imports,
+regressions, calibration, self-play, and parameter experiments. Tools shows start times and progress,
+with controls to refresh status, open results, export JSON, and dismiss finished jobs. Dismissal removes
+the job record; it leaves separately saved experiment and calibration history intact.
+
+The backend retains up to 12 recent jobs in `job-history/` under its local data directory
+(`FUNCHESS_DATA_DIR` overrides that directory). Progress is checkpointed at most once per second;
+completion, failure, and cancellation are saved immediately. Work stopped by a backend restart is marked
+**interrupted**. Engines are never restarted automatically. Saved partial tournament standings and import
+counts can be opened. Reselect the same reference PGN in Library to resume from its committed import checkpoint;
+other job kinds require a new run. Completed reference batches are already in the database.
+
+Each durable job record is limited to 16 MB. Larger results remain available in the running app and
+show a prompt to export before closing; only their summary survives restart. Job records are local operational
+history and are not included in workspace ZIP exports; results saved into experiment/calibration collections
+are included. JSON export is available directly from recent jobs.
+
+Desktop metadata is stored as separate files in `workspace-collections/` under the Electron profile.
+Clock recovery saves therefore do not rewrite studies or large histories. The first launch after upgrading
+migrates the previous `workspace-metadata.json`, preserves newer collection files, and keeps the original as
+`workspace-metadata.<id>.legacy.json`. Atomic replacements retain the previous value on a failed save.
+Active collections share the existing 32 MB quota; the migration backup is preserved separately.

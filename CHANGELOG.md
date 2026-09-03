@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Added a Tools workspace and Home/command-palette shortcuts for UCI tournaments, engine experiments, and recent jobs.
+- Retain recent background results across backend restarts, mark interrupted work explicitly, and support opening partial results, JSON export, and durable dismissal.
+- Fixed benchmark and A/B requests bypassing job cancellation and recovery.
+- Save desktop metadata per collection with atomic replacements and resumable migration, avoiding full-workspace rewrites for clock autosaves.
+
 ## 1.1.0
 
 - Expanded local chess intelligence with richer position/structure analysis, deeper tactical motifs, Syzygy optimal-move guidance, game-quality timelines, and MultiPV alternatives.

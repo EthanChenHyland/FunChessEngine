@@ -119,8 +119,8 @@ the top 1, 3, or 5 candidate lines, and optional auto-refresh as you browse or b
 persistent local studies, square highlights/arrows, 94-prefix local opening/ECO recognition, personal opening statistics,
 and a compact position-based engine opening repertoire. FunChess Accuracy and phase-by-phase CPL, deterministic move explanations, an inspectable evaluation
 breakdown, a spaced-repetition mistake trainer built from analyzed games, local move sounds, drag/drop
-for PGN/FEN/saved PNG files, and a Cmd/Ctrl+K command palette. Advanced diagnostics also expose an
-isolated benchmark/A-B development lab with local result history. Preferences and training data stay local.
+for PGN/FEN/saved PNG files, and a Cmd/Ctrl+K command palette. The Tools tab groups UCI tournaments,
+isolated benchmark/A-B experiments, and background job history that survives backend restarts. Preferences and training data stay local.
 Large library, study, annotation, trainer, and benchmark metadata is persisted in IndexedDB with
 localStorage migration/fallback, while a bounded session snapshot keeps the last in-progress game
 recoverable after both normal quits and interrupted sessions. Imported PGNs retain their comments,

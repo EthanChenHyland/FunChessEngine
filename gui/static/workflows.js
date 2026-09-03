@@ -14,40 +14,69 @@ function reportRow(title, detail) {
 }
 
 function renderJobStatus() {
-  const target = $('backgroundJobs');
-  if (!target) return;
-  target.replaceChildren();
-  for (const job of workstationJobs.values()) {
-    const progress = job.progress || {};
-    const count = progress.total ? `${progress.completed || 0}/${progress.total}` : '';
-    const row = reportRow(job.kind, `${job.status} ${count} ${job.error || progress.message || ''}`);
-    if (job.status === 'running') {
-      const cancel = document.createElement('button');
-      cancel.className = 'secondary compact'; cancel.textContent = 'Cancel';
-      cancel.addEventListener('click', async () => {
-        cancel.disabled = true;
-        try { if (job.cancel) job.cancel(); else await api('/api/jobs/cancel', {id:job.id}); }
-        catch (error) { cancel.disabled = false; setStatus(error.message, 'error'); }
-      });
-      row.append(cancel);
-    }
-    if (job.recover) {
-      const recover=document.createElement('button'); recover.className='secondary compact';
-      recover.textContent='Check status / recover result';
-      recover.addEventListener('click',async()=>{
-        try {
-          const current=await api('/api/jobs/status',{id:job.id});
-          workstationJobs.set(job.id,{...current,recover:true});
-          if (current.result) {
-            await showRecoveredJob(current);
-            workstationJobs.get(job.id).recover=false;
-          }
+  for (const targetId of ['backgroundJobs', 'jobHistory']) {
+    const target = $(targetId);
+    if (!target) continue;
+    target.replaceChildren();
+    const history = targetId === 'jobHistory';
+    const jobs = [...workstationJobs.values()].reverse().filter(job => history || ['running', 'connection lost'].includes(job.status));
+    if (history && !jobs.length) target.append(reportRow('No recent jobs', 'Run a tournament, import a reference PGN, or try an engine experiment.'));
+    for (const job of jobs) {
+      const progress = job.progress || {};
+      const count = progress.total ? `${progress.completed || 0}/${progress.total}` : '';
+      const started = job.started_at ? new Date(job.started_at * 1000).toLocaleString() : '';
+      const detail = [job.status, count, history ? started : '', job.error || progress.message, job.persistence_error, job.history_note].filter(Boolean).join(' · ');
+      const row = reportRow(job.kind, detail);
+      row.classList.add('job-row');
+      const actions = document.createElement('div'); actions.className = 'job-actions';
+      row.append(actions);
+      const button = (label, callback) => {
+        const control = document.createElement('button');
+        control.className = 'secondary compact'; control.textContent = label;
+        control.addEventListener('click', async () => {
+          control.disabled = true;
+          try { await callback(); }
+          catch (error) { setStatus(error.message, 'error'); }
+          finally { control.disabled = false; }
+        });
+        actions.append(control);
+      };
+      if (job.status === 'running') {
+        button('Cancel', async () => {
+          if (job.cancel) job.cancel();
+          else await api('/api/jobs/cancel', {id:job.id});
+          setStatus('Cancellation requested. Completed batches and partial results are retained.');
+        });
+      }
+      const local = job.id.startsWith('upload-');
+      const available = job.result || job.has_result || progress.partial || job.has_partial;
+      if (history && available && job.status !== 'running') {
+        button(job.result || job.has_result ? 'Open result' : 'Open partial result', async () => {
+          const current = await api('/api/jobs/status', {id:job.id});
+          workstationJobs.set(job.id, current);
+          await showRecoveredJob(current);
           renderJobStatus();
-        } catch(error) { setStatus(error.message,'error'); }
-      });
-      row.append(recover);
+        });
+        button('Export JSON…', async () => {
+          const current = await api('/api/jobs/status', {id:job.id});
+          await exportJson(current, `FunChessEngine-${job.kind}-${job.id.slice(0,8)}.json`);
+        });
+      }
+      if (!local && ['running', 'connection lost'].includes(job.status)) {
+        button('Check status', async () => {
+          const current = await api('/api/jobs/status', {id:job.id});
+          workstationJobs.set(job.id, current);
+          renderJobStatus();
+        });
+      }
+      if (history && job.status !== 'running') {
+        button('Dismiss', async () => {
+          if (!local) await api('/api/jobs/dismiss', {id:job.id});
+          workstationJobs.delete(job.id); renderJobStatus();
+        });
+      }
+      target.append(row);
     }
-    target.append(row);
   }
 }
 
@@ -69,15 +98,15 @@ async function revealWorkflow(id, tab) {
 }
 
 async function showRecoveredJob(current) {
-  const result = attachWorkstationJobId(current.result, current.id);
+  const result = attachWorkstationJobId(current.result || current.progress?.partial, current.result ? current.id : `${current.id}-partial`);
   if (!result) return;
   if (current.kind === 'tournament') {
     showTournamentResult(result);
     saveWorkstationResult('tournament', result);
-    await revealWorkflow("advancedTournamentStandings", "game");
+    await revealWorkflow("advancedTournamentStandings", "tools");
     return;
   }
-  if (current.kind === 'calibration') {
+  if (current.kind === 'calibration' && current.result) {
     if (!calibrationHistory.some(row => row.job_id === current.id)) {
       const engines = result.results?.[0]?.engines || [];
       const opponent = engines.find(engine => engine?.name && engine.name !== 'FunChessEngine');
@@ -90,27 +119,34 @@ async function showRecoveredJob(current) {
   }
   if (current.kind === 'reference-import') {
     if (typeof refreshOpeningDatabaseStatus === 'function') await refreshOpeningDatabaseStatus();
-    setStatus(`Reference import recovered: ${result.imported ?? 0} games indexed.`, 'success');
+    setStatus(`${current.result ? 'Reference import' : 'Partial import'} recovered: ${result.imported ?? 0} games indexed.`, 'success');
     return;
   }
   showDeveloperResult(result);
   saveWorkstationResult(current.kind,result);
-  await revealWorkflow("developerResults", "engine");
+  await revealWorkflow("developerResults", "tools");
 }
 
-async function recoverWorkstationJobs() {
+async function recoverWorkstationJobs(reportErrors = false) {
   try {
     const {jobs}=await api('/api/jobs/status',{});
-    for(const job of jobs || []) workstationJobs.set(job.id,{...job,recover:true});
+    const retained = new Set((jobs || []).map(job => job.id));
+    for (const id of workstationJobs.keys()) {
+      if (!id.startsWith('upload-') && !retained.has(id)) workstationJobs.delete(id);
+    }
+    for (const job of jobs || []) workstationJobs.set(job.id, job);
     renderJobStatus();
-  } catch (_) { /* Reconnecting the backend will retry this read-only discovery. */ }
+  } catch (error) { if (reportErrors) throw error; }
 }
 
 async function runBackgroundJob(kind, payload, onProgress = null) {
   if ([...workstationJobs.values()].some(job => job.kind === kind && job.status === 'running')) {
     throw new Error(`A ${kind} job is already running.`);
   }
-  for (const [id, old] of workstationJobs) { if (old.status !== 'running') workstationJobs.delete(id); }
+  for (const [id, old] of workstationJobs) {
+    if (workstationJobs.size < 12) break;
+    if (old.status !== 'running') workstationJobs.delete(id);
+  }
   let job = await api('/api/jobs', {kind, payload});
   workstationJobs.set(job.id, job);
   while (job.status === 'running') {
@@ -120,7 +156,7 @@ async function runBackgroundJob(kind, payload, onProgress = null) {
     try { job = await api('/api/jobs/status', {id:job.id}); }
     catch (error) {
       job.status='connection lost'; job.error=error.message;
-      job.recover=true; renderJobStatus();
+      renderJobStatus();
       throw error;
     }
     workstationJobs.set(job.id, job);
@@ -214,10 +250,10 @@ function renderWorkstationHistory() {
     view.addEventListener('click', async () => {
       if (record.kind === 'tournament') {
         showTournamentResult(record.result);
-        await revealWorkflow('advancedTournamentStandings','game');
+        await revealWorkflow('advancedTournamentStandings','tools');
       } else {
         showDeveloperResult(record.result);
-        await revealWorkflow('developerResults','engine');
+        await revealWorkflow('developerResults','tools');
       }
     });
     const download = document.createElement('button'); download.className='text-button'; download.textContent='Export';
@@ -266,6 +302,7 @@ function bindWorkstationWorkflows() {
     try { await callback(); } catch(error) { setStatus(error.message,'error'); }
     finally { $(id).disabled=false; }
   });
+  action('refreshJobsBtn',()=>recoverWorkstationJobs(true));
   action('runAdvancedTournamentBtn',runAdvancedTournament);
   action('exportAdvancedTournamentPgnBtn',()=>downloadBlob(new Blob([advancedTournamentResult.pgn],{type:'application/x-chess-pgn'}),'FunChessEngine-tournament.pgn'));
   action('runRegressionBtn',()=>runDeveloperTool('regression'));

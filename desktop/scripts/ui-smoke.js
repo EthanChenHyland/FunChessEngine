@@ -112,7 +112,7 @@ async function run() {
     };
     const baselineBoard = rect(document.querySelector(".board-frame"));
     const baselinePanel = rect(document.querySelector(".side-panel"));
-    const tabs = ["positionTabButton", "engineTabButton", "trainTabButton", "displayTabButton", "gameTabButton"];
+    const tabs = ["positionTabButton", "engineTabButton", "trainTabButton", "displayTabButton", "toolsTabButton", "gameTabButton"];
     const readings = [];
     for (const id of tabs) {
       await activateTab(document.getElementById(id));
@@ -214,6 +214,16 @@ async function run() {
   await waitFor(window, `durableMetadataHydrated && state && calibrationHistory.length===1`);
   await window.webContents.executeJavaScript(`(async()=>{
     if(calibrationHistory[0].estimated_elo!==1600 || !regressionHistory.length) throw new Error('Lost desktop data on port change');
+    await recoverWorkstationJobs(true);
+    const jobs=await api('/api/jobs/status',{});
+    const completed=jobs.jobs.find(job=>job.kind==='regression' && job.status==='completed');
+    if(!completed?.has_result) throw new Error('Lost backend job result after restart');
+    await showRecoveredJob(await api('/api/jobs/status',{id:completed.id}));
+    if(!document.getElementById('toolsTab').classList.contains('active')) throw new Error('Job history opens wrong tab');
+    if(!document.getElementById('jobHistory').textContent.includes('Open result')) throw new Error('Job history has no result action');
+    await api('/api/jobs/dismiss',{id:completed.id});
+    await recoverWorkstationJobs(true);
+    if(workstationJobs.has(completed.id)) throw new Error('Dismissed job is still visible');
     const rootSnapshot=await api('/api/state');
     const childSnapshot=await api('/api/variation-move',{fen:rootSnapshot.fen,move:'e2e4'});
     savedVariationWorkspaces={audit:{root:'r',nodes:{
@@ -229,13 +239,25 @@ async function run() {
     const roundtrip=validateWorkspaceBackup(workspaceBackupPayload());
     if(!roundtrip.calibration_history.length) throw new Error('Backup omitted history');
     await showRecoveredJob({id:'smoke-tournament',kind:'tournament',result:{complete:true,games:[],standings:[],pgn:'*'}});
-    if(!document.getElementById('startScreen').hidden || !document.getElementById('gameTab').classList.contains('active')) throw new Error('Recovered tournament remains hidden');
+    if(!document.getElementById('startScreen').hidden || !document.getElementById('toolsTab').classList.contains('active')) throw new Error('Recovered tournament remains hidden');
     if(!document.getElementById('advancedTournamentStandings').closest('details').open) throw new Error('Recovered standings are collapsed');
     await showRecoveredJob({id:'smoke-calibration',kind:'calibration',result:{results:[],estimated_elo:1600,games:4,opponent_elo:1500,score:.5,elo_interval:[1400,1800]}});
     if(!document.getElementById('trainTab').classList.contains('active')) throw new Error('Recovered calibration opens wrong tab');
   })()`,true);
+  if (process.env.FUNCHESS_SMOKE_SCREENSHOT) {
+    await window.webContents.executeJavaScript(`(async()=>{closeOnboarding(); await revealWorkflow('jobHistory','tools'); window.scrollTo(0,0); document.getElementById('toolsTab').scrollTop=0;})()`,true);
+    await new Promise(resolve=>setTimeout(resolve,100));
+    fs.writeFileSync(process.env.FUNCHESS_SMOKE_SCREENSHOT,(await window.webContents.capturePage()).toPNG());
+    window.setSize(390,844);
+    await new Promise(resolve=>setTimeout(resolve,100));
+    await window.webContents.executeJavaScript(`document.getElementById('toolsTabButton').scrollIntoView({block:'start'})`,true);
+    await new Promise(resolve=>setTimeout(resolve,100));
+    const overflow=await window.webContents.executeJavaScript(`document.documentElement.scrollWidth > window.innerWidth`);
+    if(overflow) throw new Error('Tools workspace overflows mobile viewport');
+    fs.writeFileSync(process.env.FUNCHESS_SMOKE_SCREENSHOT.replace(/\.png$/, '-mobile.png'),(await window.webContents.capturePage()).toPNG());
+  }
   window.destroy();
-  console.log("Electron UI smoke OK: preload, history reload, port migration, regression job, backup");
+  console.log("Electron UI smoke OK: preload, history reload, port migration, regression job, persistent job history, Tools, backup");
 }
 
 app.whenReady().then(async () => {

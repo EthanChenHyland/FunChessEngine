@@ -325,7 +325,7 @@ h2 { margin: 0; font-size: 19px; letter-spacing: -.025em; }
 .start-card > span:not(.start-card-kicker) { max-width: 390px; margin-top: 7px; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .start-card .start-card-kicker { margin: 0; color: var(--accent); font-size: 9px; font-weight: 850; line-height: 1; letter-spacing: .13em; }
 .start-card-primary { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); background: color-mix(in srgb, var(--accent-dark) 46%, var(--panel)); }
-.start-quick-actions { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+.start-quick-actions { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
 .start-quick {
   min-width: 0;
   min-height: 64px;
@@ -540,14 +540,14 @@ h2 { margin: 0; font-size: 19px; letter-spacing: -.025em; }
   position: relative;
   z-index: 10;
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   border-bottom: 1px solid var(--line);
   background: var(--panel);
 }
 
 .tab {
   min-width: 0;
-  padding: 14px 7px;
+  padding: 14px 4px;
   border: 0;
   color: var(--muted);
   background: transparent;
@@ -1314,3 +1314,8 @@ html[data-desktop="true"] .board-stage {
 .background-jobs { max-width: 1280px; margin: 16px auto; padding: 0 20px; }
 .background-jobs:has(#backgroundJobs:empty) { display: none; }
 #tunerParameters { display: grid; gap: 8px; margin: 12px 0; }
+
+#jobHistory, #backgroundJobs { display: grid; gap: 8px; }
+#jobHistory .prep-row span, .job-row span { white-space: normal; overflow-wrap: anywhere; line-height: 1.5; }
+.job-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.job-actions:empty { display: none; }
