@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fixed a Linux Electron smoke-test race that mistook disabled pagination controls for completed loading. Database paging now exposes explicit busy state and blocks next-game and bulk-selection navigation until results commit; the smoke test deliberately holds a page response to verify this.
+
 - Added the final 20 database and preparation features: faster paging/selection, removable filters, saved-search renaming, exact-player and missing-data searches, richer previews, opening-tree sorting and navigation, preparation/CSV/SVG exports, and example-game shortcuts. See `docs/FINAL20_FEATURES.md`.
 
 - Added opening-tree “Save to book” actions that retain existing move settings, plus inline book-weight editing with stale-edit protection and preserved learning/source metadata.

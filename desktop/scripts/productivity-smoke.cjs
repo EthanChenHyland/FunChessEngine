@@ -4,16 +4,38 @@ module.exports=async function productivitySmoke(window,waitFor) {
     wbApplyFilters({event:'DatabaseSmoke'});await wbSearch();wb.selected.clear();wbRenderRows();
     document.getElementById('wbPageNumber').value='2';document.getElementById('wbGoPage').click();
   })()`,true);
-  await waitFor(window,`wb.offset===25 && !document.getElementById('wbGoPage').disabled`);
+  await waitFor(window,`!wb.searching && wb.offset===25 && wb.games.length===9 && !document.getElementById('wbGoPage').disabled`);
   await window.webContents.executeJavaScript(`document.getElementById('wbSelectMatching').click()`,true);
   await waitFor(window,`wb.selected.size===34 && !document.getElementById('wbSelectMatching').disabled`);
-  await window.webContents.executeJavaScript(`document.getElementById('wbInvertPage').click();document.getElementById('wbFirstPage').click()`,true);
-  await waitFor(window,`wb.selected.size===25 && wb.offset===0 && document.getElementById('wbFirstPage').disabled`);
+  // Hold the first-page response so readiness cannot accidentally depend on local speed.
+  await window.webContents.executeJavaScript(`(()=>{
+    window.productivityOriginalApi=wbApi;
+    wbApi=async(action,payload)=>{
+      const result=await window.productivityOriginalApi(action,payload);
+      if(action==='search' && payload.offset===0)await new Promise(resolve=>window.productivityReleasePage=resolve);
+      return result;
+    };
+    document.getElementById('wbInvertPage').click();document.getElementById('wbFirstPage').click();
+  })()`,true);
+  await waitFor(window,`typeof window.productivityReleasePage==='function'`);
+  await window.webContents.executeJavaScript(`(()=>{
+    try {
+      if(!wb.searching || wb.offset!==0 || wb.games.length!==9)throw new Error('First-page delay did not retain the previous page');
+      if(!document.getElementById('wbFirstPage').disabled || !document.getElementById('wbNextGame').disabled)throw new Error('Paging allowed navigation before results committed');
+      const previewSequence=wb.previewSequence;document.getElementById('wbNextGame').click();
+      if(wb.previewSequence!==previewSequence)throw new Error('Loading-page click changed preview');
+    } finally {
+      wbApi=window.productivityOriginalApi;delete window.productivityOriginalApi;
+      window.productivityReleasePage();delete window.productivityReleasePage;
+    }
+  })()`,true);
+  await waitFor(window,`!wb.searching && wb.selected.size===25 && wb.offset===0 && wb.games.length===25`);
   await window.webContents.executeJavaScript(`(async()=>{
     await wbPreview(wb.games[0].id);
+    window.productivityNextGameId=wb.games[1].id;
     document.getElementById('wbNextGame').click();
   })()`,true);
-  await waitFor(window,`wb.preview.game.id===wb.games[1].id`);
+  await waitFor(window,`wb.preview.game.id===window.productivityNextGameId`);
   await window.webContents.executeJavaScript(`document.getElementById('wbPreviousGame').click()`,true);
   await waitFor(window,`wb.preview.game.id===wb.games[0].id`);
   await window.webContents.executeJavaScript(`(async()=>{

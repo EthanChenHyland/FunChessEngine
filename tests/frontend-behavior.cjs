@@ -225,7 +225,7 @@ test('game comparison identifies divergence and different initial positions',()=
 });
 test('slow database responses cannot overwrite newer search results',async()=>{
   const pending=[],wb={sequence:0,offset:0,sort:'date',direction:'desc'},rendered=[];
-  const c=loadWorkbench(['wbSearch'],{wb,wbFilters:()=>({}),wbStatus:()=>{},$:()=>({value:'25'}),wbApi:()=>new Promise(resolve=>pending.push(resolve)),wbRenderRows:()=>rendered.push(wb.games)});
+  const c=loadWorkbench(['wbSearch'],{wb,wbSearchControls:()=>{},wbFilters:()=>({}),wbStatus:()=>{},$:()=>({value:'25'}),wbApi:()=>new Promise(resolve=>pending.push(resolve)),wbRenderRows:()=>rendered.push(wb.games)});
   const old=c.wbSearch(),fresh=c.wbSearch();
   pending[1]({games:['fresh'],total:1,offset:0,limit:25});await fresh;
   pending[0]({games:['old'],total:1,offset:0,limit:25});await old;
@@ -277,7 +277,7 @@ test('header save completion cannot pull the user back to the previous game',asy
 });
 test('stale failed searches do not replace the latest successful status with an error',async()=>{
   const pending=[],wb={sequence:0},statuses=[];
-  const c=loadWorkbench(['wbSearch'],{wb,wbFilters:()=>({}),wbStatus:s=>statuses.push(s),$:()=>({value:'25'}),wbApi:()=>new Promise((resolve,reject)=>pending.push({resolve,reject})),wbRenderRows:()=>{}});
+  const c=loadWorkbench(['wbSearch'],{wb,wbSearchControls:()=>{},wbFilters:()=>({}),wbStatus:s=>statuses.push(s),$:()=>({value:'25'}),wbApi:()=>new Promise((resolve,reject)=>pending.push({resolve,reject})),wbRenderRows:()=>{}});
   const old=c.wbSearch(),fresh=c.wbSearch();
   pending[1].resolve({games:['fresh'],total:1,offset:0,limit:25});await fresh;
   pending[0].reject(new Error('Old request failed'));await old;
@@ -416,4 +416,21 @@ test('SVG diagrams escape metadata and export the selected orientation',()=>{
   const svg=c.wbDiagramSvg(preview,0,true);
   assert.equal(svg.includes('<script>'),false);assert.equal((svg.match(/<g>/g)||[]).length,64);
   assert.ok(svg.includes('>h1</text>'));assert.ok(svg.includes('&lt;script&gt;'));
+});
+test('search stays busy until the newest page is committed, including out-of-order responses',async()=>{
+  const wb={sequence:0,games:['previous'],offset:25},pending=[],controls=[];
+  const c=loadWorkbench(['wbSearch'],{wb,wbFilters:()=>({}),wbStatus:()=>{},$:()=>({value:'25'}),wbSearchControls:()=>controls.push({busy:wb.searching,games:[...wb.games]}),wbRenderRows:()=>{},wbApi:()=>new Promise((resolve,reject)=>pending.push({resolve,reject}))});
+  const old=c.wbSearch(),fresh=c.wbSearch();
+  assert.equal(wb.searching,true);assert.equal(wb.games[0],'previous');
+  pending[0].resolve({games:['obsolete'],total:1,offset:0,limit:25});await old;
+  assert.equal(wb.searching,true);assert.equal(wb.games[0],'previous');
+  pending[1].resolve({games:['fresh'],total:1,offset:0,limit:25});await fresh;
+  assert.equal(wb.searching,false);assert.deepEqual(controls.at(-1),{busy:false,games:['fresh']});
+  const failed=c.wbSearch();pending[2].reject(new Error('Network failed'));
+  await assert.rejects(failed,/Network failed/);assert.equal(wb.searching,false);
+});
+test('next-game and matching-selection actions do nothing while a page is loading',async()=>{
+  const wb={searching:true,games:[{id:1},{id:2}],preview:{game:{id:1}}};
+  const c=loadProductivity(['wbNextGame','wbSelectMatching'],{wb,wbPreview:()=>assert.fail('Navigated old page'),wbApi:()=>assert.fail('Selected old page')});
+  await c.wbNextGame(1);await c.wbSelectMatching();
 });

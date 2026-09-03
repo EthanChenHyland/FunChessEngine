@@ -10,6 +10,7 @@ function wbInvertSelection(selected,ids) {
   return next;
 }
 async function wbSelectMatching() {
+  if(wb.searching)return;
   const sequence=wb.sequence;
   const result=await wbApi('matching_ids',{filters:{...wb.filters}});
   if(sequence!==wb.sequence){wbStatus('Search changed while selecting. Select matches again.');return;}
@@ -20,9 +21,12 @@ async function wbSelectMatching() {
 function wbRenderProductivity() {
   const pages=Math.max(1,Math.ceil(wb.total/wb.limit));
   $('wbPageNumber').max=pages;$('wbPageNumber').value=Math.floor(wb.offset/wb.limit)+1;
-  wbDisabled('wbFirstPage',wb.offset===0);wbDisabled('wbLastPage',wb.offset+wb.limit>=wb.total);
+  const loading=Boolean(wb.searching);
+  wbDisabled('wbFirstPage',loading || wb.offset===0);wbDisabled('wbLastPage',loading || wb.offset+wb.limit>=wb.total);
+  for(const id of ['wbGoPage','wbSelectMatching','wbInvertPage'])wbDisabled(id,loading);
+  $('wbPageNumber').disabled=loading;
   const index=wb.games.findIndex(game=>game.id===wb.preview?.game.id);
-  wbDisabled('wbPreviousGame',index<=0);wbDisabled('wbNextGame',!wb.games.length || index===wb.games.length-1);
+  wbDisabled('wbPreviousGame',loading || index<=0);wbDisabled('wbNextGame',loading || !wb.games.length || index===wb.games.length-1);
   const target=$('wbFilterChips');target.replaceChildren();
   const names={player:'Player',favorite:'Favorites',duplicates:'Same main line',fen:'Matching position',folder_exact:'Exact folder',exact_players:'Exact player names',unfiled:'Unfiled',variant:'Variant',missing:'Missing metadata',...Object.fromEntries(WB_FILTERS.map(([key,label])=>[key,label]))};
   for(const [key,value] of Object.entries(wb.filters)) {
@@ -33,6 +37,7 @@ function wbRenderProductivity() {
   }
 }
 async function wbNextGame(delta) {
+  if(wb.searching)return;
   const index=wb.games.findIndex(game=>game.id===wb.preview?.game.id),next=index+delta;
   if(next>=0 && next<wb.games.length)await wbPreview(wb.games[next].id);
 }

@@ -1,5 +1,5 @@
 // Reference database workspace. Its preview never writes to the live session.
-const wb = {games:[], selected:new Set(), offset:0, limit:25, total:0, sort:'date', direction:'desc', filters:{}, views:[], preview:null, ply:0, flipped:false, timer:null, sequence:0, previewSequence:0, report:null, notesDirty:false, headersDirty:false};
+const wb = {games:[], selected:new Set(), offset:0, limit:25, total:0, sort:'date', direction:'desc', filters:{}, views:[], preview:null, ply:0, flipped:false, timer:null, sequence:0, searching:false, previewSequence:0, report:null, notesDirty:false, headersDirty:false};
 const WB_FILTERS = [
   ['white','White player'],['black','Black player'],['event','Event'],['site','Site'],
   ['eco','ECO prefix'],['opening','Opening name'],['source','Import source'],['folder','Collection folder'],
@@ -79,14 +79,25 @@ async function wbSearch(reset=true) {
   const sequence=++wb.sequence;
   wb.filters=wbFilters();
   if(reset) wb.offset=0;
+  wb.searching=true;wbSearchControls();
   wbStatus('Searching reference games…');
-  let result;
-  try {result=await wbApi('search',{filters:wb.filters,sort:wb.sort,direction:wb.direction,limit:Number($('wbPageSize').value),offset:wb.offset});}
-  catch(error) {if(sequence===wb.sequence)throw error;return;}
-  if(sequence!==wb.sequence) return;
-  Object.assign(wb,{games:result.games,total:result.total,offset:result.offset,limit:result.limit});
-  wbRenderRows();
-  wbStatus(result.total ? `${result.total.toLocaleString()} matching games. Select a White player name to preview a game.` : 'No matches. Import a reference PGN or reset the filters.');
+  try {
+    const result=await wbApi('search',{filters:wb.filters,sort:wb.sort,direction:wb.direction,limit:Number($('wbPageSize').value),offset:wb.offset});
+    if(sequence!==wb.sequence)return;
+    Object.assign(wb,{games:result.games,total:result.total,offset:result.offset,limit:result.limit});
+    wbRenderRows();
+    wbStatus(result.total ? `${result.total.toLocaleString()} matching games. Select a White player name to preview a game.` : 'No matches. Import a reference PGN or reset the filters.');
+  } catch(error) {
+    if(sequence===wb.sequence)throw error;
+  } finally {
+    if(sequence===wb.sequence){wb.searching=false;wbSearchControls();}
+  }
+}
+function wbSearchControls() {
+  $('wbTable').setAttribute('aria-busy',String(Boolean(wb.searching)));
+  wbDisabled('wbPrevious',wb.searching || wb.offset===0);
+  wbDisabled('wbNext',wb.searching || wb.offset+wb.limit>=wb.total);
+  if(typeof wbRenderProductivity==='function')wbRenderProductivity();
 }
 function wbSetSelection(id,selected) {
   if(selected && !wb.selected.has(id) && wb.selected.size>=500) throw new Error('Selection is limited to 500 games. Export or clear the current selection first.');
@@ -120,10 +131,9 @@ function wbRenderRows() {
   $('wbCount').textContent=`${wb.total.toLocaleString()} games`;
   $('wbActiveFilters').textContent=Object.keys(wb.filters).length?` · ${Object.keys(wb.filters).length} active`:'';
   $('wbPageLabel').textContent=`Page ${Math.floor(wb.offset/wb.limit)+1} of ${Math.max(1,Math.ceil(wb.total/wb.limit))}`;
-  wbDisabled('wbPrevious',wb.offset===0);wbDisabled('wbNext',wb.offset+wb.limit>=wb.total);
   document.querySelectorAll('[data-wb-sort]').forEach(button=>{button.parentElement.setAttribute('aria-sort',button.dataset.wbSort===wb.sort?(wb.direction==='asc'?'ascending':'descending'):'none');});
   wbSelectionStatus();
-  if(typeof wbRenderProductivity==='function')wbRenderProductivity();
+  wbSearchControls();
 }
 function wbSelectionStatus() {
   $('wbSelectedCount').textContent=`${wb.selected.size} selected`;
