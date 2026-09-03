@@ -1382,3 +1382,11 @@ html[data-desktop="true"] .board-stage {
 .wb-actions input[type=checkbox] { width: auto; }
 #wbActiveFilters { color: var(--accent); font-weight: 500; }
 @media(max-width:720px) { .wb-layout { display: block; overflow: auto; }.wb-header { align-items: start; }.wb-header > .wb-actions { margin: 0; justify-content: end; }.wb-header h2 { white-space: nowrap; }.wb-header button { padding: 8px; font-size: 11px; }.wb-header .eyebrow { font-size: 9px; } }
+
+.wb-collections,.wb-undo {border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:10px;}
+.wb-collections summary,.wb-undo summary {cursor:pointer;font-weight:600;}
+.wb-collections[open]>div {margin-top:10px;}
+.wb-collection-group {display:flex;align-items:center;flex-wrap:wrap;gap:6px;width:100%;}
+.wb-collection-group strong {min-width:60px;}
+.wb-collection-group button {max-width:100%;overflow-wrap:anywhere;white-space:normal;}
+.wb-undo-row {display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:6px;}

@@ -3356,6 +3356,10 @@ class Handler(SimpleHTTPRequestHandler):
                     self._json(workbench.preview(int(payload.get("id", 0))))
                 elif action == "organize":
                     self._json(workbench.organize(payload))
+                elif action == "collections":
+                    self._json(workbench.collections())
+                elif action == "undo":
+                    self._json(workbench.undo_organization(str(payload.get("id", ""))))
                 elif action == "export":
                     self._json(workbench.export(payload.get("ids")))
                 elif action == "headers":

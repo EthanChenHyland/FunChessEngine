@@ -34,6 +34,17 @@ module.exports=async function databaseSmoke(window,waitFor) {
   await window.webContents.executeJavaScript(String.raw`(async()=>{
     wb.selected=new Set(wb.games.slice(0,2).map(game=>game.id));
     await wbOrganize({favorite:true,tags:['model'],folder:'Study games'});
+    await wbOrganize({tags:['endgame']},{tag_mode:'add'});
+    let collections=await wbApi('collections');
+    if(!collections.folders.some(row=>row.name==='Study games' && row.games===2))throw new Error('Collection counts failed');
+    if((await wbApi('search',{filters:{tag:'model'}})).total!==2)throw new Error('Add tags removed existing tags');
+    await wbOrganize({tags:['model']},{tag_mode:'remove'});
+    if((await wbApi('search',{filters:{tag:'model'}})).total!==0)throw new Error('Remove tags failed');
+    collections=await wbApi('collections');await wbUndo(collections.undo[0].id);
+    if(!document.getElementById('wbCollections').textContent.includes('Study games · 2'))throw new Error('Collection navigator missing');
+    if((await wbApi('search',{filters:{tag:'model'}})).total!==2)throw new Error('Undo tag removal failed');
+    await wbChooseCollection({fen:wb.preview.positions[1].fen});
+    if(wb.total!==34)throw new Error('Preview position search failed');
     wbApplyFilters({favorite:true,tag:'model'});await wbSearch();
     if(wb.total!==2)throw new Error('Organization filters failed');
     await wbCompareSelected();
@@ -45,7 +56,7 @@ module.exports=async function databaseSmoke(window,waitFor) {
   })()`,true);
   await waitFor(window,`wb.views.some(view=>view.name==='Smoke models')`);
   if(process.env.FUNCHESS_SMOKE_SCREENSHOT) {
-    await window.webContents.executeJavaScript(`document.getElementById('wbReports').open=false;document.getElementById('wbComparison').hidden=true;document.querySelector('.wb-browser').scrollTop=0;document.querySelector('.wb-preview').scrollTop=0;`,true);
+    await window.webContents.executeJavaScript(`document.querySelector('.wb-collections').open=true;document.getElementById('wbReports').open=false;document.getElementById('wbComparison').hidden=true;document.querySelector('.wb-browser').scrollTop=0;document.querySelector('.wb-preview').scrollTop=0;`,true);
     window.setSize(1400,950);
     await new Promise(resolve=>setTimeout(resolve,150));
     fs.writeFileSync(process.env.FUNCHESS_SMOKE_SCREENSHOT.replace(/\.png$/,'-database.png'),(await window.webContents.capturePage()).toPNG());

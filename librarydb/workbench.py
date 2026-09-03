@@ -7,6 +7,9 @@ import io
 import json
 import re
 import sqlite3
+import time
+import uuid
+from datetime import date
 from typing import Any
 
 import chess
@@ -26,6 +29,7 @@ SORTS = {
 }
 TEXT_FILTERS = {key: f"g.{key}" for key in ("white", "black", "event", "site", "opening", "source")}
 TEXT_FILTERS.update({"folder": "d.folder", "notes": "d.notes", "annotation": "g.pgn"})
+ORGANIZATION_FIELDS = {"favorite", "folder", "tags", "notes"}
 HEADERS = {
     "Event": "event",
     "Site": "site",
@@ -41,6 +45,20 @@ HEADERS = {
 }
 
 
+def clean_tags(value: Any) -> list[str]:
+    if not isinstance(value, list) or any(
+        not isinstance(tag, str) or len(tag) > 40 for tag in value
+    ):
+        raise ValueError("Tags must contain at most 40 characters each.")
+    unique: dict[str, str] = {}
+    for tag in value:
+        if tag.strip():
+            unique.setdefault(tag.strip().casefold(), tag.strip())
+    if len(unique) > 20:
+        raise ValueError("A game can have at most 20 tags. Remove some before adding more.")
+    return list(unique.values())
+
+
 def literal_like(value: str) -> str:
     return "%" + value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
 
@@ -49,9 +67,14 @@ def where_clause(filters: dict[str, Any]) -> tuple[str, list[Any]]:
     clauses: list[str] = []
     values: list[Any] = []
     for key, column in TEXT_FILTERS.items():
-        if filters.get(key):
+        if key == "folder" and filters.get("folder_exact"):
+            clauses.append("d.folder=?")
+            values.append(str(filters.get(key, "")))
+        elif filters.get(key):
             clauses.append(f"{column} LIKE ? ESCAPE '\\'")
             values.append(literal_like(str(filters[key]).strip()[:300]))
+    if filters.get("unfiled"):
+        clauses.append("d.folder=''")
     if filters.get("player"):
         clauses.append("(g.white LIKE ? ESCAPE '\\' OR g.black LIKE ? ESCAPE '\\')")
         values.extend([literal_like(str(filters["player"])[:200])] * 2)
@@ -174,39 +197,163 @@ class LibraryWorkbench:
     def organize(self, payload: dict[str, Any]) -> dict[str, Any]:
         ids = self._ids(payload.get("ids"))
         changes = payload.get("changes")
-        if (
-            not isinstance(changes, dict)
-            or not changes
-            or set(changes) - {"favorite", "folder", "tags", "notes"}
-        ):
+        if not isinstance(changes, dict) or not changes or set(changes) - ORGANIZATION_FIELDS:
             raise ValueError("Choose favorite, folder, tags, or notes to update.")
         if "favorite" in changes and not isinstance(changes["favorite"], bool):
             raise ValueError("Favorite must be true or false.")
+        tag_mode = payload.get("tag_mode", "replace")
+        if tag_mode not in {"replace", "add", "remove"}:
+            raise ValueError("Tag mode must be add, remove, or replace.")
         if "tags" in changes:
-            tags = changes["tags"]
-            if (
-                not isinstance(tags, list)
-                or len(tags) > 20
-                or any(not isinstance(t, str) or len(t) > 40 for t in tags)
-            ):
-                raise ValueError("Use at most 20 tags of 40 characters each.")
-            changes = {
-                **changes,
-                "tags": json.dumps(list(dict.fromkeys(t.strip() for t in tags if t.strip()))),
-            }
+            changes = {**changes, "tags": clean_tags(changes["tags"])}
         for key, limit in (("folder", 80), ("notes", 10000)):
             if key in changes and (not isinstance(changes[key], str) or len(changes[key]) > limit):
                 raise ValueError(f"{key} must contain at most {limit} characters.")
+        if "expected_notes" in payload and (
+            len(ids) != 1 or not isinstance(payload["expected_notes"], str)
+        ):
+            raise ValueError(
+                "Notes revision checks require a single game and its previous note text."
+            )
+        edits: list[dict[str, Any]] = []
         with self.database._connect() as connection:
             for identifier in ids:
-                cursor = connection.execute(
-                    f"UPDATE game_details SET {','.join(f'{key}=?' for key in changes)} "
-                    "WHERE game_id=?",
-                    [*changes.values(), identifier],
-                )
-                if not cursor.rowcount:
+                row = connection.execute(
+                    "SELECT * FROM game_details WHERE game_id=?", (identifier,)
+                ).fetchone()
+                if row is None:
                     raise ValueError("A selected game no longer exists; no games were changed.")
-        return {"updated": len(ids)}
+                if "expected_notes" in payload and row["notes"] != payload["expected_notes"]:
+                    raise ValueError(
+                        "These notes changed since the preview opened. "
+                        "Reload the game before saving."
+                    )
+                after = dict(changes)
+                if "tags" in after:
+                    requested = after["tags"]
+                    existing = json.loads(row["tags"])
+                    if tag_mode == "add":
+                        after["tags"] = clean_tags([*existing, *requested])
+                    elif tag_mode == "remove":
+                        remove = {tag.casefold() for tag in requested}
+                        after["tags"] = [tag for tag in existing if tag.casefold() not in remove]
+                    after["tags"] = json.dumps(after["tags"])
+                after = {key: value for key, value in after.items() if row[key] != value}
+                if after:
+                    edits.append(
+                        {
+                            "id": identifier,
+                            "before": {key: row[key] for key in after},
+                            "after": after,
+                        }
+                    )
+            if not edits:
+                return {"updated": 0, "undo_id": None}
+            encoded = json.dumps(edits)
+            if len(encoded.encode()) > 4 * 1024 * 1024:
+                raise ValueError("This edit exceeds the 4 MB undo limit. Select fewer games.")
+            for edit in edits:
+                after = edit["after"]
+                connection.execute(
+                    f"UPDATE game_details SET {','.join(f'{key}=?' for key in after)} "
+                    "WHERE game_id=?",
+                    [*after.values(), edit["id"]],
+                )
+            undo_id = uuid.uuid4().hex
+            label = f"{', '.join(changes).capitalize()} - {len(edits)} game(s)"
+            connection.execute(
+                "INSERT INTO library_undo VALUES(?,?,?,?)",
+                (undo_id, time.time(), label, encoded),
+            )
+            connection.execute("""DELETE FROM library_undo WHERE id NOT IN
+                (SELECT id FROM library_undo ORDER BY created_at DESC,rowid DESC LIMIT 10)""")
+        return {"updated": len(edits), "undo_id": undo_id}
+
+    def collections(self) -> dict[str, Any]:
+        with self.database._connect() as connection:
+            totals = dict(
+                connection.execute("""SELECT COUNT(*) AS games,
+                COALESCE(SUM(favorite=1),0) AS favorites,
+                COALESCE(SUM(folder=''),0) AS unfiled FROM game_details""").fetchone()
+            )
+            folders = [
+                dict(row)
+                for row in connection.execute("""
+                SELECT folder AS name,COUNT(*) AS games FROM game_details WHERE folder!=''
+                GROUP BY folder ORDER BY folder COLLATE NOCASE LIMIT 100""")
+            ]
+            tags = [
+                dict(row)
+                for row in connection.execute("""
+                SELECT j.value AS name,COUNT(DISTINCT d.game_id) AS games
+                FROM game_details d,json_each(d.tags) j GROUP BY j.value COLLATE NOCASE
+                ORDER BY games DESC,j.value COLLATE NOCASE LIMIT 100""")
+            ]
+            undo = [
+                dict(row)
+                for row in connection.execute("""
+                SELECT id,label,created_at FROM library_undo
+                ORDER BY created_at DESC,rowid DESC LIMIT 10""")
+            ]
+        return {**totals, "folders": folders, "tags": tags, "undo": undo}
+
+    def undo_organization(self, identifier: str) -> dict[str, Any]:
+        with self.database._connect() as connection:
+            row = connection.execute(
+                "SELECT length(CAST(edits AS BLOB)) FROM library_undo WHERE id=?", (identifier,)
+            ).fetchone()
+            if row is None:
+                raise ValueError("This undo record has expired or was already used.")
+            if row[0] > 4 * 1024 * 1024:
+                raise ValueError("Undo record exceeds the 4 MB limit.")
+            edits = json.loads(
+                connection.execute(
+                    "SELECT edits FROM library_undo WHERE id=?", (identifier,)
+                ).fetchone()[0]
+            )
+            if not isinstance(edits, list) or not 1 <= len(edits) <= 500:
+                raise ValueError("Invalid undo record.")
+            ids = []
+            for edit in edits:
+                if not isinstance(edit, dict) or type(edit.get("id")) is not int:
+                    raise ValueError("Invalid undo game.")
+                before, after = edit.get("before"), edit.get("after")
+                if (
+                    not isinstance(before, dict)
+                    or not isinstance(after, dict)
+                    or not before
+                    or set(before) != set(after)
+                    or set(before) - ORGANIZATION_FIELDS
+                ):
+                    raise ValueError("Invalid undo fields.")
+                for state in (before, after):
+                    for field, value in state.items():
+                        if field == "favorite":
+                            if value not in (0, 1):
+                                raise ValueError("Invalid undo favorite.")
+                        elif (
+                            not isinstance(value, str)
+                            or len(value) > {"folder": 80, "notes": 10000, "tags": 10000}[field]
+                        ):
+                            raise ValueError("Invalid undo value.")
+                        elif field == "tags":
+                            clean_tags(json.loads(value))
+                current = connection.execute(
+                    "SELECT * FROM game_details WHERE game_id=?", (edit["id"],)
+                ).fetchone()
+                if current is None or any(current[key] != value for key, value in after.items()):
+                    raise ValueError(
+                        "A game was changed again after this edit. "
+                        "Undo the newer edit first; nothing was changed."
+                    )
+                connection.execute(
+                    f"UPDATE game_details SET {','.join(f'{key}=?' for key in before)} "
+                    "WHERE game_id=?",
+                    [*before.values(), edit["id"]],
+                )
+                ids.append(edit["id"])
+            connection.execute("DELETE FROM library_undo WHERE id=?", (identifier,))
+        return {"restored": len(ids), "ids": ids}
 
     @staticmethod
     def _ids(value: Any) -> list[int]:
@@ -233,7 +380,7 @@ class LibraryWorkbench:
                 games.append(str(row[0]))
         return {"pgn": "\n\n".join(games) + "\n"}
 
-    def edit_headers(self, payload: dict[str, Any]) -> dict[str, bool]:
+    def edit_headers(self, payload: dict[str, Any]) -> dict[str, Any]:
         changes = payload.get("headers")
         if not isinstance(changes, dict) or set(changes) - HEADERS.keys():
             raise ValueError("Unsupported PGN header changes.")
@@ -252,6 +399,19 @@ class LibraryWorkbench:
             r"[0-9?]{4}\.[0-9?]{2}\.[0-9?]{2}", changes["Date"]
         ):
             raise ValueError("Use a PGN date such as 2026.09.02 or ????.??.??.")
+        if "Date" in changes:
+            year, month, day = changes["Date"].split(".")
+            if (month.isdigit() and not 1 <= int(month) <= 12) or (
+                day.isdigit() and not 1 <= int(day) <= 31
+            ):
+                raise ValueError("PGN date has an invalid month or day.")
+            if all(part.isdigit() for part in (year, month, day)):
+                try:
+                    date(int(year), int(month), int(day))
+                except ValueError as exc:
+                    raise ValueError("PGN date is not a real calendar date.") from exc
+        if changes.get("ECO") and not re.fullmatch(r"[A-E][0-9]{2}", changes["ECO"]):
+            raise ValueError("ECO headers must use a code from A00 through E99.")
         if "Result" in changes and changes["Result"] not in {"1-0", "0-1", "1/2-1/2", "*"}:
             raise ValueError("Invalid result.")
         with self.database._connect() as connection:
@@ -294,7 +454,13 @@ class LibraryWorkbench:
                 raise ValueError(
                     "These headers would duplicate an existing game. No changes were saved."
                 ) from exc
-        return {"saved": True}
+        return {
+            "saved": True,
+            "headers": dict(game.headers),
+            "pgn": str(game),
+            "revision": hashlib.sha256(str(game).encode()).hexdigest(),
+            "metadata": dict(zip(HEADERS.values(), values[: len(HEADERS)], strict=True)),
+        }
 
     def views(self, payload: dict[str, Any]) -> dict[str, Any]:
         action = payload.get("action", "list")

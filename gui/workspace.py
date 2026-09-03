@@ -231,7 +231,7 @@ def restore_bundle(token: str) -> dict[str, Any]:
                     ):
                         raise ValueError(f"Unsupported database schema in {name}.")
                     optional = (
-                        {"game_details", "library_views", "library_settings"}
+                        {"game_details", "library_views", "library_settings", "library_undo"}
                         if name == "library.sqlite3"
                         else set()
                     )

@@ -235,3 +235,63 @@ test('removing a plugin keeps an active personal trainer card aligned with its b
   const c=load(['removePluginContributions'],{trainerItems:[{key:'plugin:one:x',plugin_id:'one'},{key:'personal'}],trainerItemIndex:1,trainerMode:true,saveTrainerItems:()=>{},renderTrainerPanel:()=>{},exitTrainer:()=>{throw new Error('Personal card was removed')}});
   c.removePluginContributions('one');assert.equal(c.trainerItemIndex,0);assert.equal(c.trainerItems[0].key,'personal');
 });
+test('a notes save preserves text typed while the request is pending',async()=>{
+  const preview={game:{id:1,notes:'old',white:'A',black:'B'}},wb={preview,notesDirty:true};
+  const input={value:'submitted'};let resolve,request;
+  const c=loadWorkbench(['wbSaveNotes'],{wb,$:()=>input,wbRequirePreview:()=>wb.preview,wbLoadCollections:async()=>{},wbStatus:()=>{},wbApi:(_action,payload)=>{request=payload;return new Promise(r=>resolve=r);}});
+  const saving=c.wbSaveNotes();input.value='newer draft';resolve({});await saving;
+  assert.equal(request.expected_notes,'old');assert.equal(request.changes.notes,'submitted');
+  assert.equal(preview.game.notes,'submitted');assert.equal(input.value,'newer draft');assert.equal(wb.notesDirty,true);
+});
+test('a notes save cannot change another game opened during the request',async()=>{
+  const first={game:{id:1,notes:'old'}},second={game:{id:2,notes:'other'}};
+  const wb={preview:first,notesDirty:true},input={value:'submitted'};let resolve;
+  const c=loadWorkbench(['wbSaveNotes'],{wb,$:()=>input,wbRequirePreview:()=>wb.preview,wbLoadCollections:async()=>{},wbStatus:()=>{},wbApi:()=>new Promise(r=>resolve=r)});
+  const saving=c.wbSaveNotes();wb.preview=second;wb.notesDirty=false;input.value='other';resolve({});await saving;
+  assert.equal(first.game.notes,'submitted');assert.equal(second.game.notes,'other');assert.equal(wb.notesDirty,false);
+});
+function headerSaveContext() {
+  const preview={game:{id:1,pgn:'old'},headers:{White:'A',Event:'Old'},revision:'old'};
+  const wb={preview,headersDirty:true,notesDirty:true};
+  const fields={'wbHeader-White':{value:'Submitted'},'wbHeader-Event':{value:'Old'},wbNotes:{value:'unsaved notes'}};
+  const pending=[];
+  const c=loadWorkbench(['wbSaveHeaders'],{wb,$:id=>fields[id],WB_HEADERS:['White','Event'],wbRequirePreview:()=>wb.preview,wbPreviewHeading:()=>{},wbSearch:async()=>{},wbStatus:()=>{},wbApi:(action,payload)=>new Promise(resolve=>pending.push({action,payload,resolve}))});
+  const result={headers:{White:'Submitted',Event:'Old'},revision:'new',pgn:'new pgn',metadata:{white:'Submitted'}};
+  return {c,wb,fields,pending,preview,result};
+}
+test('header saves preserve newer header edits and unrelated unsaved notes',async()=>{
+  const {c,wb,fields,pending,preview,result}=headerSaveContext();
+  const saving=c.wbSaveHeaders();fields['wbHeader-White'].value='Newer draft';
+  assert.equal(JSON.stringify(pending[0].payload.headers),JSON.stringify({White:'Submitted'}));
+  pending[0].resolve(result);await saving;
+  assert.equal(wb.headersDirty,true);assert.equal(fields['wbHeader-White'].value,'Newer draft');
+  assert.equal(preview.headers.White,'Submitted');assert.equal(preview.revision,'new');
+  assert.equal(wb.notesDirty,true);assert.equal(fields.wbNotes.value,'unsaved notes');
+});
+test('header save completion cannot pull the user back to the previous game',async()=>{
+  const {c,wb,fields,pending,result}=headerSaveContext();
+  const saving=c.wbSaveHeaders();const second={game:{id:2},headers:{White:'Other'}};
+  wb.preview=second;wb.headersDirty=false;fields['wbHeader-White'].value='Other';
+  pending[0].resolve(result);await saving;
+  assert.equal(wb.preview,second);assert.equal(fields['wbHeader-White'].value,'Other');assert.equal(wb.headersDirty,false);
+});
+test('stale failed searches do not replace the latest successful status with an error',async()=>{
+  const pending=[],wb={sequence:0},statuses=[];
+  const c=loadWorkbench(['wbSearch'],{wb,wbFilters:()=>({}),wbStatus:s=>statuses.push(s),$:()=>({value:'25'}),wbApi:()=>new Promise((resolve,reject)=>pending.push({resolve,reject})),wbRenderRows:()=>{}});
+  const old=c.wbSearch(),fresh=c.wbSearch();
+  pending[1].resolve({games:['fresh'],total:1,offset:0,limit:25});await fresh;
+  pending[0].reject(new Error('Old request failed'));await old;
+  assert.equal(wb.games[0],'fresh');assert.ok(statuses.at(-1).includes('1 matching games'));
+});
+test('preview loading asks again before discarding edits typed during the request',async()=>{
+  const first={game:{id:1}},wb={preview:first,previewSequence:0};let edited=false,resolve,calls=0;
+  const c=loadWorkbench(['wbPreview'],{wb,wbDiscardEdits:async()=>++calls===1,wbStop:()=>{},wbEditorState:()=>edited?'new draft':'old',wbApi:()=>new Promise(r=>resolve=r),wbRenderPreview:()=>assert.fail('Should not render'),wbRenderRows:()=>{}});
+  const loading=c.wbPreview(2);await new Promise(setImmediate);edited=true;resolve({game:{id:2}});
+  assert.equal(await loading,false);assert.equal(wb.preview,first);assert.equal(calls,2);
+});
+test('closing a workspace invalidates a pending preview',async()=>{
+  const wb={preview:null,previewSequence:0};let resolve;
+  const c=loadWorkbench(['wbPreview','wbCloseWorkspace'],{wb,wbDiscardEdits:async()=>true,wbStop:()=>{},wbEditorState:()=>'',wbApi:()=>new Promise(r=>resolve=r),$:()=>({close:()=>{}})});
+  const loading=c.wbPreview(2);await new Promise(setImmediate);c.wbCloseWorkspace();resolve({game:{id:2}});
+  assert.equal(await loading,false);assert.equal(wb.preview,null);
+});

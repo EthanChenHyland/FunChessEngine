@@ -22,7 +22,7 @@ closing the browser leaves the live game paused until you resume it.
 | 11 | Named saved searches | Save search, then choose it from the list; up to 25 |
 | 12 | Favorites for reference games | Star column and Favorites filter |
 | 13 | Collection folders | Selected games → Move selected |
-| 14 | Custom game tags | Selected games → Replace selected tags; Tag filter |
+| 14 | Custom game tags | Selected games → Apply tags; add, remove, or replace; Tag filter |
 | 15 | Private notes attached to a reference game | Preview → Game notes |
 | 16 | Selection across pages | Checkboxes; up to 500 selected games |
 | 17 | Bulk favorite, folder, and tag changes | Selected games; updates are transactional |
@@ -51,13 +51,37 @@ closing the browser leaves the live game paused until you resume it.
 The existing **Open in Analysis** workflow is also available from a preview. It uses the normal
 confirmation flow before replacing a game. Creating a study preserves the current live game.
 
+## Collection navigation and undo
+
+Expand **Collections** to browse all games, favorites, unfiled games, individual folders, or tags
+with live game counts. Folder shortcuts match the exact folder; for example, `Models` does not
+include `Models/endgames`. Advanced filters can switch between exact-folder and substring search.
+The navigator shows up to 100 folders and the 100 most frequent tags.
+
+**Selected games → Apply tags** adds tags by default. Choose Remove tags or Replace all tags when
+needed. Adding tags preserves existing tags and ignores duplicate spellings regardless of case.
+Each game supports 20 tags of up to 40 characters. A batch that would exceed this limit changes
+nothing.
+
+**Undo organization edits** retains the last ten changes to favorites, folders, tags, and private
+notes, including across restarts and reference-data ZIP backups. An undo restores only fields
+changed by that edit, preserving independent edits to other fields. If those same fields changed
+again, undo the newer edit first. Edits must fit a 4 MB undo record; no-op updates do not consume
+history. Header changes are protected by revision checks but are not part of organization undo.
+
+**Games from here** searches the library for the position currently displayed in the preview,
+including transpositions, without changing the live board. Matching-position searches retain their
+chosen position until you reset or change the filter.
+
 ## Data behavior
 
 - Organization and saved searches live in `library.sqlite3`, alongside the reference games. Workspace
   ZIP backups include them when reference data is included. Old databases and old backups migrate
   automatically without changing the existing game/position tables.
 - Notes and headers have separate Save buttons. Switching previews or closing the browser warns about
-  unsaved edits. Saving headers preserves unsaved note text. Header editing preserves PGN comments,
+  unsaved edits. Saving headers preserves unsaved note text. Notes and header saves preserve text typed while a
+  request is pending and cannot overwrite a different preview. Notes reject stale stored values.
+  Header editing preserves PGN comments,
   NAGs, and variations; unsupported embedded quotes/backslashes and multiline fields are rejected.
 - Private notes, folders, and tags stay in the database. They are not injected into standard PGN exports.
 - Duplicate detection groups the same initial FEN and main-line moves. Two matches may have different
@@ -82,10 +106,11 @@ The release gate exercises Python correctness tests, strict mypy, Ruff, JavaScri
 the standalone engine package, and Electron workflows. Database tests cover legacy migration, SQL
 filtering, pagination, annotations and clocks, transactional edits, reports, exports, and ZIP restore.
 Electron exercises a 34-game collection, independent preview, header/notes preservation, organization,
-comparison, saved searches, player reports, and study creation. Optional screenshots inspect desktop
+comparison, saved searches, player reports, study creation, additive/removal tag operations,
+collection counts, position searches, and persistent undo. Optional screenshots inspect desktop
 and narrow-screen layouts. Engine search is unchanged.
 
-Local validation passed with **183 Python tests and 19 JavaScript tests**, plus the Electron
+Local validation passed with **190 Python tests and 26 JavaScript tests**, plus the Electron
 workflow and layout checks. A single synthetic 10,000-game benchmark (12 plies per game) imported
 130,000 positions in 12.13 seconds. Measured database calls took 3.44 ms for browser search,
 5.95 ms for duplicate search, and 5.98 ms for reports. These are local timings on repeated opening

@@ -40,7 +40,7 @@ async function openDatabaseWorkbench() {
   }
   if(!$('databaseWorkbench').open) $('databaseWorkbench').showModal();
   $('wbPlayer').focus();
-  await wbAction(async()=>{await wbLoadViews(); await wbSearch();});
+  await wbAction(async()=>{await wbLoadViews(); await wbLoadCollections(); await wbSearch();});
 }
 function wbFilters() {
   const filters={};
@@ -50,6 +50,8 @@ function wbFilters() {
   }
   if($('wbPlayer').value.trim()) filters.player=$('wbPlayer').value.trim();
   if($('wbResult').value) filters.result=$('wbResult').value;
+  if($('wbUnfiled').checked) filters.unfiled=true;
+  if($('wbExactFolder').checked) {filters.folder_exact=true;filters.folder=$('wbFilter-folder').value.trim();}
   if($('wbFavorites').checked) filters.favorite=true;
   if($('wbDuplicates').checked) filters.duplicates=true;
   if($('wbPositionFilter').checked) filters.fen=wb.filters.fen || currentBoardView()?.fen || STARTING_FEN;
@@ -60,6 +62,8 @@ function wbApplyFilters(filters) {
   $('wbPlayer').value=filters.player || '';
   $('wbResult').value=filters.result || '';
   $('wbFavorites').checked=Boolean(filters.favorite);
+  $('wbUnfiled').checked=Boolean(filters.unfiled);
+  $('wbExactFolder').checked=Boolean(filters.folder_exact);
   $('wbDuplicates').checked=Boolean(filters.duplicates);
   $('wbPositionFilter').checked=Boolean(filters.fen);
   wb.filters={...filters};
@@ -70,7 +74,9 @@ async function wbSearch(reset=true) {
   wb.filters=wbFilters();
   if(reset) wb.offset=0;
   wbStatus('Searching reference games…');
-  const result=await wbApi('search',{filters:wb.filters,sort:wb.sort,direction:wb.direction,limit:Number($('wbPageSize').value),offset:wb.offset});
+  let result;
+  try {result=await wbApi('search',{filters:wb.filters,sort:wb.sort,direction:wb.direction,limit:Number($('wbPageSize').value),offset:wb.offset});}
+  catch(error) {if(sequence===wb.sequence)throw error;return;}
   if(sequence!==wb.sequence) return;
   Object.assign(wb,{games:result.games,total:result.total,offset:result.offset,limit:result.limit});
   wbRenderRows();
@@ -90,7 +96,7 @@ function wbRenderRows() {
     select.addEventListener('change',()=>{try{wbSetSelection(game.id,select.checked);}catch(error){select.checked=false;wbStatus(error.message,true);}wbSelectionStatus();});
     const cell=wbElement('td');cell.append(select);row.append(cell);
     const favorite=wbElement('td');
-    favorite.append(wbButton(game.favorite?'★':'☆',async()=>{await wbApi('organize',{ids:[game.id],changes:{favorite:!game.favorite}});await wbSearch(false);},'wb-star'));
+    favorite.append(wbButton(game.favorite?'★':'☆',async()=>{await wbApi('organize',{ids:[game.id],changes:{favorite:!game.favorite}});await wbLoadCollections();await wbSearch(false);},'wb-star'));
     favorite.firstChild.setAttribute('aria-label',game.favorite?'Remove favorite':'Favorite game');row.append(favorite);
     for(const key of ['white','black','result','rating','game_date','eco','event','plies','folder']) {
       const td=wbElement('td');
@@ -120,9 +126,11 @@ function wbSelectionStatus() {
 }
 async function wbDiscardEdits() {
   if(!wb.notesDirty && !wb.headersDirty) return true;
-  return confirmAction('Discard unsaved edits?','There are unsaved game notes or header edits in this preview.','Discard edits',true);
+  if(!wb.discardPending)wb.discardPending=confirmAction('Discard unsaved edits?','There are unsaved game notes or header edits in this preview.','Discard edits',true);
+  try {return await wb.discardPending;} finally {wb.discardPending=null;}
 }
 function wbCloseWorkspace() {
+  ++wb.previewSequence;
   if(wb.preview) {
     $('wbNotes').value=wb.preview.game.notes || '';
     for(const header of WB_HEADERS) $(`wbHeader-${header}`).value=wb.preview.headers[header] || '';
@@ -148,19 +156,59 @@ async function wbStudyPosition() {
   setStatus('Created a study from the preview position.','success');
 }
 function wbStop() {clearInterval(wb.timer);wb.timer=null;$('wbAutoplay').textContent='Play';}
-async function wbPreview(id,keepPly=false) {
-  if(!keepPly && !await wbDiscardEdits()) return;
-  wbStop(); const sequence=++wb.previewSequence;
-  const result=await wbApi('preview',{id});
-  if(sequence!==wb.previewSequence) return;
-  wb.preview=result;wb.ply=keepPly?Math.min(wb.ply,result.positions.length-1):0;
+function wbEditorState() {
+  return JSON.stringify([wb.preview?.game.id,$('wbNotes').value,...WB_HEADERS.map(header=>$(`wbHeader-${header}`).value)]);
+}
+function wbPreviewHeading() {
+  const game=wb.preview.game;
+  $('wbGameTitle').textContent=`${game.white || 'White'} — ${game.black || 'Black'}`;
+  $('wbGameMeta').textContent=[game.event,game.game_date,game.result,game.opening].filter(Boolean).join(' · ');
+}
+async function wbPreview(id) {
+  const sequence=++wb.previewSequence;
+  if(!await wbDiscardEdits() || sequence!==wb.previewSequence) return false;
+  wbStop();const editorState=wbEditorState();
+  let result;
+  try {result=await wbApi('preview',{id});}
+  catch(error) {if(sequence===wb.previewSequence)throw error;return false;}
+  if(sequence!==wb.previewSequence) return false;
+  if(editorState!==wbEditorState() && !await wbDiscardEdits()) return false;
+  if(sequence!==wb.previewSequence) return false;
+  wb.preview=result;wb.ply=0;
   wb.notesDirty=false;wb.headersDirty=false;
-  $('wbGameTitle').textContent=`${result.game.white || 'White'} — ${result.game.black || 'Black'}`;
-  $('wbGameMeta').textContent=[result.game.event,result.game.game_date,result.game.result,result.game.opening].filter(Boolean).join(' · ');
+  wbPreviewHeading();
   $('wbNotes').value=result.game.notes || '';
   for(const header of WB_HEADERS) $(`wbHeader-${header}`).value=result.headers[header] || '';
   $('wbDossierPlayer').value=result.game.white || '';
   wbRenderPreview();wbRenderRows();
+  return true;
+}
+async function wbSaveNotes() {
+  const preview=wbRequirePreview(),notes=$('wbNotes').value;
+  await wbApi('organize',{ids:[preview.game.id],changes:{notes},expected_notes:preview.game.notes || ''});
+  preview.game.notes=notes;
+  if(wb.preview===preview) wb.notesDirty=$('wbNotes').value!==notes;
+  await wbLoadCollections();
+  wbStatus(`Notes saved for ${preview.game.white || 'White'} — ${preview.game.black || 'Black'}.`);
+}
+async function wbSaveHeaders() {
+  const preview=wbRequirePreview();
+  const submitted=Object.fromEntries(WB_HEADERS.map(header=>[header,$(`wbHeader-${header}`).value]));
+  const headers=Object.fromEntries(Object.entries(submitted).filter(([key,value])=>value!==(preview.headers[key] || '')));
+  if(!Object.keys(headers).length){wb.headersDirty=false;wbStatus('Headers are already saved.');return;}
+  const result=await wbApi('headers',{id:preview.game.id,revision:preview.revision,headers});
+  preview.headers=result.headers;preview.revision=result.revision;
+  Object.assign(preview.game,result.metadata,{pgn:result.pgn});
+  if(wb.preview===preview) {
+    for(const header of WB_HEADERS) {
+      const input=$(`wbHeader-${header}`);
+      if(input.value===submitted[header])input.value=result.headers[header] || '';
+    }
+    wb.headersDirty=WB_HEADERS.some(header=>$(`wbHeader-${header}`).value!==(result.headers[header] || ''));
+    wbPreviewHeading();
+  }
+  await wbSearch(false);
+  wbStatus('Headers saved; PGN comments and variations retained.');
 }
 function wbBoardSquares(fen,flipped=false) {
   const map={};
@@ -209,9 +257,47 @@ function wbPlay() {
   wb.timer=setInterval(()=>{wbStep(1);if(wb.ply===wb.preview.positions.length-1)wbStop();},Number($('wbSpeed').value));
 }
 function wbRequirePreview() {if(!wb.preview) throw new Error('Select a game to preview first.');return wb.preview;}
-async function wbOrganize(changes) {
-  await wbApi('organize',{ids:[...wb.selected],changes});
-  await wbSearch(false);wbStatus(`Updated ${wb.selected.size} selected games.`);
+async function wbOrganize(changes,options={}) {
+  const result=await wbApi('organize',{ids:[...wb.selected],changes,...options});
+  await wbLoadCollections();await wbSearch(false);wbStatus(`Updated ${result.updated} selected games.`);
+}
+async function wbChooseCollection(filters) {
+  wbApplyFilters(filters);$('wbViews').value='';await wbSearch();
+}
+async function wbLoadCollections() {
+  const sequence=wb.collectionsSequence=(wb.collectionsSequence || 0)+1;
+  const result=await wbApi('collections');
+  if(sequence!==wb.collectionsSequence)return;
+  const target=$('wbCollections');target.replaceChildren();
+  for(const [label,count,filters] of [['All games',result.games,{}],['Favorites',result.favorites,{favorite:true}],['Unfiled',result.unfiled,{unfiled:true}]]) {
+    target.append(wbButton(`${label} · ${count}`,()=>wbChooseCollection(filters)));
+  }
+  for(const [label,rows,key] of [['Folders',result.folders,'folder'],['Tags',result.tags,'tag']]) {
+    const group=wbElement('div',undefined,'wb-collection-group');group.append(wbElement('strong',label));
+    for(const row of rows)group.append(wbButton(`${row.name} · ${row.games}`,()=>wbChooseCollection({[key]:row.name,...(key==='folder'?{folder_exact:true}:{})})));
+    if(!rows.length)group.append(wbElement('span',`No ${label.toLowerCase()} yet. Use Selected games to organize your library.`,'hint'));
+    target.append(group);
+  }
+  const history=$('wbUndoHistory');history.replaceChildren();
+  for(const edit of result.undo) {
+    const row=wbElement('div',undefined,'wb-undo-row');
+    row.append(wbElement('span',edit.label),wbButton('Undo',()=>wbUndo(edit.id)));
+    row.title=new Date(edit.created_at*1000).toLocaleString();history.append(row);
+  }
+  if(!result.undo.length)history.append(wbElement('p','No recent organization edits.','hint'));
+}
+async function wbUndo(id) {
+  const result=await wbApi('undo',{id});
+  const preview=wb.preview;
+  if(preview && result.ids.includes(preview.game.id)) {
+    const fresh=await wbApi('preview',{id:preview.game.id});
+    if(wb.preview===preview) {
+      for(const key of ['favorite','folder','tags','notes'])preview.game[key]=fresh.game[key];
+      if(!wb.notesDirty)$('wbNotes').value=preview.game.notes || '';
+      wb.notesDirty=$('wbNotes').value!==(preview.game.notes || '');
+    }
+  }
+  await wbLoadCollections();await wbSearch(false);wbStatus(`Undid organization changes for ${result.restored} game(s).`);
 }
 async function wbLoadViews() {
   const result=await wbApi('views');wb.views=result.views;
@@ -277,7 +363,7 @@ async function wbCompareSelected() {
   target.append(wbElement('p',comparison.sameStart?`${comparison.common} shared opening plies. ${comparison.common===a.positions.length-1 && comparison.common===b.positions.length-1?'Identical main lines.':'First divergence follows the shared moves.'}`:'These games start from different positions.'));
   for(const game of [a,b]) {
     const row=reportRow(`${game.game.white} — ${game.game.black}`,game.positions.slice(Math.max(1,comparison.common-2),comparison.common+9).map(p=>p.label).join(' '));
-    row.append(wbButton('Preview divergence',async()=>{await wbPreview(game.game.id);wb.ply=Math.min(comparison.common+1,wb.preview.positions.length-1);wbRenderPreview();}));target.append(row);
+    row.append(wbButton('Preview divergence',async()=>{if(!await wbPreview(game.game.id))return;wb.ply=Math.min(comparison.common+1,wb.preview.positions.length-1);wbRenderPreview();}));target.append(row);
   }
 }
 function bindDatabaseWorkbench() {
@@ -311,7 +397,7 @@ function bindDatabaseWorkbench() {
   on('wbClearSelection',()=>{wb.selected.clear();wbRenderRows();});
   on('wbFavoriteBatch',()=>wbOrganize({favorite:true}));on('wbUnfavoriteBatch',()=>wbOrganize({favorite:false}));
   on('wbMoveFolder',()=>wbOrganize({folder:$('wbFolder').value.trim()}));
-  on('wbSetTags',()=>wbOrganize({tags:$('wbTags').value.split(',').map(s=>s.trim()).filter(Boolean)}));
+  on('wbSetTags',()=>wbOrganize({tags:$('wbTags').value.split(',').map(s=>s.trim()).filter(Boolean)},{tag_mode:$('wbTagMode').value}));
   on('wbExport',async()=>{const result=await wbApi('export',{ids:[...wb.selected]});await downloadBlob(new Blob([result.pgn],{type:'application/x-chess-pgn'}),'FunChessEngine-selected-games.pgn');});
   on('wbCsv',wbExportCsv);on('wbCompare',wbCompareSelected);
   on('wbSaveView',async()=>{await wbApi('views',{view:{action:'save',name:$('wbViewName').value,filters:wbFilters()}});await wbLoadViews();wbStatus('Saved search stored with your reference database.');});
@@ -327,8 +413,8 @@ function bindDatabaseWorkbench() {
   on('wbOpenAnalysis',async()=>{const preview=wbRequirePreview();if(!await wbDiscardEdits())return;wbCloseWorkspace();await loadPgnText(preview.game.pgn);});
   on('wbStudy',wbStudyPosition);
   $('wbNotes').addEventListener('input',()=>wb.notesDirty=true);
-  on('wbSaveNotes',async()=>{await wbApi('organize',{ids:[wbRequirePreview().game.id],changes:{notes:$('wbNotes').value}});wb.notesDirty=false;wb.preview.game.notes=$('wbNotes').value;wbStatus('Game notes saved.');});
-  on('wbSaveHeaders',async()=>{const preview=wbRequirePreview();await wbApi('headers',{id:preview.game.id,revision:preview.revision,headers:Object.fromEntries(WB_HEADERS.map(header=>[header,$(`wbHeader-${header}`).value]))});wb.headersDirty=false;const notes=$('wbNotes').value,notesDirty=wb.notesDirty;await wbPreview(preview.game.id,true);if(notesDirty){$('wbNotes').value=notes;wb.notesDirty=true;}await wbSearch(false);wbStatus('Headers updated; PGN comments and variations retained.');});
+  on('wbSaveNotes',wbSaveNotes);on('wbSaveHeaders',wbSaveHeaders);
+  on('wbGamesFromHere',()=>wbChooseCollection({fen:wbRequirePreview().positions[wb.ply].fen}));
   on('wbReport',wbBuildReport);on('wbExportReport',()=>exportJson(wb.report,'FunChessEngine-database-report.json'));
   $('databaseWorkbench').addEventListener('keydown',event=>{
     if(['INPUT','SELECT','TEXTAREA'].includes(event.target.tagName))return;

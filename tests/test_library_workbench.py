@@ -236,5 +236,112 @@ class LibraryWorkbenchTests(unittest.TestCase):
                 self.assertEqual(restored.search({"filters": {"favorite": True}})["total"], 1)
                 self.assertEqual(restored.preview(identifier)["game"]["notes"], "Keep me")
                 self.assertEqual(restored.views({})["views"][0]["name"], "Models")
+                restored.undo_organization(restored.collections()["undo"][0]["id"])
+                self.assertEqual(restored.preview(identifier)["game"]["notes"], "")
         finally:
             workspace.upload({"action": "cancel", "token": bundle["token"]})
+
+    def test_tag_merge_remove_and_limit_rollback(self) -> None:
+        ids = [row["id"] for row in self.search()["games"]]
+        self.workbench.organize({"ids": ids, "changes": {"tags": ["Model", "IQP"]}})
+        self.workbench.organize(
+            {"ids": ids, "changes": {"tags": ["model", "Endgame"]}, "tag_mode": "add"}
+        )
+        self.assertEqual(
+            self.workbench.preview(ids[0])["game"]["tags"], ["Model", "IQP", "Endgame"]
+        )
+        self.workbench.organize({"ids": ids, "changes": {"tags": ["iqp"]}, "tag_mode": "remove"})
+        self.assertEqual(self.workbench.preview(ids[0])["game"]["tags"], ["Model", "Endgame"])
+        self.workbench.organize({"ids": [ids[1]], "changes": {"tags": [str(n) for n in range(20)]}})
+        with self.assertRaisesRegex(ValueError, "20 tags"):
+            self.workbench.organize({"ids": ids, "changes": {"tags": ["New"]}, "tag_mode": "add"})
+        self.assertEqual(self.search(tag="New")["total"], 0)
+
+    def test_undo_is_atomic_and_preserves_independent_changes(self) -> None:
+        ids = [row["id"] for row in self.search()["games"]]
+        older = self.workbench.organize({"ids": ids, "changes": {"folder": "Models"}})
+        newer = self.workbench.organize({"ids": [ids[1]], "changes": {"folder": "Later"}})
+        self.workbench.organize({"ids": ids, "changes": {"notes": "Independent"}})
+        with self.assertRaisesRegex(ValueError, "nothing was changed"):
+            self.workbench.undo_organization(older["undo_id"])
+        self.assertEqual(self.workbench.preview(ids[0])["game"]["folder"], "Models")
+        self.workbench.undo_organization(newer["undo_id"])
+        fresh_instance = LibraryWorkbench(LibraryDatabase(self.database.path))
+        self.assertEqual(fresh_instance.undo_organization(older["undo_id"])["restored"], 2)
+        self.assertEqual(self.search(unfiled=True, notes="Independent")["total"], 2)
+        with self.assertRaisesRegex(ValueError, "expired"):
+            self.workbench.undo_organization(older["undo_id"])
+
+    def test_undo_retention_and_noop(self) -> None:
+        identifier = self.search()["games"][0]["id"]
+        self.assertIsNone(
+            self.workbench.organize({"ids": [identifier], "changes": {"favorite": False}})[
+                "undo_id"
+            ]
+        )
+        for n in range(12):
+            self.workbench.organize({"ids": [identifier], "changes": {"notes": str(n)}})
+        self.assertEqual(len(self.workbench.collections()["undo"]), 10)
+        for _ in range(10):
+            self.workbench.undo_organization(self.workbench.collections()["undo"][0]["id"])
+        self.assertEqual(self.workbench.preview(identifier)["game"]["notes"], "1")
+
+    def test_note_save_rejects_stale_baseline(self) -> None:
+        identifier = self.search()["games"][0]["id"]
+        first = self.workbench.organize(
+            {"ids": [identifier], "changes": {"notes": "First"}, "expected_notes": ""}
+        )
+        with self.assertRaisesRegex(ValueError, "notes changed"):
+            self.workbench.organize(
+                {"ids": [identifier], "changes": {"notes": "Stale"}, "expected_notes": ""}
+            )
+        self.assertEqual(self.workbench.preview(identifier)["game"]["notes"], "First")
+        self.workbench.undo_organization(first["undo_id"])
+        self.assertEqual(self.workbench.preview(identifier)["game"]["notes"], "")
+
+    def test_collection_counts_and_exact_folder_searches(self) -> None:
+        ids = [row["id"] for row in self.search()["games"]]
+        self.workbench.organize(
+            {"ids": [ids[0]], "changes": {"folder": "Models", "favorite": True, "tags": ["IQP"]}}
+        )
+        totals = self.workbench.collections()
+        self.assertEqual((totals["games"], totals["favorites"], totals["unfiled"]), (2, 1, 1))
+        self.workbench.organize(
+            {"ids": [ids[1]], "changes": {"folder": "Models/endgames", "tags": ["iqp"]}}
+        )
+        self.assertEqual(self.search(folder="Models")["total"], 2)
+        self.assertEqual(self.search(folder="Models", folder_exact=True)["total"], 1)
+        self.assertEqual(self.search(unfiled=True)["total"], 0)
+        self.assertEqual(self.workbench.collections()["tags"][0]["games"], 2)
+
+    def test_header_calendar_validation_and_saved_snapshot(self) -> None:
+        preview = self.workbench.preview(self.search()["games"][0]["id"])
+        for changes in ({"Date": "2025.02.29"}, {"Date": "2026.13.01"}, {"ECO": "Z42"}):
+            with self.assertRaises(ValueError):
+                self.workbench.edit_headers(
+                    {
+                        "id": preview["game"]["id"],
+                        "revision": preview["revision"],
+                        "headers": changes,
+                    }
+                )
+        result = self.workbench.edit_headers(
+            {
+                "id": preview["game"]["id"],
+                "revision": preview["revision"],
+                "headers": {"White": "Edited", "Date": "2024.02.29"},
+            }
+        )
+        fresh = self.workbench.preview(preview["game"]["id"])
+        self.assertEqual(result["revision"], fresh["revision"])
+        self.assertEqual(result["pgn"], fresh["game"]["pgn"])
+        self.assertEqual(result["metadata"]["white"], "Edited")
+        self.assertEqual(result["headers"]["Date"], "2024.02.29")
+
+    def test_undo_accepts_full_length_unicode_tags(self) -> None:
+        identifier = self.search()["games"][0]["id"]
+        tags = [chr(0x1F600 + n) * 40 for n in range(20)]
+        self.workbench.organize({"ids": [identifier], "changes": {"tags": tags}})
+        removal = self.workbench.organize({"ids": [identifier], "changes": {"tags": []}})
+        self.workbench.undo_organization(removal["undo_id"])
+        self.assertEqual(self.workbench.preview(identifier)["game"]["tags"], tags)

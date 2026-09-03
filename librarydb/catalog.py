@@ -20,6 +20,9 @@ def ensure_catalog(connection: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_details_line ON game_details(line_key);
         CREATE INDEX IF NOT EXISTS idx_details_folder ON game_details(folder);
+        CREATE TABLE IF NOT EXISTS library_undo (
+            id TEXT PRIMARY KEY, created_at REAL NOT NULL, label TEXT NOT NULL, edits TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS library_views (name TEXT PRIMARY KEY, filters TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS library_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     """)
