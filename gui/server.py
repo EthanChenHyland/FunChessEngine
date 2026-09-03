@@ -3368,6 +3368,8 @@ class Handler(SimpleHTTPRequestHandler):
                     self._json(workbench.views(payload.get("view", {})))
                 elif action == "report":
                     self._json(workbench.report(payload))
+                elif action == "explorer":
+                    self._json(workbench.explorer(payload))
                 else:
                     raise ValueError("Unknown database workspace action.")
                 return

@@ -6,7 +6,7 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:">
   <title>FunChessEngine · Default Lab</title>
   <link rel="icon" href="/app-mark.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/style.css?v=15">
+  <link rel="stylesheet" href="/style.css?v=16">
 </head>
 <body>
   <a class="skip-link" href="#board" hidden>Skip to chessboard</a>
@@ -905,9 +905,18 @@
         <details class="wb-collections"><summary>Collections</summary><div id="wbCollections" class="wb-actions"></div></details>
         <form id="wbSearchForm" class="wb-search-form">
           <div class="wb-search-line"><label>Player<input id="wbPlayer" name="player" type="search" placeholder="Either color…"></label><label>Saved searches<select id="wbViews"><option value="">Choose a saved search…</option></select></label><button class="primary" type="submit">Search</button><button id="wbReset" class="secondary" type="button">Reset</button></div>
-          <details class="wb-filters"><summary>Advanced filters<span id="wbActiveFilters"></span></summary><div id="wbFilterFields" class="wb-filter-grid"></div><div class="wb-actions"><label><input id="wbUnfiled" type="checkbox"> Unfiled</label><label><input id="wbExactFolder" type="checkbox"> Exact folder</label><label><input id="wbFavorites" type="checkbox"> Favorites</label><label><input id="wbDuplicates" type="checkbox"> Same main line</label><label><input id="wbPositionFilter" type="checkbox"> Matching position</label></div><p class="hint">Rating bounds apply to both players; unknown ratings are excluded. Move limits count half-moves (plies). Text searches are literal.</p></details>
+          <details class="wb-filters"><summary>Advanced filters<span id="wbActiveFilters"></span></summary><div id="wbFilterFields" class="wb-filter-grid"><label>Variant<select id="wbVariant"><option value="">All variants</option><option value="standard">Standard</option><option value="chess960">Chess960</option></select></label></div><div class="wb-actions"><label><input id="wbUnfiled" type="checkbox"> Unfiled</label><label><input id="wbExactFolder" type="checkbox"> Exact folder</label><label><input id="wbFavorites" type="checkbox"> Favorites</label><label><input id="wbDuplicates" type="checkbox"> Same main line</label><label><input id="wbPositionFilter" type="checkbox"> Matching position</label></div><p class="hint">Rating bounds apply to both players; unknown ratings are excluded. Move limits count half-moves (plies). Text searches are literal.</p></details>
           <div class="wb-actions"><input id="wbViewName" type="text" maxlength="60" placeholder="Name this search" aria-label="Saved search name"><button id="wbSaveView" type="button" class="secondary compact">Save search</button><button id="wbDeleteView" type="button" class="text-button">Remove saved search</button></div>
         </form>
+        <details id="wbOpeningTree" class="wb-opening-tree">
+          <summary>Opening tree</summary>
+          <div class="wb-actions"><button id="wbTreeStart" class="secondary compact">Standard start</button><button id="wbTreePreview" class="secondary compact">From preview</button><button id="wbTreeBack" class="secondary compact" disabled>Back</button><button id="wbTreeRefresh" class="secondary compact">Refresh with filters</button></div>
+          <p id="wbTreePath" class="hint">Explore continuations within the current search filters.</p>
+          <div class="wb-tree-content"><div class="wb-tree-position"><div id="wbTreeBoard" class="wb-board wb-tree-board" role="img" aria-label="Opening tree position"></div>
+          <div class="wb-actions"><button id="wbTreeGames" class="secondary compact" disabled>Show matching games</button><button id="wbTreeCopy" class="secondary compact" disabled>Copy tree FEN</button></div>
+          </div><div class="wb-tree-results"><p id="wbTreeStatus" role="status" class="hint"></p><div id="wbTreeMoves" class="wb-tree-moves"></div></div></div>
+          <p class="hint">Each game contributes its first occurrence of this position. The tree supplies its own position and variant; other search filters apply. White score excludes unfinished games; average Elo requires both ratings. Refresh after changing filters.</p>
+        </details>
         <div class="wb-table-tools"><span id="wbCount">0 games</span><div class="wb-actions"><label>Rows<select id="wbPageSize"><option>25</option><option>50</option><option>100</option></select></label><label>Density<select id="wbDensity"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label></div></div>
         <div class="wb-table-scroll" tabindex="0" aria-label="Scrollable game table"><table id="wbTable"><thead><tr><th><input id="wbSelectPage" type="checkbox" aria-label="Select this page"></th><th>★</th><th><button data-wb-sort="white">White</button></th><th><button data-wb-sort="black">Black</button></th><th><button data-wb-sort="result">Result</button></th><th><button data-wb-sort="rating">Elo</button></th><th><button data-wb-sort="date">Date</button></th><th><button data-wb-sort="eco">ECO</button></th><th><button data-wb-sort="event">Event</button></th><th><button data-wb-sort="moves">Plies</button></th><th>Folder / tags</th></tr></thead><tbody id="wbRows"></tbody></table></div>
         <div class="wb-pagination"><button id="wbPrevious" class="secondary compact">Previous</button><span id="wbPageLabel">Page 1</span><button id="wbNext" class="secondary compact">Next</button></div>
@@ -934,6 +943,7 @@
   <section class="background-jobs" aria-label="Background work"><div id="backgroundJobs" aria-live="polite"></div></section>
   <script src="/workflows.js?v=2"></script>
   <script src="/app.js?v=15"></script>
-  <script src="/workbench.js?v=2"></script>
+  <script src="/workbench.js?v=3"></script>
+  <script src="/database-explorer.js?v=1"></script>
 </body>
 </html>

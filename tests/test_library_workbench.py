@@ -345,3 +345,56 @@ class LibraryWorkbenchTests(unittest.TestCase):
         removal = self.workbench.organize({"ids": [identifier], "changes": {"tags": []}})
         self.workbench.undo_organization(removal["undo_id"])
         self.assertEqual(self.workbench.preview(identifier)["game"]["tags"], tags)
+
+    def test_explorer_partitions_repeated_positions_and_terminal_games(self) -> None:
+        self.database.import_pgn_text(
+            '[Event "Loop"]\n[Result "*"]\n\n1. Nf3 Nf6 2. Ng1 Ng8 3. e4 *\n\n'
+            '[Event "Empty"]\n[Result "*"]\n\n*'
+        )
+        result = self.workbench.explorer({"fen": chess.STARTING_FEN})
+        self.assertEqual((result["games"], result["ended"]), (4, 1))
+        self.assertEqual(sum(row["games"] for row in result["moves"]), 3)
+        moves = {row["move_uci"]: row for row in result["moves"]}
+        self.assertEqual(moves["e2e4"]["games"], 1)
+        self.assertEqual(moves["g1f3"]["unfinished"], 1)
+        self.assertIsNone(moves["g1f3"]["white_score"])
+        self.assertEqual(moves["e2e4"]["white_score"], 1)
+        self.assertEqual(moves["d2d4"]["white_score"], 0.5)
+        self.assertEqual(moves["e2e4"]["average_elo"], 2375)
+
+    def test_explorer_uses_filters_and_returns_legal_child_positions(self) -> None:
+        identifier = self.search(white="Alpha")["games"][0]["id"]
+        self.workbench.organize({"ids": [identifier], "changes": {"tags": ["Model"]}})
+        result = self.workbench.explorer({"filters": {"tag": "Model"}})
+        self.assertEqual(result["games"], 1)
+        row = result["moves"][0]
+        board = chess.Board()
+        board.push_uci(row["move_uci"])
+        self.assertEqual(row["fen"], board.fen())
+        self.assertEqual(row["san"], "e4")
+        reply = self.workbench.explorer({"fen": row["fen"], "filters": {"tag": "Model"}})
+        self.assertEqual(reply["moves"][0]["san"], "c5")
+        # A raw FEN can include an uncapturable en-passant target.
+        self.assertEqual(self.workbench.explorer({"fen": board.fen(en_passant="fen")})["games"], 1)
+        self.assertEqual(self.workbench.explorer({"filters": {"tag": "absent"}})["moves"], [])
+
+    def test_variant_search_and_explorer_keep_chess960_separate(self) -> None:
+        fen = "4k3/8/8/8/8/8/8/R3K2R w KQ - 0 1"
+        for variant, event in (("Standard", "Standard castle"), ("Chess960", "960 castle")):
+            self.database.import_pgn_text(
+                f'[Event "{event}"]\n[Variant "{variant}"]\n[SetUp "1"]\n'
+                f'[FEN "{fen}"]\n[Result "*"]\n\n1. O-O *'
+            )
+        for variant, uci in (("standard", "e1g1"), ("chess960", "e1h1")):
+            self.assertEqual(self.search(fen=fen, variant=variant)["total"], 1)
+            result = self.workbench.explorer({"fen": fen, "variant": variant})
+            self.assertEqual(result["games"], 1)
+            self.assertEqual(result["moves"][0]["move_uci"], uci)
+            self.assertEqual(result["moves"][0]["san"], "O-O")
+            self.assertEqual(chess.Board(result["moves"][0]["fen"]).king(chess.WHITE), chess.G1)
+        with self.assertRaises(ValueError):
+            self.search(variant="atomic")
+        with self.assertRaises(ValueError):
+            self.workbench.explorer({"variant": "atomic"})
+        with self.assertRaises(ValueError):
+            self.workbench.explorer({"fen": "8/8/8/8/8/8/8/8 w - - 0 1"})

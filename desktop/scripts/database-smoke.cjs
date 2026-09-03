@@ -55,8 +55,24 @@ module.exports=async function databaseSmoke(window,waitFor) {
     document.getElementById('wbSaveView').click();
   })()`,true);
   await waitFor(window,`wb.views.some(view=>view.name==='Smoke models')`);
+  await window.webContents.executeJavaScript(String.raw`(async()=>{
+    const liveBefore=JSON.stringify([state.fen,state.moves_uci]);
+    const previewBefore=wb.preview.positions[wb.ply].fen;
+    await wbTreeStart();document.getElementById('wbOpeningTree').open=true;
+    if(wbTree.result.games!==2 || wbTree.result.moves[0].san!=='e4')throw new Error('Filtered opening tree failed');
+    if(document.querySelectorAll('#wbTreeBoard .wb-square').length!==64)throw new Error('Opening tree board missing');
+    if(JSON.stringify([state.fen,state.moves_uci])!==liveBefore || wb.preview.positions[wb.ply].fen!==previewBefore)throw new Error('Opening tree altered another board');
+    document.querySelector('#wbTreeMoves button').click();
+  })()`,true);
+  await waitFor(window,`wbTree.path.length===2 && wbTree.result.moves[0]?.san==='e5'`);
+  await window.webContents.executeJavaScript(String.raw`(async()=>{
+    await wbChooseCollection({...wbTree.filters,fen:wbTree.result.fen,variant:wbTree.result.variant});
+    if(wb.total!==2 || document.getElementById('wbVariant').value!=='standard')throw new Error('Opening tree game search failed');
+    document.getElementById('wbTreeBack').click();
+  })()`,true);
+  await waitFor(window,`wbTree.path.length===1 && document.getElementById('wbTreeBack').disabled`);
   if(process.env.FUNCHESS_SMOKE_SCREENSHOT) {
-    await window.webContents.executeJavaScript(`document.querySelector('.wb-collections').open=true;document.getElementById('wbReports').open=false;document.getElementById('wbComparison').hidden=true;document.querySelector('.wb-browser').scrollTop=0;document.querySelector('.wb-preview').scrollTop=0;`,true);
+    await window.webContents.executeJavaScript(`document.querySelector('.wb-collections').open=false;document.querySelector('.wb-filters').open=false;document.getElementById('wbReports').open=false;document.getElementById('wbComparison').hidden=true;document.querySelector('.wb-browser').scrollTop=0;document.querySelector('.wb-preview').scrollTop=0;`,true);
     window.setSize(1400,950);
     await new Promise(resolve=>setTimeout(resolve,150));
     fs.writeFileSync(process.env.FUNCHESS_SMOKE_SCREENSHOT.replace(/\.png$/,'-database.png'),(await window.webContents.capturePage()).toPNG());

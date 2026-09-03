@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added a filtered reference opening tree with position navigation, result bars, move frequencies, ratings, matching-game searches, and Standard/Chess960 support.
+- Added explicit variant filtering; position shortcuts retain chess rules, comparisons ignore move counters, and older report responses cannot overwrite newer dossiers.
+
 - Added collection navigation with counts, exact-folder/unfiled filters, additive/removal tag editing, preview-position searches, and persistent undo for the last ten organization edits.
 - Fixed in-flight note/header saves overwriting newer edits or the newly selected game; reject stale notes, ignore obsolete request errors, and protect edits made during preview loading.
 - Validate real calendar dates and ECO codes in header changes; submit only changed headers.

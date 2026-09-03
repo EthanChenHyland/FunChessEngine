@@ -73,6 +73,28 @@ history. Header changes are protected by revision checks but are not part of org
 including transpositions, without changing the live board. Matching-position searches retain their
 chosen position until you reset or change the filter.
 
+## Opening tree
+
+Expand **Opening tree** to explore moves in the filtered collection. Start from the normal initial
+position or choose **From preview**, which retains that game's Standard/Chess960 rules. The tree
+has its own small board and never moves the preview or live board.
+
+- Click a move to explore its continuations; **Back** returns to the previous position.
+- Each row shows game count, frequency, White score, a White/draw/Black/unfinished result bar,
+  average Elo, and the most recent recorded year.
+- **Show matching games** searches the current tree position with the same collection filters.
+  **Copy tree FEN** copies that position.
+- The tree supplies its own position and variant, while player, folder, tag, rating, and other
+  search filters apply. **Refresh with filters** captures changes to those filters.
+- Counts use each game's first occurrence of the position. Branch counts plus games ending at
+  the position sum to the total. White score excludes unfinished games; average Elo excludes
+  games missing either rating. Transpositions are included, so counts describe positions rather
+  than only games following the exact path you clicked. Navigation retains up to 256 positions.
+
+Advanced search now includes a **Variant** selector. Position searches created from the preview
+or opening tree retain that variant. Comparison also distinguishes Standard and Chess960 while
+ignoring half-move/full-move counters when determining whether starting positions match.
+
 ## Data behavior
 
 - Organization and saved searches live in `library.sqlite3`, alongside the reference games. Workspace
@@ -107,11 +129,14 @@ the standalone engine package, and Electron workflows. Database tests cover lega
 filtering, pagination, annotations and clocks, transactional edits, reports, exports, and ZIP restore.
 Electron exercises a 34-game collection, independent preview, header/notes preservation, organization,
 comparison, saved searches, player reports, study creation, additive/removal tag operations,
-collection counts, position searches, and persistent undo. Optional screenshots inspect desktop
+collection counts, position searches, persistent undo, and opening-tree navigation. Optional screenshots inspect desktop
 and narrow-screen layouts. Engine search is unchanged.
 
-Local validation passed with **190 Python tests and 26 JavaScript tests**, plus the Electron
+Local validation passed with **193 Python tests and 30 JavaScript tests**, plus the Electron
 workflow and layout checks. A single synthetic 10,000-game benchmark (12 plies per game) imported
 130,000 positions in 12.13 seconds. Measured database calls took 3.44 ms for browser search,
 5.95 ms for duplicate search, and 5.98 ms for reports. These are local timings on repeated opening
 lines with distinct headers, not guarantees for a large, varied corpus.
+
+The opening-tree follow-up measured 33.7 ms for the initial-position query on a synthetic
+10,000-game / 130,000-position library. This is one local measurement on repeated openings.

@@ -60,6 +60,7 @@ release-gate: gate verify-zip
 	node --check gui/static/app.js
 	node --check gui/static/workflows.js
 	node --check gui/static/workbench.js
+	node --check gui/static/database-explorer.js
 	cd desktop && npm run check
 	cd desktop && npm audit
 	cd desktop && npm run smoke:ui

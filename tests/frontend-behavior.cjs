@@ -295,3 +295,44 @@ test('closing a workspace invalidates a pending preview',async()=>{
   const loading=c.wbPreview(2);await new Promise(setImmediate);c.wbCloseWorkspace();resolve({game:{id:2}});
   assert.equal(await loading,false);assert.equal(wb.preview,null);
 });
+test('older reports cannot overwrite the newest dossier or export',async()=>{
+  const wb={},pending=[],rendered=[];
+  const c=loadWorkbench(['wbBuildReport'],{wb,wbFilters:()=>({}),$:()=>({value:'A'}),wbApi:()=>new Promise((resolve,reject)=>pending.push({resolve,reject})),wbRenderReport:result=>rendered.push(result)});
+  const old=c.wbBuildReport(),fresh=c.wbBuildReport();
+  pending[1].resolve({player:'Fresh'});await fresh;
+  pending[0].resolve({player:'Old'});await old;
+  assert.equal(wb.report.player,'Fresh');assert.equal(rendered.length,1);
+  const stale=c.wbBuildReport();wb.reportSequence++;pending[2].reject(new Error('Obsolete failure'));await stale;
+  assert.equal(wb.report.player,'Fresh');
+});
+test('game comparison ignores move counters but distinguishes chess variants',()=>{
+  const c=loadWorkbench(['wbCompareLines']);
+  const game=(counter,variant)=>({game:{variant},positions:[{fen:`8/8/8/8/8/8/8/8 w - - ${counter}`} ]});
+  assert.equal(c.wbCompareLines(game('0 1','standard'),game('40 25','standard')).sameStart,true);
+  assert.equal(c.wbCompareLines(game('0 1','standard'),game('0 1','chess960')).sameStart,false);
+});
+const explorerSource=fs.readFileSync(require('node:path').join(__dirname,'../gui/static/database-explorer.js'),'utf8');
+function loadExplorer(names,globals={}) {
+  const ctx=vm.createContext({...globals});
+  for(const name of names) {
+    const start=explorerSource.search(new RegExp(`(?:async )?function ${name}\\(`));
+    assert.ok(start>=0,name);vm.runInContext(explorerSource.slice(start,explorerSource.indexOf('\n}',start)+2),ctx);
+  }
+  return ctx;
+}
+test('rapid opening-tree navigation retains only the latest path and ignores obsolete errors',async()=>{
+  const wbTree={sequence:0},pending=[],rendered=[];
+  const c=loadExplorer(['wbTreeLoad'],{wbTree,wbTreeFilters:()=>({tag:'model'}),$:()=>({}),wbApi:()=>new Promise((resolve,reject)=>pending.push({resolve,reject})),wbTreeRender:()=>rendered.push(wbTree.result)});
+  const first=c.wbTreeLoad([{fen:'first'}]),second=c.wbTreeLoad([{fen:'second'}]);
+  pending[1].resolve({fen:'second'});await second;pending[0].resolve({fen:'first'});await first;
+  assert.equal(wbTree.path[0].fen,'second');assert.equal(rendered.length,1);
+  const stale=c.wbTreeLoad([{fen:'stale'}]),newest=c.wbTreeLoad([{fen:'newest'}]);
+  pending[3].resolve({fen:'newest'});await newest;pending[2].reject(new Error('Stale'));await stale;
+  assert.equal(wbTree.result.fen,'newest');
+});
+test('opening tree uses its own position and variant without altering search filters',()=>{
+  const filters={fen:'search position',variant:'chess960',tag:'model',favorite:true};
+  const c=loadExplorer(['wbTreeFilters'],{wbFilters:()=>({...filters})});
+  assert.equal(JSON.stringify(c.wbTreeFilters()),JSON.stringify({tag:'model',favorite:true}));
+  assert.equal(filters.fen,'search position');
+});

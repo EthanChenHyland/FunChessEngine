@@ -50,6 +50,7 @@ function wbFilters() {
   }
   if($('wbPlayer').value.trim()) filters.player=$('wbPlayer').value.trim();
   if($('wbResult').value) filters.result=$('wbResult').value;
+  if($('wbVariant').value) filters.variant=$('wbVariant').value;
   if($('wbUnfiled').checked) filters.unfiled=true;
   if($('wbExactFolder').checked) {filters.folder_exact=true;filters.folder=$('wbFilter-folder').value.trim();}
   if($('wbFavorites').checked) filters.favorite=true;
@@ -61,6 +62,7 @@ function wbApplyFilters(filters) {
   for(const [key] of WB_FILTERS) $(`wbFilter-${key}`).value=filters[key] ?? '';
   $('wbPlayer').value=filters.player || '';
   $('wbResult').value=filters.result || '';
+  $('wbVariant').value=filters.variant || '';
   $('wbFavorites').checked=Boolean(filters.favorite);
   $('wbUnfiled').checked=Boolean(filters.unfiled);
   $('wbExactFolder').checked=Boolean(filters.folder_exact);
@@ -320,8 +322,15 @@ function wbScoresheetHtml(preview) {
   return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Game scoresheet</title><style>body{font:16px Georgia,serif;max-width:850px;margin:40px auto;padding:20px;color:#111}dl{display:grid;grid-template-columns:100px 1fr;gap:5px}dd{margin:0}article{line-height:2}article span{display:inline-block;margin-right:8px}footer{margin-top:30px}@media print{body{margin:0}}</style><h1>${escapeHtml(preview.game.white)} — ${escapeHtml(preview.game.black)}</h1><dl>${header}</dl><article>${moves}</article><footer>${escapeHtml(preview.game.result)} · Exported from FunChessEngine</footer></html>`;
 }
 async function wbBuildReport() {
-  const result=await wbApi('report',{filters:wbFilters(),player:$('wbDossierPlayer').value,opponent:$('wbOpponent').value});
-  wb.report=result;$('wbExportReport').disabled=false;
+  const sequence=wb.reportSequence=(wb.reportSequence || 0)+1;
+  let result;
+  try {result=await wbApi('report',{filters:wbFilters(),player:$('wbDossierPlayer').value,opponent:$('wbOpponent').value});}
+  catch(error) {if(sequence===wb.reportSequence)throw error;return;}
+  if(sequence!==wb.reportSequence)return;
+  wb.report=result;wbRenderReport(result);
+}
+function wbRenderReport(result) {
+  $('wbExportReport').disabled=false;
   const target=$('wbReportResults');target.replaceChildren();
   const total=result.overall;
   target.append(reportRow('Filtered database',`${total.games} games · White wins ${total.white_wins || 0} · Draws ${total.draws || 0} · Black wins ${total.black_wins || 0} · Unfinished ${total.unfinished || 0}`));
@@ -347,7 +356,8 @@ async function wbBuildReport() {
   target.append(years);wbStatus('Report uses the current filters. Scores exclude unfinished games; player names are exact matches.');
 }
 function wbCompareLines(a,b) {
-  if(a.positions[0].fen!==b.positions[0].fen) return {common:0,sameStart:false};
+  const key=game=>game.positions[0].fen.split(' ').slice(0,4).join(' ');
+  if(key(a)!==key(b) || (a.game?.variant || 'standard')!==(b.game?.variant || 'standard')) return {common:0,sameStart:false};
   let common=0;
   for(let ply=1;ply<Math.min(a.positions.length,b.positions.length);ply++) {
     if(a.positions[ply].uci!==b.positions[ply].uci)break;
@@ -387,7 +397,10 @@ function bindDatabaseWorkbench() {
   on('wbImport',async()=>{if(!await wbDiscardEdits())return;wbCloseWorkspace();$('openingDatabaseInput').click();});
   $('wbSearchForm').addEventListener('submit',event=>{event.preventDefault();wbAction(()=>wbSearch());});
   on('wbReset',async()=>{wbApplyFilters({});$('wbViews').value='';await wbSearch();});
-  $('wbPositionFilter').addEventListener('change',()=>{delete wb.filters.fen;});
+  $('wbPositionFilter').addEventListener('change',()=>{
+    delete wb.filters.fen;
+    if($('wbPositionFilter').checked)$('wbVariant').value=currentBoardView()?.variant || state?.variant || 'standard';
+  });
   for(const button of document.querySelectorAll('[data-wb-sort]'))button.addEventListener('click',()=>wbAction(async()=>{wb.direction=wb.sort===button.dataset.wbSort && wb.direction==='asc'?'desc':'asc';wb.sort=button.dataset.wbSort;await wbSearch();}));
   on('wbPrevious',async()=>{wb.offset=Math.max(0,wb.offset-wb.limit);await wbSearch(false);});
   on('wbNext',async()=>{wb.offset+=wb.limit;await wbSearch(false);});
@@ -414,7 +427,7 @@ function bindDatabaseWorkbench() {
   on('wbStudy',wbStudyPosition);
   $('wbNotes').addEventListener('input',()=>wb.notesDirty=true);
   on('wbSaveNotes',wbSaveNotes);on('wbSaveHeaders',wbSaveHeaders);
-  on('wbGamesFromHere',()=>wbChooseCollection({fen:wbRequirePreview().positions[wb.ply].fen}));
+  on('wbGamesFromHere',()=>wbChooseCollection({fen:wbRequirePreview().positions[wb.ply].fen,variant:wb.preview.game.variant}));
   on('wbReport',wbBuildReport);on('wbExportReport',()=>exportJson(wb.report,'FunChessEngine-database-report.json'));
   $('databaseWorkbench').addEventListener('keydown',event=>{
     if(['INPUT','SELECT','TEXTAREA'].includes(event.target.tagName))return;

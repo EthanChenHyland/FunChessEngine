@@ -112,8 +112,13 @@ def where_clause(filters: dict[str, Any]) -> tuple[str, list[Any]]:
         clauses.append(
             "d.line_key IN (SELECT line_key FROM game_details GROUP BY line_key HAVING COUNT(*)>1)"
         )
+    if filters.get("variant"):
+        if filters["variant"] not in {"standard", "chess960"}:
+            raise ValueError("Variant must be Standard or Chess960.")
+        clauses.append("g.variant=?")
+        values.append(filters["variant"])
     if filters.get("fen"):
-        board = chess.Board(str(filters["fen"]))
+        board = chess.Board(str(filters["fen"]), chess960=filters.get("variant") == "chess960")
         clauses.append("EXISTS (SELECT 1 FROM positions p WHERE p.game_id=g.id AND p.fen_key=?)")
         values.append(" ".join(board.fen(en_passant="legal").split()[:4]))
     return " AND ".join(clauses) or "1", values
@@ -498,6 +503,66 @@ class LibraryWorkbench:
         return {
             "views": [{"name": row["name"], "filters": json.loads(row["filters"])} for row in rows]
         }
+
+    def explorer(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Use the first occurrence per game so branch counts form a partition."""
+        filters = payload.get("filters", {})
+        if not isinstance(filters, dict):
+            raise ValueError("Explorer filters must be an object.")
+        variant = payload.get("variant", "standard")
+        if variant not in {"standard", "chess960"}:
+            raise ValueError("Choose Standard or Chess960 for the opening tree.")
+        board = chess.Board(
+            str(payload.get("fen", chess.STARTING_FEN)), chess960=variant == "chess960"
+        )
+        if not board.is_valid():
+            raise ValueError("Opening tree requires a valid chess position.")
+        where, values = where_clause(filters)
+        key = " ".join(board.fen(en_passant="legal").split()[:4])
+        cte = f"""WITH matched AS (
+            SELECT g.id,MIN(p.ply) AS ply FROM positions p
+            JOIN games g ON g.id=p.game_id JOIN game_details d ON d.game_id=g.id
+            WHERE p.fen_key=? AND g.variant=? AND {where} GROUP BY g.id
+        ), chosen AS (
+            SELECT g.*,p.move_uci FROM matched m JOIN games g ON g.id=m.id
+            JOIN positions p ON p.game_id=m.id AND p.ply=m.ply
+        ) """
+        arguments = [key, variant, *values]
+        with self.database._connect() as connection:
+            totals = dict(
+                connection.execute(
+                    cte
+                    + "SELECT COUNT(*) AS games,COALESCE(SUM(move_uci IS NULL),0) AS ended "
+                    "FROM chosen",
+                    arguments,
+                ).fetchone()
+            )
+            rows = [
+                dict(row)
+                for row in connection.execute(
+                    cte
+                    + """
+                SELECT move_uci,COUNT(*) AS games,SUM(result='1-0') AS white_wins,
+                    SUM(result='1/2-1/2') AS draws,SUM(result='0-1') AS black_wins,
+                    SUM(result='*') AS unfinished,AVG((white_elo+black_elo)/2.0) AS average_elo,
+                    MAX(year) AS latest_year,MIN(id) AS example_id
+                FROM chosen WHERE move_uci IS NOT NULL GROUP BY move_uci
+                ORDER BY games DESC,move_uci
+            """,
+                    arguments,
+                )
+            ]
+        for row in rows:
+            move = board.parse_uci(row["move_uci"])
+            row["san"] = board.san(move)
+            child = board.copy(stack=False)
+            child.push(move)
+            row["fen"] = child.fen()
+            finished = row["white_wins"] + row["draws"] + row["black_wins"]
+            row["white_score"] = (
+                (row["white_wins"] + row["draws"] / 2) / finished if finished else None
+            )
+        return {"fen": board.fen(), "variant": variant, **totals, "moves": rows}
 
     def report(self, payload: dict[str, Any]) -> dict[str, Any]:
         filters = payload.get("filters", {})

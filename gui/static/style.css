@@ -1390,3 +1390,17 @@ html[data-desktop="true"] .board-stage {
 .wb-collection-group strong {min-width:60px;}
 .wb-collection-group button {max-width:100%;overflow-wrap:anywhere;white-space:normal;}
 .wb-undo-row {display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:6px;}
+.wb-opening-tree {border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:12px;}
+.wb-opening-tree summary {cursor:pointer;font-weight:600;}
+.wb-opening-tree>.wb-actions {margin-top:10px;}
+.wb-tree-board {width:220px;max-width:100%;margin:10px 0;container-type:inline-size;}
+.wb-tree-row {display:grid;grid-template-columns:70px 1fr;gap:6px 10px;padding:10px 0;border-bottom:1px solid var(--line);}
+.wb-tree-row button {grid-row:span 3;align-self:start;}
+.wb-result-bar {display:flex;height:10px;border:1px solid var(--line-strong);border-radius:4px;overflow:hidden;}
+.wb-result-white {background:#eee;}.wb-result-draw {background:#8b948b;}.wb-result-black {background:#171b18;}.wb-result-unfinished {background:var(--accent);}
+#wbTreePath {overflow-wrap:anywhere;}
+.wb-tree-board .wb-piece {font-size:11cqw;}
+
+.wb-tree-content {display:grid;grid-template-columns:220px minmax(0,1fr);gap:18px;align-items:start;}
+.wb-tree-position,.wb-tree-results {min-width:0;}
+@media(max-width:1100px) {.wb-tree-content {grid-template-columns:minmax(0,1fr);}}

@@ -47,6 +47,7 @@ def benchmark(games: int) -> dict[str, Any]:
                 lambda: LibraryWorkbench(database).search({"filters": {"duplicates": True}}),
             ),
             ("reports", lambda: LibraryWorkbench(database).report({"player": "Player 42"})),
+            ("opening_tree", lambda: LibraryWorkbench(database).explorer({})),
         )
         for label, query in query_cases:
             query_started = time.perf_counter()
