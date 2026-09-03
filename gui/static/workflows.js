@@ -58,13 +58,23 @@ function attachWorkstationJobId(result, jobId) {
   return result;
 }
 
+async function revealWorkflow(id, tab) {
+  if (launcherVisible()) await enterWorkbench(tab, false);
+  else await activateTab(document.querySelector(`[data-tab="${tab}"]`));
+  const target = $(id);
+  for (let parent=target?.parentElement; parent; parent=parent.parentElement) {
+    if (parent.tagName === 'DETAILS') parent.open = true;
+  }
+  target?.scrollIntoView({block:'nearest'});
+}
+
 async function showRecoveredJob(current) {
   const result = attachWorkstationJobId(current.result, current.id);
   if (!result) return;
   if (current.kind === 'tournament') {
     showTournamentResult(result);
     saveWorkstationResult('tournament', result);
-    await activateTab(document.querySelector('[data-tab="engine"]'));
+    await revealWorkflow("advancedTournamentStandings", "game");
     return;
   }
   if (current.kind === 'calibration') {
@@ -75,7 +85,7 @@ async function showRecoveredJob(current) {
       saveCalibrationHistory();
     }
     renderCalibrationEngines();
-    await activateTab(document.querySelector('[data-tab="engine"]'));
+    await revealWorkflow("calibrationResult", "train");
     return;
   }
   if (current.kind === 'reference-import') {
@@ -85,7 +95,7 @@ async function showRecoveredJob(current) {
   }
   showDeveloperResult(result);
   saveWorkstationResult(current.kind,result);
-  await activateTab(document.querySelector('[data-tab="engine"]'));
+  await revealWorkflow("developerResults", "engine");
 }
 
 async function recoverWorkstationJobs() {
@@ -201,7 +211,15 @@ function renderWorkstationHistory() {
   for (const record of regressionHistory.slice(0, 20)) {
     const row = reportRow(record.kind || 'regression', record.created_at || 'Saved experiment');
     const view = document.createElement('button'); view.className='secondary compact'; view.textContent='View';
-    view.addEventListener('click', async () => { showDeveloperResult(record.result); await activateTab(document.querySelector('[data-tab="engine"]')); });
+    view.addEventListener('click', async () => {
+      if (record.kind === 'tournament') {
+        showTournamentResult(record.result);
+        await revealWorkflow('advancedTournamentStandings','game');
+      } else {
+        showDeveloperResult(record.result);
+        await revealWorkflow('developerResults','engine');
+      }
+    });
     const download = document.createElement('button'); download.className='text-button'; download.textContent='Export';
     download.addEventListener('click', () => exportJson(record, `FunChessEngine-${record.kind || 'experiment'}.json`));
     row.append(view, download); target.append(row);

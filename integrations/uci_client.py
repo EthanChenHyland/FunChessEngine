@@ -125,8 +125,10 @@ class ExternalUCIEngine:
         # Terminate the process tree while the engine is still the parent of
         # any helpers it spawned. Waiting for a graceful `quit` first can let
         # the engine exit and re-parent those helpers before we discover them.
-        unregister_process(process)
         terminate_tree(process)
+        unregister_process(process)
+        if self.reader is not None:
+            self.reader.thread.join(timeout=1)
         if process.stdin is not None:
             process.stdin.close()
         if process.stdout is not None:

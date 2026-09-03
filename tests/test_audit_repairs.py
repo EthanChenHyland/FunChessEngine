@@ -201,9 +201,7 @@ class AuditRepairsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "does not reach"):
             _validate_workspace_metadata(metadata)
         metadata["studies"]["one"]["edges"]["r>c"]["move_uci"] = "e2e3"
-        metadata["studies"]["one"]["nodes"]["c"]["snapshot"]["fen"] = (
-            "8/8/8/8/8/8/8/8 b - - 0 1"
-        )
+        metadata["studies"]["one"]["nodes"]["c"]["snapshot"]["fen"] = "8/8/8/8/8/8/8/8 b - - 0 1"
         with self.assertRaisesRegex(ValueError, "invalid chess position"):
             _validate_workspace_metadata(metadata)
 
@@ -248,6 +246,94 @@ class AuditRepairsTests(unittest.TestCase):
             }
         }
         self.assertEqual(_validate_workspace_metadata(metadata), {"valid": True})
+
+    def test_workspace_accepts_legal_en_passant_normalization_and_recovers_legacy_edges(
+        self,
+    ) -> None:
+        board = chess.Board()
+        nodes = {"r": {"id": "r", "children": ["c"], "snapshot": {"fen": board.fen()}}}
+        board.push_uci("e2e4")
+        nodes["c"] = {"id": "c", "children": [], "snapshot": {"fen": board.fen()}}
+        study = {"root": "r", "nodes": nodes, "edges": {"r>c": {"move_uci": "e2e4"}}}
+        metadata = {"studies": {"one": study}}
+        self.assertEqual(_validate_workspace_metadata(metadata), {"valid": True})
+        study["edges"] = {}
+        _validate_workspace_metadata(metadata)
+        self.assertEqual(study["edges"]["r>c"]["move_uci"], "e2e4")
+        nodes["c"]["snapshot"]["fen"] = chess.STARTING_FEN
+        study["edges"] = {}
+        with self.assertRaisesRegex(ValueError, "Cannot recover"):
+            _validate_workspace_metadata(metadata)
+
+    def test_legacy_transposition_edges_recover_both_move_orders(self) -> None:
+        nodes = {}
+        for prefix, moves in [("a", ["g1f3", "g8f6", "b1c3"]), ("b", ["b1c3", "g8f6", "g1f3"])]:
+            board = chess.Board()
+            parent = "r"
+            nodes.setdefault("r", {"id": "r", "children": [], "snapshot": {"fen": board.fen()}})
+            for index, move in enumerate(moves):
+                board.push_uci(move)
+                child = "shared" if index == 2 else f"{prefix}{index}"
+                nodes[parent]["children"].append(child)
+                nodes.setdefault(
+                    child, {"id": child, "children": [], "snapshot": {"fen": board.fen()}}
+                )
+                parent = child
+        study = {"root": "r", "nodes": nodes, "edges": {}}
+        _validate_workspace_metadata({"studies": {"test": study}})
+        self.assertEqual(study["edges"]["a1>shared"]["move_uci"], "b1c3")
+        self.assertEqual(study["edges"]["b1>shared"]["move_uci"], "g1f3")
+
+    def test_restored_plugins_require_legal_training_and_opening_moves(self) -> None:
+        plugin = {
+            "id": "test",
+            "name": "Test",
+            "version": "1",
+            "kind": "training",
+            "items": [{"fen": chess.STARTING_FEN, "best_uci": "e2e5"}],
+        }
+        with self.assertRaisesRegex(ValueError, "illegal"):
+            _validate_workspace_metadata({"plugins": [plugin]})
+        plugin["items"][0]["best_uci"] = "0000"
+        with self.assertRaisesRegex(ValueError, "illegal"):
+            _validate_workspace_metadata({"plugins": [plugin]})
+        plugin["items"][0]["best_uci"] = "e2e4"
+        self.assertEqual(_validate_workspace_metadata({"plugins": [plugin]}), {"valid": True})
+        plugin.update(kind="openings", items=[{"name": "Bad", "moves": ["e2e5"]}])
+        with self.assertRaisesRegex(ValueError, "illegal"):
+            _validate_workspace_metadata({"plugins": [plugin]})
+
+    def test_worker_deadline_covers_a_child_that_never_reads_input(self) -> None:
+        started = time.monotonic()
+        with self.assertRaisesRegex(RuntimeError, "timed out"):
+            run_process(
+                [sys.executable, "-c", "import time; time.sleep(4)"],
+                {"data": "x" * (1024 * 1024)},
+                0.15,
+                os.getcwd(),
+            )
+        self.assertLess(time.monotonic() - started, 2)
+
+    def test_comparison_uses_the_same_supported_budget_on_both_sides(self) -> None:
+        from unittest.mock import MagicMock
+
+        session = GameSession()
+        fake = MagicMock()
+        fake.__enter__.return_value = fake
+        fake.analyze.return_value.move = "e2e4"
+        fake.analyze.return_value.engine_name = "Fake"
+        fake.analyze.return_value.lines = ()
+        fake.analyze.return_value.info = ()
+        fake.options = {}
+        with (
+            patch.object(session, "multipv_fen", return_value={"lines": []}) as ours,
+            patch("gui.server.ExternalUCIEngine", return_value=fake),
+        ):
+            for requested, expected in [(50, 100), (5000, 2000)]:
+                result = session.compare_external_uci("fake", chess.STARTING_FEN, requested)
+                self.assertEqual(result["budget_ms"], expected)
+                self.assertEqual(ours.call_args.args[2], expected)
+                self.assertEqual(fake.analyze.call_args.args[1], expected)
 
 
 class WorkspaceRepairTests(unittest.TestCase):

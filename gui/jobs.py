@@ -9,7 +9,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from typing import Any
 
 from harness.process_io import (
@@ -82,14 +82,29 @@ def run_process(
             process.stdout, line_limit=32 * 1024 * 1024, total_limit=64 * 1024 * 1024
         )
         errors = TailReader(process.stderr)
-        process.stdin.write(json.dumps(payload).encode())
-        process.stdin.close()
+        encoded = json.dumps(payload).encode()
+        if len(encoded) > 20 * 1024 * 1024:
+            raise ValueError("Worker input exceeds 20 MB.")
         deadline = time.monotonic() + timeout
+        input_stream = process.stdin
+        write_errors: list[Exception] = []
+
+        def send_input() -> None:
+            try:
+                input_stream.write(encoded)
+                input_stream.close()
+            except (OSError, ValueError) as exc:
+                write_errors.append(exc)
+
+        writer = threading.Thread(target=send_input, daemon=True)
+        writer.start()
         result: dict[str, Any] | None = None
         while True:
             check_cancelled()
             if cancel is not None and cancel.is_set():
                 raise JobCancelled("Analysis cancelled.")
+            if write_errors:
+                raise RuntimeError("Worker stopped accepting input.") from write_errors[0]
             if time.monotonic() >= deadline:
                 raise RuntimeError(f"Worker timed out after {timeout:g} seconds.")
             try:
@@ -117,18 +132,23 @@ def run_process(
             raise RuntimeError(str(detail or "Worker failed without a result."))
         return result
     finally:
-        if process is not None:
-            unregister_process(process)
-            # Also remove descendants left behind by a failed or completed worker.
-            terminate_tree(process, group=os.name != "nt")
-            if "reader" in locals():
-                reader.thread.join(timeout=1)
-            if "errors" in locals():
-                errors.thread.join(timeout=1)
-            for stream in (process.stdin, process.stdout, process.stderr):
-                if stream and not stream.closed:
-                    stream.close()
-        _PROCESS_SLOTS.release()
+        try:
+            if process is not None:
+                # Termination unblocks a writer even when the child never reads stdin.
+                terminate_tree(process, group=os.name != "nt")
+                unregister_process(process)
+                if "writer" in locals():
+                    writer.join(timeout=1)
+                if "reader" in locals():
+                    reader.thread.join(timeout=1)
+                if "errors" in locals():
+                    errors.thread.join(timeout=1)
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    if stream and not stream.closed:
+                        with suppress(OSError, ValueError):
+                            stream.close()
+        finally:
+            _PROCESS_SLOTS.release()
 
 
 class JobRegistry:

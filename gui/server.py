@@ -56,6 +56,7 @@ from integrations.tournament import calibrate_against_uci, run_tournament
 from integrations.uci_client import ExternalUCIEngine
 from librarydb import LibraryDatabase, parse_library_query
 from openingbook import OpeningBook
+from plugins.manifest import validate_manifest
 from reporting.generator import annotated_pgn, html_report
 
 if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
@@ -1599,7 +1600,7 @@ class GameSession:
     ) -> dict[str, Any]:
         """Compare FunChessEngine with a user-selected local UCI executable."""
 
-        budget = max(50, min(5_000, int(budget_ms)))
+        budget = max(100, min(2_000, int(budget_ms)))
         line_count = max(1, min(5, int(lines)))
         board = _board_from_fen(fen, chess960=self.chess960)
         if not board.is_valid() or board.is_game_over(claim_draw=True):
@@ -1627,6 +1628,7 @@ class GameSession:
                 "score": our_line.get("score"),
                 "depth": ours.get("depth"),
                 "nodes": ours.get("nodes"),
+                "elapsed_ms": ours.get("elapsed_ms"),
                 "lines": list(ours.get("lines", [])),
             },
             "external": {
@@ -2904,6 +2906,7 @@ def _validate_workspace_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
                     default_chess960=default_chess960,
                 )
             expected_edges: set[str] = set()
+            missing_edges: list[tuple[str, str]] = []
             graph: dict[str, list[str]] = {}
             for parent_id, node in nodes.items():
                 children = node.get("children", [])
@@ -2918,8 +2921,7 @@ def _validate_workspace_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
                     expected_edges.add(edge_key)
                     edge = edges.get(edge_key)
                     if edge is None:
-                        # Legacy tree saves are normalized by the renderer. A
-                        # missing transposition edge is never invented there.
+                        missing_edges.append((parent_id, child_id))
                         continue
                     if not isinstance(edge, dict) or not isinstance(edge.get("move_uci"), str):
                         raise ValueError("Workspace study edge is invalid.")
@@ -2936,13 +2938,32 @@ def _validate_workspace_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
                         parent.board_fen() != child.board_fen()
                         or parent.turn != child.turn
                         or parent.castling_rights != child.castling_rights
-                        or parent.ep_square != child.ep_square
+                        or (parent.ep_square if parent.has_legal_en_passant() else None)
+                        != (child.ep_square if child.has_legal_en_passant() else None)
                     ):
                         raise ValueError("Workspace study edge does not reach its child position.")
             if any(not isinstance(key, str) or key not in expected_edges for key in edges):
                 raise ValueError("Workspace study contains an orphan edge.")
 
             validate_acyclic(graph)
+            for parent_id, child_id in missing_edges:
+                parent = boards[parent_id].copy(stack=False)
+                target = boards[child_id].fen().split()[:4]
+                matching = []
+                for move in list(parent.legal_moves):
+                    parent.push(move)
+                    if parent.fen().split()[:4] == target:
+                        matching.append(move)
+                    parent.pop()
+                if len(matching) != 1:
+                    raise ValueError("Cannot recover the move for a legacy study edge.")
+                move = matching[0]
+                edges[f"{parent_id}>{child_id}"] = {
+                    "move_uci": parent.uci(move),
+                    "move_san": parent.san(move),
+                }
+            workspace["edges"] = edges
+            workspace.pop("needs_edge_migration", None)
 
     def validate_positions(key: str, limit: int, *, cards: bool = False) -> None:
         rows = metadata.get(key, [])
@@ -2974,6 +2995,32 @@ def _validate_workspace_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     validate_positions("bookmarks", 100)
     validate_positions("trainer", 250)
     validate_positions("lessons", 100, cards=True)
+    plugins = metadata.get("plugins", [])
+    if not isinstance(plugins, list) or len(plugins) > 50:
+        raise ValueError("Workspace plugins are invalid or exceed the local limit.")
+    for raw_plugin in plugins:
+        plugin = validate_manifest(raw_plugin)
+        if plugin.kind == "training":
+            for item in plugin.items:
+                board = board_from_record(item, "Plugin training item")
+                if not item.get("best_uci"):
+                    raise ValueError("Plugin training item needs a legal best move.")
+                try:
+                    solution = board.parse_uci(str(item["best_uci"]))
+                    if solution not in board.legal_moves:
+                        raise ValueError("A null move is not a training solution.")
+                except ValueError as exc:
+                    raise ValueError("Plugin training best move is illegal.") from exc
+        elif plugin.kind == "commands":
+            allowed = {
+                "open-analysis",
+                "open-training",
+                "start-engine",
+                "start-repertoire-training",
+                "export-report",
+            }
+            if any(item["action"] not in allowed for item in plugin.items):
+                raise ValueError("Plugin command is unsupported.")
     current = metadata.get("current_game")
     if current is not None:
         if not isinstance(current, dict):
@@ -3179,7 +3226,8 @@ class Handler(SimpleHTTPRequestHandler):
                     metadata = payload.get("metadata")
                     if not isinstance(metadata, dict):
                         raise ValueError("Backup metadata must be an object.")
-                    self._json(_validate_workspace_metadata(metadata))
+                    validated = _validate_workspace_metadata(metadata)
+                    self._json({**validated, "studies": metadata.get("studies", {})})
                 elif action == "restore":
                     if any(row["status"] == "running" for row in JOBS.list()):
                         raise ValueError(

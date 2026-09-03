@@ -214,6 +214,12 @@ async function run() {
   await waitFor(window, `durableMetadataHydrated && state && calibrationHistory.length===1`);
   await window.webContents.executeJavaScript(`(async()=>{
     if(calibrationHistory[0].estimated_elo!==1600 || !regressionHistory.length) throw new Error('Lost desktop data on port change');
+    const rootSnapshot=await api('/api/state');
+    const childSnapshot=await api('/api/variation-move',{fen:rootSnapshot.fen,move:'e2e4'});
+    savedVariationWorkspaces={audit:{root:'r',nodes:{
+      r:{id:'r',children:['c'],snapshot:rootSnapshot},
+      c:{id:'c',children:[],snapshot:childSnapshot},
+    },edges:{'r>c':{move_uci:'e2e4'}}}};
     const bundle=await api('/api/workspace-data',{action:'backup',metadata:workspaceBackupPayload(),include_reference:true});
     const response=await fetch('/api/workspace-download?token='+bundle.token);
     const bytes=new Uint8Array(await response.arrayBuffer());
@@ -222,6 +228,11 @@ async function run() {
     if(consumed.status!==404) throw new Error('Completed backup download retained its transfer slot');
     const roundtrip=validateWorkspaceBackup(workspaceBackupPayload());
     if(!roundtrip.calibration_history.length) throw new Error('Backup omitted history');
+    await showRecoveredJob({id:'smoke-tournament',kind:'tournament',result:{complete:true,games:[],standings:[],pgn:'*'}});
+    if(!document.getElementById('startScreen').hidden || !document.getElementById('gameTab').classList.contains('active')) throw new Error('Recovered tournament remains hidden');
+    if(!document.getElementById('advancedTournamentStandings').closest('details').open) throw new Error('Recovered standings are collapsed');
+    await showRecoveredJob({id:'smoke-calibration',kind:'calibration',result:{results:[],estimated_elo:1600,games:4,opponent_elo:1500,score:.5,elo_interval:[1400,1800]}});
+    if(!document.getElementById('trainTab').classList.contains('active')) throw new Error('Recovered calibration opens wrong tab');
   })()`,true);
   window.destroy();
   console.log("Electron UI smoke OK: preload, history reload, port migration, regression job, backup");

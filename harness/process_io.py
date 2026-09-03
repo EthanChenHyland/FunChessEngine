@@ -41,13 +41,16 @@ class LineReader:
                 total += len(chunk)
                 if total > self.total_limit:
                     raise PipeError("Subprocess output exceeds the byte limit.")
+                scanned = len(buffer)
                 buffer.extend(chunk)
-                while b"\n" in buffer:
+                newline = buffer.find(b"\n", scanned)
+                while newline >= 0:
                     raw, _, remaining = buffer.partition(b"\n")
                     if len(raw) > self.line_limit:
                         raise PipeError("Subprocess output line is too long.")
                     self.lines.put_nowait(bytes(raw).rstrip(b"\r"))
                     buffer = bytearray(remaining)
+                    newline = buffer.find(b"\n")
                 if len(buffer) > self.line_limit:
                     raise PipeError("Subprocess output line is too long.")
         except queue.Full:
@@ -145,9 +148,10 @@ def terminate_tree(process: subprocess.Popen[bytes], *, group: bool = False) -> 
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
+            timeout=5,
         )
     elif group:
-        with suppress(ProcessLookupError):
+        with suppress(ProcessLookupError, PermissionError):
             os.killpg(process.pid, signal.SIGKILL)
     else:
         # External UCI executables are intentionally not moved to their own

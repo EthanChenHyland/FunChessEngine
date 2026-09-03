@@ -837,8 +837,8 @@ function normalizeVariationWorkspace(workspace) {
       const edgeKey = `${parentId}>${childId}`;
       if (!workspace.edges[edgeKey]) {
         if (child.parents.length > 1 && child.parent !== parentId) {
-          child.parents = child.parents.filter((value) => value !== parentId);
-          if (child.last_parent === parentId) delete child.last_parent;
+          workspace.needs_edge_migration = true;
+          keptChildren.push(childId);
           continue;
         }
         workspace.edges[edgeKey] = {
@@ -1530,12 +1530,17 @@ async function deleteStudyWorkspace(key) {
 }
 
 async function openSavedStudy(key) {
-  const stored = savedVariationWorkspaces[key];
+  let stored = savedVariationWorkspaces[key];
   if (!stored?.root || !stored.nodes?.[stored.root]) return;
   if (setupMode || trainerMode || retryMode || busy) {
     setStatus("Finish the current board task before opening a saved study.", "error");
     return;
   }
+  try {
+    const checked = await api("/api/workspace-data", {action:"validate-metadata", metadata:{studies:{[key]:stored}}});
+    stored = normalizeVariationWorkspace(checked.studies[key]);
+    savedVariationWorkspaces[key] = stored;
+  } catch (error) { setStatus(error.message,"error"); return; }
   if (launcherVisible()) await enterWorkbench("engine", false);
   else await activateTab(document.querySelector('[data-tab="engine"]'));
   if (reviewMode) await exitReviewMode(false);
@@ -1573,7 +1578,7 @@ async function importStudyFile(file) {
   if (!file) return;
   assertBrowserFileSize(file, MAX_STUDY_BYTES, "Study");
   const payload = JSON.parse(await file.text());
-  const workspace = payload?.format === "FunChessEngine.Study" && payload?.version === 1 ? payload.workspace : null;
+  let workspace = payload?.format === "FunChessEngine.Study" && payload?.version === 1 ? payload.workspace : null;
   if (!workspace?.root || !workspace.nodes?.[workspace.root] || studyNodeCount(workspace) > 500) {
     throw new Error("This is not a valid FunChessEngine study file.");
   }
@@ -1581,6 +1586,8 @@ async function importStudyFile(file) {
     if (!node?.id || !node?.snapshot?.fen || !Array.isArray(node.children)) throw new Error("Study contains an invalid position node.");
   }
   validateStudyGraph(workspace);
+  const checked = await api("/api/workspace-data", {action:"validate-metadata",metadata:{studies:{imported:workspace}}});
+  workspace = normalizeVariationWorkspace(checked.studies.imported);
   const key = `import:${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`}`;
   workspace.storage_key = key;
   workspace.name = String(workspace.name || "Imported study").slice(0, 80);
@@ -3840,7 +3847,8 @@ async function restoreWorkspaceText(text, beforeApply = null) {
     const raw = String(text || "");
     if (utf8ByteLength(raw) > MAX_BACKUP_BYTES) throw new Error("Workspace backup exceeds the 16 MB restore limit.");
     const payload = validateWorkspaceBackup(JSON.parse(raw));
-    await api("/api/workspace-data", { action: "validate-metadata", metadata: payload });
+    const checked = await api("/api/workspace-data", { action: "validate-metadata", metadata: payload });
+    payload.studies = checked.studies;
     const confirmed = await confirmAction(
       "Restore workspace backup?",
       "This replaces the included library, book, studies, training, histories and settings. A saved live game is restored paused. Excluded databases are kept.",
@@ -4206,6 +4214,7 @@ async function installPluginFile(file) {
   try {
     assertBrowserFileSize(file, 256 * 1024, "Plugin manifest");
     const plugin = validatePluginManifestClient(JSON.parse(await file.text()));
+    await api("/api/workspace-data", {action:"validate-metadata",metadata:{plugins:[plugin]}});
     const existing = pluginManifests.findIndex((item) => item.id === plugin.id);
     if (existing >= 0) {
       removePluginContributions(pluginManifests[existing].id);
@@ -6359,7 +6368,7 @@ async function compareExternalEngine() {
     return;
   }
   const fen = currentBoardView()?.fen || state?.fen;
-  const budget = Math.max(50, Math.min(5000, Number($("externalEngineBudget").value) || 300));
+  const budget = Math.max(100, Math.min(2000, Number($("externalEngineBudget").value) || 300));
   const lines = Math.max(1, Math.min(5, Number($("externalEngineLines").value) || 3));
   const target = $("externalEngineResult");
   target.innerHTML = '<p class="hint">Comparing engines…</p>';
@@ -6398,7 +6407,7 @@ async function compareExternalEngine() {
     addEngineLines(
       "FunChessEngine",
       result.funchess?.lines,
-      `depth ${result.funchess?.depth ?? "—"}`,
+      `${result.budget_ms} ms budget · ${result.funchess?.elapsed_ms ?? "—"} ms used · depth ${result.funchess?.depth ?? "—"}`,
     );
     addEngineLines(
       result.external?.name || "External UCI",

@@ -54,7 +54,7 @@ test('transposition move prefixes follow edges rather than first incoming node m
   assert.equal(c.currentMovePrefix().join(' '),moves.join(' '));
 });
 
-test('legacy transposition migration never invents a secondary incoming move',()=>{
+test('legacy transposition migration preserves secondary links for legal move recovery',()=>{
   const c=load(['normalizeVariationWorkspace'],{validateStudyGraph:()=>true});
   const fen='4k3/8/8/8/8/8/8/4K3 w - - 0 1';
   const node=(id,children=[],extra={})=>({id,children,snapshot:{fen},...extra});
@@ -67,8 +67,9 @@ test('legacy transposition migration never invents a secondary incoming move',()
   const migrated=c.normalizeVariationWorkspace(graph);
   assert.equal(migrated.edges['a>shared'].move_uci,'c2c3');
   assert.equal(migrated.edges['b>shared'],undefined);
-  assert.equal(migrated.nodes.b.children.includes('shared'),false);
-  assert.deepEqual(Array.from(migrated.nodes.shared.parents),['a']);
+  assert.equal(migrated.nodes.b.children.includes('shared'),true);
+  assert.equal(migrated.needs_edge_migration,true);
+  assert.deepEqual(Array.from(migrated.nodes.shared.parents),['a','b']);
 });
 
 test('plugin disable removes only its trainer contributions and opening labels are longest-prefix',()=>{
@@ -114,4 +115,20 @@ test('study validation accepts transpositions and rejects cycles, missing refere
   assert.throws(()=>ctx.validateBackupCollections({lessons:[{title:'Bad',cards:'wrong'}]}),/lessons/);
   graph.nodes.c.children=[]; graph.nodes.c.snapshot.fen='8/8/8/8/8/8/8/8 w - - 0 1';
   assert.throws(()=>ctx.validateStudyGraph(graph),/invalid/);
+});
+
+test('recovered tournaments and calibrations reveal their actual result panels',async()=>{
+  const revealed=[];
+  const globals={console,calibrationHistory:[],regressionHistory:[],
+    $:()=>({replaceChildren:()=>{}}),saveCalibrationHistory:()=>{},renderCalibrationEngines:()=>{},
+  };
+  const c=vm.createContext(globals);
+  vm.runInContext(fs.readFileSync(require('node:path').join(__dirname,'../gui/static/workflows.js'),'utf8'),c);
+  c.showTournamentResult=()=>{}; c.saveWorkstationResult=()=>{};
+  c.revealWorkflow=async(id,tab)=>revealed.push([id,tab]);
+  await c.showRecoveredJob({id:'t1',kind:'tournament',result:{games:[]}});
+  await c.showRecoveredJob({id:'c1',kind:'calibration',result:{results:[]}});
+  await c.showRecoveredJob({id:'c1',kind:'calibration',result:{results:[]}});
+  assert.deepEqual(revealed,[['advancedTournamentStandings','game'],['calibrationResult','train'],['calibrationResult','train']]);
+  assert.equal(c.calibrationHistory.length,1);
 });
