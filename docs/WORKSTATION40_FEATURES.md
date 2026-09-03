@@ -87,9 +87,10 @@ previous 20-feature batch are not counted again.
     summaries for the current result page.
 39. **Study from the opening tree:** start an independent study at the explored
     position, preserving the live game and checking unsaved edits.
-40. **Named workstation looks:** save, apply, replace, and delete up to six presets
-    for the new piece, board, motion, navigation, and layout settings. Existing
-    application theme/accent/font controls remain separate. Presets persist with
+40. **Named workstation looks:** save, apply, replace, and delete up to twelve presets
+    for the new piece, board, motion, navigation, and layout settings. Application
+    theme, accent, appearance, font theme, piece size, and sidebar width are
+    included with each saved look. Presets persist with
     the profile's display preferences and backups.
 
 ## GUI repairs included
@@ -106,7 +107,7 @@ previous 20-feature batch are not counted again.
 
 ## Validation
 
-Local validation passed with **204 Python tests and 56 JavaScript tests**.
+Local validation passed with **204 Python tests and 58 JavaScript tests**.
 The release gate covers lint/type checks,
 engine package isolation, a short engine arena, desktop syntax checks, dependency
 audit, and the Electron smoke suite. Workstation smoke coverage exercises actual

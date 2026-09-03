@@ -53,7 +53,8 @@ white-piece visibility problem without discarding saved preferences.
 - **Undo customization** retains the latest 20 customization states in the
   current app session.
 - **Reset customization** restores the new visibility-first defaults.
-- Save up to 12 named workstation looks.
+- Save up to 12 named workstation looks. Each look now includes the app theme,
+  accent, light/dark appearance, legacy font theme, piece size, and sidebar width.
 - Export a focused customization JSON file or import one on another profile.
   Imports are limited to 64 KB, require the versioned FunChessEngine format,
   whitelist known settings, validate enums and colors, and clamp every number.
@@ -61,3 +62,26 @@ white-piece visibility problem without discarding saved preferences.
 
 These controls affect presentation only. They never modify a game, study,
 opening book, reference database, or engine search setting.
+
+
+## Board workspace presentation
+
+- Resize the board from 420–900 px and align it left, center, or right.
+- Add a subtle board tilt while keeping move input and annotations aligned.
+- Show or hide captured pieces, player roles, material-advantage chips, and move numbers.
+- Switch player rows between plain labels and bordered player cards.
+- Choose Boxed, Minimal, or Digital clocks; scale them from 80–140%.
+- Customize active-clock and low-time colors and choose a 5–60 second warning threshold.
+- Enable or disable an accessible reduced-motion-aware low-time pulse.
+- Hide clock tenths for a calmer display while retaining exact internal clock time.
+
+## Finding and applying settings
+
+- Search the studio by control name; matching sections open automatically and
+  nonmatching controls disappear. Press `/` while the Settings tab is active to focus search.
+- Expand or collapse all matching settings sections at once.
+- Auto-fix piece contrast selects opposing outline colors, strengthens the
+  outline, and restores full opacity without changing the board palette.
+- Cycle through board and piece recipes with Previous/Next buttons.
+- Undo is disabled until a customization change exists, then tracks the last
+  20 changes in the current session.

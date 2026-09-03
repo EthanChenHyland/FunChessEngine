@@ -4935,6 +4935,7 @@ function renderClocks() {
     $("blackClock").classList.toggle("recorded", hasRecordedClockFields);
     $("whiteClock").classList.toggle("unavailable", white == null);
     $("blackClock").classList.toggle("unavailable", black == null);
+    if (typeof wsDecorateClocks === "function") wsDecorateClocks(white, black);
     if (variationMode && !hasRecordedClockFields) {
       $("clockContext").textContent = "Analysis position · no game-clock time";
     } else if (hasRecordedClockFields) {
@@ -4954,6 +4955,7 @@ function renderClocks() {
   $("blackClock").classList.remove("recorded", "unavailable");
   $("whiteClock").classList.toggle("active", !state.game_over && !state.paused && state.turn === "white");
   $("blackClock").classList.toggle("active", !state.game_over && !state.paused && state.turn === "black");
+  if (typeof wsDecorateClocks === "function") wsDecorateClocks(white, black);
   $("clockContext").textContent = state.paused ? "Live game clocks · paused" : "Live game clocks";
   const active = state.turn === "white" ? white : black;
   if (!state.game_over && active <= 0 && !busy && !flagRefreshPending) {

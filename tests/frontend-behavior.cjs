@@ -500,3 +500,11 @@ test('customization sanitizer bounds visual effects and rejects CSS injection',(
   const c=loadWorkstation();const prefs=c.wsSanitize({whiteOutline:'url(x)',frameColor:'#abcdef',pieceShadow:999,pieceOpacity:2,pieceY:-99,pieceWidth:500,radius:40,boardBrightness:0,boardSaturation:999,coordSize:40,fontScale:300,panelRadius:-2,targetStyle:'script'});
   assert.equal(prefs.whiteOutline,'#263746');assert.equal(prefs.frameColor,'#abcdef');assert.equal(prefs.pieceShadow,100);assert.equal(prefs.pieceOpacity,50);assert.equal(prefs.pieceY,-8);assert.equal(prefs.pieceWidth,120);assert.equal(prefs.radius,24);assert.equal(prefs.boardBrightness,70);assert.equal(prefs.boardSaturation,160);assert.equal(prefs.coordSize,18);assert.equal(prefs.fontScale,125);assert.equal(prefs.panelRadius,0);assert.equal(prefs.targetStyle,'dot');
 });
+test('saved looks whitelist complete base appearance without nested data',()=>{
+  const c=loadWorkstation({display:{theme:'ocean',accent:'purple',appearance:'light',pieceTheme:'bold',pieceScale:88,sidebarWidth:500,workstation:{presets:[{name:'Portable',settings:{clockStyle:'digital'},base:{theme:'walnut',accent:'orange',appearance:'dark',pieceTheme:'clean',pieceScale:999,sidebarWidth:1,workstation:{bad:true}}}]}}});
+  const preset=c.wsPresets()[0];assert.equal(preset.base.theme,'walnut');assert.equal(preset.base.accent,'orange');assert.equal(preset.base.pieceScale,90);assert.equal(preset.base.sidebarWidth,330);assert.equal(preset.base.workstation,undefined);assert.equal(preset.settings.clockStyle,'digital');
+});
+test('workspace customization values are clamped and enum checked',()=>{
+  const c=loadWorkstation();const prefs=c.wsSanitize({boardMax:2000,boardTilt:-20,clockScale:1,clockThreshold:400,boardAlign:'outside',clockStyle:'alarm',showCaptured:false,hideTenths:true,moveNumbers:false});
+  assert.equal(prefs.boardMax,900);assert.equal(prefs.boardTilt,-3);assert.equal(prefs.clockScale,80);assert.equal(prefs.clockThreshold,60);assert.equal(prefs.boardAlign,'center');assert.equal(prefs.clockStyle,'boxed');assert.equal(prefs.showCaptured,false);assert.equal(prefs.hideTenths,true);assert.equal(prefs.moveNumbers,false);
+});
