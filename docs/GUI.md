@@ -33,6 +33,8 @@ The server binds to `127.0.0.1:8765` by default and opens the browser automatica
 
 ## Features
 
+The [database browser](DATABASE_BROWSER.md) provides a separate reference-game workspace with a game table, independent board preview, organization, exports, and statistical reports. Open **Database** in the top bar.
+
 - Click-to-move or drag-and-drop legal chess board with move-target highlighting and promotion choice.
 - Board flip, undo, new game, arbitrary FEN loading, and 17 built-in clock presets plus custom time.
 - Human controls White, Black, both sides, or neither.

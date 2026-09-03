@@ -14,6 +14,7 @@ import chess
 
 from gui.imports import import_reference_file
 from librarydb.store import LibraryDatabase
+from librarydb.workbench import LibraryWorkbench
 
 
 def benchmark(games: int) -> dict[str, Any]:
@@ -37,6 +38,15 @@ def benchmark(games: int) -> dict[str, Any]:
         query_cases: tuple[tuple[str, Callable[[], object]], ...] = (
             ("player", lambda: database.search_games({"player": "Player 42"})),
             ("opening", lambda: database.opening_moves(chess.STARTING_FEN)),
+            (
+                "browser",
+                lambda: LibraryWorkbench(database).search({"filters": {"player": "Player 42"}}),
+            ),
+            (
+                "duplicates",
+                lambda: LibraryWorkbench(database).search({"filters": {"duplicates": True}}),
+            ),
+            ("reports", lambda: LibraryWorkbench(database).report({"player": "Player 42"})),
         )
         for label, query in query_cases:
             query_started = time.perf_counter()

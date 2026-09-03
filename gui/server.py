@@ -56,6 +56,7 @@ from integrations.tournament import calibrate_against_uci, run_tournament
 from integrations.uci_client import ExternalUCIEngine
 from librarydb import LibraryDatabase, parse_library_query
 from librarydb.store import default_data_dir
+from librarydb.workbench import LibraryWorkbench
 from openingbook import OpeningBook
 from plugins.manifest import validate_manifest
 from reporting.generator import annotated_pgn, html_report
@@ -1922,6 +1923,7 @@ class GameSession:
         legal = list(board.legal_moves)
         return {
             "fen": board.fen(),
+            "variant": "chess960" if board.chess960 else "standard",
             "turn": "white" if board.turn == chess.WHITE else "black",
             "board": cls._board_payload(board),
             "legal_moves": [move.uci() for move in legal],
@@ -1936,14 +1938,18 @@ class GameSession:
             "phase": _phase_name(board),
         }
 
-    def position_from_fen(self, fen: str) -> dict[str, Any]:
-        board = _board_from_fen(fen, chess960=self.chess960)
+    def position_from_fen(self, fen: str, *, chess960: bool | None = None) -> dict[str, Any]:
+        if chess960 is not None and not isinstance(chess960, bool):
+            raise ValueError("Chess960 must be true or false.")
+        board = _board_from_fen(fen, chess960=self.chess960 if chess960 is None else chess960)
         if not board.is_valid():
             raise ValueError("Analysis workspace requires a valid chess position.")
         return self._position_payload(board)
 
-    def variation_move(self, fen: str, uci: str) -> dict[str, Any]:
-        board = _board_from_fen(fen, chess960=self.chess960)
+    def variation_move(self, fen: str, uci: str, *, chess960: bool | None = None) -> dict[str, Any]:
+        if chess960 is not None and not isinstance(chess960, bool):
+            raise ValueError("Chess960 must be true or false.")
+        board = _board_from_fen(fen, chess960=self.chess960 if chess960 is None else chess960)
         if not board.is_valid():
             raise ValueError("Variation starts from an invalid chess position.")
         try:
@@ -3200,6 +3206,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "/api/uci-tournament",
                 "/api/uci-calibration",
                 "/api/lan",
+                "/api/library-workbench",
                 "/api/library-db/status",
                 "/api/library-db/import",
                 "/api/library-db/search",
@@ -3339,6 +3346,26 @@ class Handler(SimpleHTTPRequestHandler):
                     int(payload.get("budget_ms", 100)),
                 )
                 self._json(result)
+                return
+            elif self.path == "/api/library-workbench":
+                workbench = LibraryWorkbench(_library_database())
+                action = payload.get("action", "search")
+                if action == "search":
+                    self._json(workbench.search(payload))
+                elif action == "preview":
+                    self._json(workbench.preview(int(payload.get("id", 0))))
+                elif action == "organize":
+                    self._json(workbench.organize(payload))
+                elif action == "export":
+                    self._json(workbench.export(payload.get("ids")))
+                elif action == "headers":
+                    self._json(workbench.edit_headers(payload))
+                elif action == "views":
+                    self._json(workbench.views(payload.get("view", {})))
+                elif action == "report":
+                    self._json(workbench.report(payload))
+                else:
+                    raise ValueError("Unknown database workspace action.")
                 return
             elif self.path == "/api/library-db/status":
                 self._json(_library_database().stats())
@@ -3502,13 +3529,19 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json(result)
                 return
             elif self.path == "/api/position":
-                self._json(SESSION.position_from_fen(str(payload.get("fen", chess.STARTING_FEN))))
+                self._json(
+                    SESSION.position_from_fen(
+                        str(payload.get("fen", chess.STARTING_FEN)),
+                        chess960=payload.get("chess960"),
+                    )
+                )
                 return
             elif self.path == "/api/variation-move":
                 self._json(
                     SESSION.variation_move(
                         str(payload.get("fen", chess.STARTING_FEN)),
                         str(payload.get("move", "")),
+                        chess960=payload.get("chess960"),
                     )
                 )
                 return

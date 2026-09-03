@@ -256,8 +256,9 @@ async function run() {
     if(overflow) throw new Error('Tools workspace overflows mobile viewport');
     fs.writeFileSync(process.env.FUNCHESS_SMOKE_SCREENSHOT.replace(/\.png$/, '-mobile.png'),(await window.webContents.capturePage()).toPNG());
   }
+  await require("./database-smoke.cjs")(window,waitFor);
   window.destroy();
-  console.log("Electron UI smoke OK: preload, history reload, port migration, regression job, persistent job history, Tools, backup");
+  console.log("Electron UI smoke OK: preload, history reload, port migration, regression job, persistent job history, Tools, database browser, backup");
 }
 
 app.whenReady().then(async () => {

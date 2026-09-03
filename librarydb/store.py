@@ -16,6 +16,7 @@ from typing import Any
 import chess
 import chess.pgn
 
+from librarydb.catalog import ensure_catalog, line_key
 from librarydb.connections import DATABASE_LOCK
 
 
@@ -248,6 +249,8 @@ class LibraryDatabase:
             """
         )
 
+        ensure_catalog(connection)
+
     @staticmethod
     def _integer_header(headers: chess.pgn.Headers, name: str) -> int | None:
         try:
@@ -340,6 +343,10 @@ class LibraryDatabase:
                     continue
                 assert cursor.lastrowid is not None
                 game_id = cursor.lastrowid
+                connection.execute(
+                    "INSERT INTO game_details(game_id,plies,line_key) VALUES(?,?,?)",
+                    (game_id, len(moves), line_key(game.board().fen(), " ".join(moves))),
+                )
                 board = game.board()
                 for ply, move in enumerate(game.mainline_moves()):
                     before = board.fen()
@@ -418,7 +425,7 @@ class LibraryDatabase:
         clauses: list[str] = []
         values: list[Any] = []
         need_positions = bool(
-            filters.get("fen") or filters.get("fen_key") or filters.get("max_ply")
+            filters.get("fen") or filters.get("fen_key") or filters.get("max_ply") is not None
         )
         need_tags = bool(filters.get("structure"))
         player = str(filters.get("player", "")).strip()
@@ -509,17 +516,22 @@ class LibraryDatabase:
         if need_tags:
             joins.append("JOIN position_tags t ON t.game_id = p.game_id AND t.ply = p.ply")
         sql = f"""
+            WITH candidates AS (
+                SELECT DISTINCT g.id, g.result, g.white_elo, g.black_elo,
+                    p.turn, p.move_uci, p.move_san
+                FROM positions p {" ".join(joins)}
+                WHERE {" AND ".join(clauses)}
+            )
             SELECT p.move_uci, MAX(p.move_san) AS move_san, COUNT(*) AS games,
                 SUM(CASE
-                    WHEN (p.turn = 'w' AND g.result = '1-0') OR
-                         (p.turn = 'b' AND g.result = '0-1') THEN 1 ELSE 0 END) AS wins,
-                SUM(CASE WHEN g.result = '1/2-1/2' THEN 1 ELSE 0 END) AS draws,
+                    WHEN (p.turn = 'w' AND p.result = '1-0') OR
+                         (p.turn = 'b' AND p.result = '0-1') THEN 1 ELSE 0 END) AS wins,
+                SUM(CASE WHEN p.result = '1/2-1/2' THEN 1 ELSE 0 END) AS draws,
                 SUM(CASE
-                    WHEN (p.turn = 'w' AND g.result = '0-1') OR
-                         (p.turn = 'b' AND g.result = '1-0') THEN 1 ELSE 0 END) AS losses,
-                ROUND(AVG(CASE WHEN p.turn = 'w' THEN g.white_elo ELSE g.black_elo END)) AS avg_elo
-            FROM positions p {" ".join(joins)}
-            WHERE {" AND ".join(clauses)}
+                    WHEN (p.turn = 'w' AND p.result = '0-1') OR
+                         (p.turn = 'b' AND p.result = '1-0') THEN 1 ELSE 0 END) AS losses,
+                ROUND(AVG(CASE WHEN p.turn = 'w' THEN p.white_elo ELSE p.black_elo END)) AS avg_elo
+            FROM candidates p
             GROUP BY p.move_uci
             ORDER BY games DESC, wins DESC
             LIMIT ?

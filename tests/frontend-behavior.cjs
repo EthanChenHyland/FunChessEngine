@@ -79,7 +79,7 @@ test('plugin disable removes only its trainer contributions and opening labels a
       {key:'plugin:two:b',plugin_id:'two'},
       {key:'personal',source:'analysis'},
     ],
-    saveTrainerItems:()=>{},renderTrainerPanel:()=>{},
+    saveTrainerItems:()=>{},renderTrainerPanel:()=>{},trainerItemIndex:-1,trainerMode:false,
     pluginManifests:[
       {id:'open',enabled:true,kind:'openings',items:[{name:'Short',moves:['e2e4']},{name:'Long',moves:['e2e4','e7e5']}]},
       {id:'off',enabled:false,kind:'openings',items:[{name:'Disabled',moves:['e2e4','e7e5','g1f3']}]},
@@ -184,4 +184,54 @@ test('interrupted tournament opens partial standings and keeps it distinct from 
   await c.showRecoveredJob({id:'t1',kind:'tournament',status:'interrupted',progress:{partial:{games:[{}]}}});
   assert.deepEqual(saved,[['tournament','t1-partial']]);
   assert.deepEqual(revealed,[['advancedTournamentStandings','tools']]);
+});
+
+const workbenchSource=fs.readFileSync(require('node:path').join(__dirname,'../gui/static/workbench.js'),'utf8');
+function loadWorkbench(names, globals={}) {
+  const ctx=vm.createContext({console,...globals});
+  for(const name of names) {
+    const start=workbenchSource.search(new RegExp(`(?:async )?function ${name}\\(`));
+    assert.ok(start>=0,name);
+    vm.runInContext(workbenchSource.slice(start,workbenchSource.indexOf('\n}',start)+2),ctx);
+  }
+  return ctx;
+}
+test('preview orientation keeps every piece on the correct square',()=>{
+  const c=loadWorkbench(['wbBoardSquares']);
+  const fen='r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1';
+  const white=c.wbBoardSquares(fen),black=c.wbBoardSquares(fen,true);
+  assert.equal(white.length,64);assert.equal(black.length,64);
+  assert.equal(white[0].square,'a8');assert.equal(black[0].square,'h1');
+  assert.equal(white.find(s=>s.square==='e1').piece,'K');
+  assert.equal(black.find(s=>s.square==='e1').piece,'K');
+  assert.equal(white.find(s=>s.square==='a1').dark,true);
+});
+test('CSV export neutralizes formulas and preserves CSV quoting',()=>{
+  const c=loadWorkbench(['wbCsvCell']);
+  assert.equal(c.wbCsvCell('=1+1'),'"\'=1+1"');
+  assert.equal(c.wbCsvCell('\t@SUM(1)'),'"\'\t@SUM(1)"');
+  assert.equal(c.wbCsvCell('A,"B"'),'"A,""B"""');
+});
+test('scoresheets escape game metadata and comments',()=>{
+  const c=loadWorkbench(['wbScoresheetHtml'],{escapeHtml:value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')});
+  const html=c.wbScoresheetHtml({headers:{Event:'<script>alert(1)</script>'},game:{white:'<img>',black:'B',result:'*'},positions:[{}, {label:'1. e4',comment:'<script>bad</script>'}]});
+  assert.equal(html.includes('<script>'),false);assert.equal(html.includes('&lt;script&gt;'),true);
+});
+test('game comparison identifies divergence and different initial positions',()=>{
+  const c=loadWorkbench(['wbCompareLines']);
+  const game=(fen,moves)=>({positions:[{fen},...moves.map(uci=>({uci}))]});
+  assert.equal(c.wbCompareLines(game('start',['e2e4','e7e5']),game('start',['e2e4','c7c5'])).common,1);
+  assert.equal(c.wbCompareLines(game('start',[]),game('other',[])).sameStart,false);
+});
+test('slow database responses cannot overwrite newer search results',async()=>{
+  const pending=[],wb={sequence:0,offset:0,sort:'date',direction:'desc'},rendered=[];
+  const c=loadWorkbench(['wbSearch'],{wb,wbFilters:()=>({}),wbStatus:()=>{},$:()=>({value:'25'}),wbApi:()=>new Promise(resolve=>pending.push(resolve)),wbRenderRows:()=>rendered.push(wb.games)});
+  const old=c.wbSearch(),fresh=c.wbSearch();
+  pending[1]({games:['fresh'],total:1,offset:0,limit:25});await fresh;
+  pending[0]({games:['old'],total:1,offset:0,limit:25});await old;
+  assert.deepEqual(rendered,[['fresh']]);
+});
+test('removing a plugin keeps an active personal trainer card aligned with its board',()=>{
+  const c=load(['removePluginContributions'],{trainerItems:[{key:'plugin:one:x',plugin_id:'one'},{key:'personal'}],trainerItemIndex:1,trainerMode:true,saveTrainerItems:()=>{},renderTrainerPanel:()=>{},exitTrainer:()=>{throw new Error('Personal card was removed')}});
+  c.removePluginContributions('one');assert.equal(c.trainerItemIndex,0);assert.equal(c.trainerItems[0].key,'personal');
 });

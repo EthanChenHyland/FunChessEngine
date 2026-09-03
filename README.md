@@ -121,6 +121,9 @@ and a compact position-based engine opening repertoire. FunChess Accuracy and ph
 breakdown, a spaced-repetition mistake trainer built from analyzed games, local move sounds, drag/drop
 for PGN/FEN/saved PNG files, and a Cmd/Ctrl+K command palette. The Tools tab groups UCI tournaments,
 isolated benchmark/A-B experiments, and background job history that survives backend restarts. Preferences and training data stay local.
+The **Database** browser adds a spacious game table, independent preview, folders/tags/favorites,
+saved searches, PGN header editing, batch exports, and player/opening reports.
+See [the database browser guide](docs/DATABASE_BROWSER.md) for its 38 additions and data limits.
 Large library, study, annotation, trainer, and benchmark metadata is persisted in IndexedDB with
 localStorage migration/fallback, while a bounded session snapshot keeps the last in-progress game
 recoverable after both normal quits and interrupted sessions. Imported PGNs retain their comments,

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added a database browser with 38 documented additions spanning game tables, filters, saved searches, organization, preview/replay, header editing, exports, comparison, and player/opening reports; see `docs/DATABASE_BROWSER.md`.
+- Fixed repeated-position opening statistics, zero-ply searches, Standard/Chess960 study isolation, and plugin-removal trainer indexing.
+
 - Added a Tools workspace and Home/command-palette shortcuts for UCI tournaments, engine experiments, and recent jobs.
 - Retain recent background results across backend restarts, mark interrupted work explicitly, and support opening partial results, JSON export, and durable dismissal.
 - Fixed benchmark and A/B requests bypassing job cancellation and recovery.

@@ -142,9 +142,7 @@ def create_bundle(metadata: dict[str, Any], include_reference: bool) -> dict[str
                 source = root / name
                 if source.exists():
                     if source.stat().st_size > MAX_FILE_BYTES:
-                        raise ValueError(
-                            "Database exceeds 1 GB; exclude the reference database."
-                        )
+                        raise ValueError("Database exceeds 1 GB; exclude the reference database.")
                     copy = Path(staging) / name
                     _snapshot(source, copy)
                     archive.write(copy, name)
@@ -232,7 +230,12 @@ def restore_bundle(token: str) -> dict[str, Any]:
                         kind in {"trigger", "view"} for _, kind in objects
                     ):
                         raise ValueError(f"Unsupported database schema in {name}.")
-                    for table in DATABASES[name]:
+                    optional = (
+                        {"game_details", "library_views", "library_settings"}
+                        if name == "library.sqlite3"
+                        else set()
+                    )
+                    for table in DATABASES[name] | (optional & tables):
                         if (
                             candidate.execute(f"PRAGMA table_info({table})").fetchall()
                             != expected.execute(f"PRAGMA table_info({table})").fetchall()

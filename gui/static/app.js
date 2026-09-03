@@ -2523,7 +2523,7 @@ async function playVariationMove(move) {
     return false;
   }
   try {
-    const childSnapshot = await api("/api/variation-move", { fen: snapshot.fen, move });
+    const childSnapshot = await api("/api/variation-move", { fen: snapshot.fen, move, chess960: snapshot.variant ? snapshot.variant === "chess960" : undefined });
     const childKey = fenPositionKey(childSnapshot.fen);
     const ancestors = variationAncestorIds(node.id);
     const transposition = Object.values(variationWorkspace.nodes).find((candidate) => (
@@ -4146,9 +4146,12 @@ function applyPluginContributions(plugin) {
 }
 
 function removePluginContributions(pluginId) {
+  const activeKey = trainerItems[trainerItemIndex]?.key;
   const before = trainerItems.length;
   trainerItems = trainerItems.filter((item) => item.plugin_id !== pluginId && !String(item.key || "").startsWith(`plugin:${pluginId}:`));
   if (trainerItems.length !== before) {
+    trainerItemIndex = activeKey ? trainerItems.findIndex(item => item.key === activeKey) : -1;
+    if (trainerMode && trainerItemIndex < 0) void exitTrainer(false);
     saveTrainerItems();
     renderTrainerPanel();
   }
@@ -7909,6 +7912,7 @@ function orientForHuman() {
 
 function commandDefinitions() {
   const builtins = [
+    { label: "Open database browser", hint: "Reference games", action: openDatabaseWorkbench },
     { label: "New game", hint: "⌘N", action: () => $("newGameBtn").click() },
     { label: "Open PGN", hint: "Files", action: openPgnFile },
     { label: "Open FEN", hint: "Files", action: openFenFile },
@@ -8633,7 +8637,7 @@ window.addEventListener("drop", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
-  if (event.defaultPrevented) return;
+  if (event.defaultPrevented || document.getElementById("databaseWorkbench")?.open) return;
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
     event.preventDefault();
     if (launcherVisible()) return;
