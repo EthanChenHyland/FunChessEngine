@@ -156,3 +156,16 @@ Clock recovery saves therefore do not rewrite studies or large histories. The fi
 migrates the previous `workspace-metadata.json`, preserves newer collection files, and keeps the original as
 `workspace-metadata.<id>.legacy.json`. Atomic replacements retain the previous value on a failed save.
 Active collections share the existing 32 MB quota; the migration backup is preserved separately.
+
+### Desktop build prerequisites
+
+Run `uv sync` after updating the checkout, then `npm ci` in `desktop/`. The
+pinned PyInstaller build dependency is installed in the project environment.
+`npm run build:backend` uses that environment directly, so packaging also works
+from terminals and IDEs whose PATH does not include `uv`. If the environment is
+missing, the builder can fall back to `uv`; set `UV` to its full executable path
+when it is installed in a custom location.
+
+Use `npm run build:mac` on an Apple Silicon Mac, `npm run build:linux` on Linux
+x64, or `npm run build:win` on Windows x64. The Python backend must be built on
+the same operating system as the app being packaged.

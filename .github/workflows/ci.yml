@@ -19,6 +19,8 @@ jobs:
       - run: node --check gui/static/app.js
       - run: npm ci
         working-directory: desktop
+      - run: npm run build:backend
+        working-directory: desktop
       - run: npm run check
         working-directory: desktop
       - run: npm audit
@@ -51,4 +53,6 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
+      - run: npm run build:backend
+        working-directory: desktop
       - run: node --test tests/frontend-behavior.cjs

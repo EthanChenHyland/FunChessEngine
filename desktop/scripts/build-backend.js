@@ -14,13 +14,25 @@ fs.rmSync(output, { recursive: true, force: true });
 fs.mkdirSync(output, { recursive: true });
 fs.mkdirSync(work, { recursive: true });
 
-const uv = process.env.UV || "uv";
+const localPython = path.join(
+  projectRoot,
+  ".venv",
+  ...(process.platform === "win32" ? ["Scripts", "python.exe"] : ["bin", "python"]),
+);
+const pythonProbe = fs.existsSync(localPython)
+  ? spawnSync(localPython, ["-c", "import PyInstaller"], { cwd: projectRoot, stdio: "ignore" })
+  : null;
+const conventionalUv = [
+  process.env.HOME && path.join(process.env.HOME, ".local", "bin", process.platform === "win32" ? "uv.exe" : "uv"),
+  process.platform === "darwin" ? "/opt/homebrew/bin/uv" : null,
+  process.platform === "win32" && process.env.USERPROFILE
+    ? path.join(process.env.USERPROFILE, ".local", "bin", "uv.exe")
+    : null,
+  process.platform !== "win32" ? "/usr/local/bin/uv" : null,
+].filter(Boolean);
+const uv = process.env.UV || conventionalUv.find((candidate) => fs.existsSync(candidate)) || "uv";
 const separator = process.platform === "win32" ? ";" : ":";
-const args = [
-  "run",
-  "--with",
-  "pyinstaller==6.22.2",
-  "pyinstaller",
+const pyinstallerArgs = [
   "--noconfirm",
   "--clean",
   "--onefile",
@@ -40,8 +52,19 @@ const args = [
   projectRoot,
   path.join(projectRoot, "gui", "server.py"),
 ];
-
-const result = spawnSync(uv, args, { cwd: projectRoot, stdio: "inherit" });
+const useLocalPython = pythonProbe?.status === 0;
+const command = useLocalPython ? localPython : uv;
+const args = useLocalPython
+  ? ["-m", "PyInstaller", ...pyinstallerArgs]
+  : ["run", "--with", "pyinstaller==6.22.2", "pyinstaller", ...pyinstallerArgs];
+const result = spawnSync(command, args, { cwd: projectRoot, stdio: "inherit" });
+if (result.error?.code === "ENOENT") {
+  console.error(
+    "Desktop packaging needs the project environment or uv. Run `uv sync` first, " +
+    "or set UV to the full path of the uv executable.",
+  );
+  process.exit(1);
+}
 if (result.error) throw result.error;
 if (result.status !== 0) process.exit(result.status || 1);
 
