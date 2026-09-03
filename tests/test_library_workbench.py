@@ -7,6 +7,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 import chess
@@ -151,12 +152,12 @@ class LibraryWorkbenchTests(unittest.TestCase):
         self.assertEqual(self.workbench.report({"player": "Al"})["dossier"][0]["games"], 0)
 
     def test_legacy_catalog_backfill_is_idempotent_and_preserves_games(self) -> None:
-        with sqlite3.connect(self.database.path) as connection:
+        with closing(sqlite3.connect(self.database.path)) as connection, connection:
             for table in ["game_details", "library_views", "library_settings"]:
                 connection.execute(f"DROP TABLE {table}")
         self.assertEqual(self.search()["total"], 2)
         self.assertEqual(self.search()["total"], 2)
-        with sqlite3.connect(self.database.path) as connection:
+        with closing(sqlite3.connect(self.database.path)) as connection, connection:
             self.assertEqual(
                 connection.execute("SELECT SUM(plies) FROM game_details").fetchone()[0], 13
             )

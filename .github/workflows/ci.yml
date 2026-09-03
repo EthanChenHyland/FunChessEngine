@@ -47,7 +47,7 @@ jobs:
         with:
           python-version: "3.12.14"
       - run: uv sync --frozen
-      - run: uv run python -m unittest tests.test_integrations tests.test_arena tests.test_audit_repairs
+      - run: uv run python -m unittest tests.test_integrations tests.test_arena tests.test_audit_repairs tests.test_sqlite_lifecycle tests.test_library_workbench tests.test_openingbook
       - uses: actions/setup-node@v5
         with:
           node-version: "22"

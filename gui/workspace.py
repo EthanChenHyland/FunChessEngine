@@ -13,7 +13,7 @@ import time
 import uuid
 import zipfile
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -116,10 +116,8 @@ def leased_file(token: str) -> Iterator[tuple[Path, str]]:
 
 def _snapshot(source: Path, destination: Path) -> None:
     # sqlite backup includes committed WAL pages and produces a standalone database.
-    with sqlite3.connect(source) as live, sqlite3.connect(destination) as copy:
+    with closing(sqlite3.connect(source)) as live, closing(sqlite3.connect(destination)) as copy:
         live.backup(copy)
-    live.close()
-    copy.close()
 
 
 def create_bundle(metadata: dict[str, Any], include_reference: bool) -> dict[str, Any]:
@@ -221,8 +219,8 @@ def restore_bundle(token: str) -> dict[str, Any]:
                 else:
                     OpeningBook(expected_path)
                 with (
-                    sqlite3.connect(expected_path) as expected,
-                    sqlite3.connect(staged / name) as candidate,
+                    closing(sqlite3.connect(expected_path)) as expected,
+                    closing(sqlite3.connect(staged / name)) as candidate,
                 ):
                     objects = candidate.execute("SELECT name,type FROM sqlite_master").fetchall()
                     tables = {str(n) for n, kind in objects if kind == "table"}
@@ -245,8 +243,6 @@ def restore_bundle(token: str) -> dict[str, Any]:
                         raise ValueError(f"Broken database references in {name}.")
                     if candidate.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                         raise ValueError(f"Database integrity check failed for {name}.")
-                candidate.close()
-                expected.close()
         rollback = []
         try:
             for name in names:

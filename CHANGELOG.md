@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fixed Windows backup-test cleanup locks by explicitly closing SQLite connections, including snapshot and restore failure paths; added retained-handle regression tests and expanded Windows/macOS database coverage.
+
 - Added a filtered reference opening tree with position navigation, result bars, move frequencies, ratings, matching-game searches, and Standard/Chess960 support.
 - Added explicit variant filtering; position shortcuts retain chess rules, comparisons ignore move counters, and older report responses cannot overwrite newer dossiers.
 

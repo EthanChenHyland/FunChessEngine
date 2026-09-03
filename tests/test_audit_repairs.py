@@ -381,7 +381,7 @@ class WorkspaceRepairTests(unittest.TestCase):
             restored = workspace.restore_bundle(bundle["token"])
             self.assertEqual(restored["metadata"], metadata)
             self.assertEqual(LibraryDatabase().stats()["games"], 1)
-            with sqlite3.connect(fresh / "opening-book.sqlite3") as connection:
+            with contextlib.closing(sqlite3.connect(fresh / "opening-book.sqlite3")) as connection:
                 self.assertEqual(
                     connection.execute("SELECT move_uci,weight FROM book_moves").fetchone(),
                     ("d2d4", 9),
