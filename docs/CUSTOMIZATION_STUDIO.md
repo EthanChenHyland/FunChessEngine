@@ -8,13 +8,15 @@ white-piece visibility problem without discarding saved preferences.
 
 ## Piece controls
 
-- Choose Sculpted, filled glyph, or letter-token pieces independently for White
+- Choose Sculpted, Neo, filled glyph, or letter-token pieces independently for White
   and Black, or choose one set for both from the visual gallery.
 - Switch font pieces between high-contrast filled silhouettes and traditional
   white/black Unicode symbols.
 - Set independent fill and outline colors for each side.
 - Adjust outline thickness, shadow strength, opacity, vertical alignment, and
   piece width.
+- Scale White and Black independently, choose a solid or engraved outline, set
+  the shadow color, or let the app choose contrasting outlines automatically.
 - Choose Matte, Flat, Gloss, or Glass finishes and optionally add a glow.
 - Apply one-click Maximum clarity, Tournament, Flat modern, Study letters,
   Classic solid, or Glass token recipes.
@@ -36,6 +38,8 @@ white-piece visibility problem without discarding saved preferences.
 - Adjust coordinate size and force light or dark labels when automatic contrast
   is not desired.
 - Optionally glow the board frame for the side to move.
+- Control texture scale, frame style, highlight opacity, legal-target size, and
+  last-move treatment. Coordinates can appear on the edges or every square.
 
 ## Interface controls
 
@@ -44,6 +48,10 @@ white-piece visibility problem without discarding saved preferences.
 - Optional translucent panels, plus a Reduce transparency override.
 - Slim, Standard, and Wide accent-colored scrollbars.
 - Optional square/piece hover motion that honors reduced-motion preferences.
+- Set a custom app accent, background, panel, text, muted-text, and keyboard
+  focus color. Choose plain, grid, aurora, or vignette backgrounds.
+- Choose square, rounded, or pill buttons and Smooth, Snappy, Spring, or Linear
+  animation timing.
 - The existing notation height, database split width, stacked/preview layouts,
   smooth scrolling, scroll lock, and motion-speed controls remain integrated.
 
@@ -85,3 +93,5 @@ opening book, reference database, or engine search setting.
 - Cycle through board and piece recipes with Previous/Next buttons.
 - Undo is disabled until a customization change exists, then tracks the last
   20 changes in the current session.
+- The board toolbar includes a **Customize board** shortcut that opens and
+  focuses the searchable studio.

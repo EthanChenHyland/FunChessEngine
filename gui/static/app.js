@@ -2122,10 +2122,14 @@ function renderBoard() {
     });
 
     if (display.coords) {
-      const showFile = flipped ? square[1] === "8" : square[1] === "1";
-      const showRank = flipped ? square[0] === "h" : square[0] === "a";
-      if (showFile) button.insertAdjacentHTML("beforeend", `<span class="coord file">${square[0]}</span>`);
-      if (showRank) button.insertAdjacentHTML("beforeend", `<span class="coord rank">${square[1]}</span>`);
+      const coordinateMode = typeof wsPrefs === "function" ? wsPrefs().coordsMode : "edges";
+      if (coordinateMode === "all") button.insertAdjacentHTML("beforeend", `<span class="coord square-label">${square}</span>`);
+      else {
+        const showFile = flipped ? square[1] === "8" : square[1] === "1";
+        const showRank = flipped ? square[0] === "h" : square[0] === "a";
+        if (showFile) button.insertAdjacentHTML("beforeend", `<span class="coord file">${square[0]}</span>`);
+        if (showRank) button.insertAdjacentHTML("beforeend", `<span class="coord rank">${square[1]}</span>`);
+      }
     }
     board.appendChild(button);
   }

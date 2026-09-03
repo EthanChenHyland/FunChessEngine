@@ -500,6 +500,19 @@ test('customization sanitizer bounds visual effects and rejects CSS injection',(
   const c=loadWorkstation();const prefs=c.wsSanitize({whiteOutline:'url(x)',frameColor:'#abcdef',pieceShadow:999,pieceOpacity:2,pieceY:-99,pieceWidth:500,radius:40,boardBrightness:0,boardSaturation:999,coordSize:40,fontScale:300,panelRadius:-2,targetStyle:'script'});
   assert.equal(prefs.whiteOutline,'#263746');assert.equal(prefs.frameColor,'#abcdef');assert.equal(prefs.pieceShadow,100);assert.equal(prefs.pieceOpacity,50);assert.equal(prefs.pieceY,-8);assert.equal(prefs.pieceWidth,120);assert.equal(prefs.radius,24);assert.equal(prefs.boardBrightness,70);assert.equal(prefs.boardSaturation,160);assert.equal(prefs.coordSize,18);assert.equal(prefs.fontScale,125);assert.equal(prefs.panelRadius,0);assert.equal(prefs.targetStyle,'dot');
 });
+test('advanced customization values are bounded and enum checked',()=>{
+  const c=loadWorkstation();const prefs=c.wsSanitize({whiteSet:'neo',blackSet:'hacked',whiteScale:999,blackScale:1,highlightOpacity:0,targetSize:100,coordOpacity:1,textureScale:999,outlineStyle:'dots',lastStyle:'corners',coordsMode:'all',frameStyle:'glow',wallpaper:'aurora',buttonShape:'pill',animationEasing:'spring',appBg:'url(x)',panelBg:'#123456'});
+  assert.equal(prefs.whiteSet,'neo');assert.equal(prefs.blackSet,'vector');assert.equal(prefs.whiteScale,125);assert.equal(prefs.blackScale,75);assert.equal(prefs.highlightOpacity,10);assert.equal(prefs.targetSize,90);assert.equal(prefs.coordOpacity,30);assert.equal(prefs.textureScale,200);assert.equal(prefs.outlineStyle,'solid');assert.equal(prefs.lastStyle,'corners');assert.equal(prefs.coordsMode,'all');assert.equal(prefs.frameStyle,'glow');assert.equal(prefs.wallpaper,'aurora');assert.equal(prefs.buttonShape,'pill');assert.equal(prefs.animationEasing,'spring');assert.equal(prefs.appBg,'#0d100e');assert.equal(prefs.panelBg,'#123456');
+});
+test('neo piece artwork defines every chessman with distinct fixed paths',()=>{
+  const c=loadWorkstation(),classic=vm.runInContext('WS_SHAPES',c),neo=vm.runInContext('WS_NEO_SHAPES',c);
+  assert.deepEqual(Object.keys(neo).sort(),['b','k','n','p','q','r']);for(const piece of Object.keys(neo)){assert.match(neo[piece],/^M/);assert.notEqual(neo[piece],classic[piece]);}
+});
+test('automatic outlines maximize the weakest piece and square contrast',()=>{
+  const c=loadWorkstation({display:{theme:'forest'}}),prefs=c.wsSanitize(null);
+  assert.equal(c.wsBestOutline('#fffdf4',prefs),'#101820');assert.equal(c.wsBestOutline('#101820',prefs),'#fffdf4');
+  const custom={...prefs,customPalette:true,light:'#ffffff',dark:'#eeeeee'};assert.equal(c.wsBestOutline('#fefefe',custom),'#101820');
+});
 test('saved looks whitelist complete base appearance without nested data',()=>{
   const c=loadWorkstation({display:{theme:'ocean',accent:'purple',appearance:'light',pieceTheme:'bold',pieceScale:88,sidebarWidth:500,workstation:{presets:[{name:'Portable',settings:{clockStyle:'digital'},base:{theme:'walnut',accent:'orange',appearance:'dark',pieceTheme:'clean',pieceScale:999,sidebarWidth:1,workstation:{bad:true}}}]}}});
   const preset=c.wsPresets()[0];assert.equal(preset.base.theme,'walnut');assert.equal(preset.base.accent,'orange');assert.equal(preset.base.pieceScale,90);assert.equal(preset.base.sidebarWidth,330);assert.equal(preset.base.workstation,undefined);assert.equal(preset.settings.clockStyle,'digital');

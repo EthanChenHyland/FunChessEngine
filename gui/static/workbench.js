@@ -258,7 +258,7 @@ function wbRenderPreview() {
     cell.append(piece);
     if(current?.uci?.slice(0,2)===square.square || current?.uci?.slice(2,4)===square.square) cell.classList.add('last-move');
     if(current?.check && square.piece?.toLowerCase()==='k' && ((current.fen.split(' ')[1]==='w')===(square.piece===square.piece.toUpperCase())))cell.classList.add('check-king');
-    if($('wbCoordinates').checked && (square.row===7 || square.col===0)) cell.append(wbElement('small',square.square));
+    if($('wbCoordinates').checked && ((typeof wsPrefs==='function' && wsPrefs().coordsMode==='all') || square.row===7 || square.col===0)) cell.append(wbElement('small',square.square));
     cell.title=square.square+(square.piece?` ${pieceName(square.piece)}`:' empty');target.append(cell);
   }
   target.setAttribute('aria-label',current?`Preview position after ${current.label || 'start'}. ${current.fen}`:'Starting chess position');
