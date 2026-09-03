@@ -51,6 +51,8 @@ function wbFilters() {
   if($('wbPlayer').value.trim()) filters.player=$('wbPlayer').value.trim();
   if($('wbResult').value) filters.result=$('wbResult').value;
   if($('wbVariant').value) filters.variant=$('wbVariant').value;
+  if($('wbMissing').value) filters.missing=$('wbMissing').value;
+  if($('wbExactPlayers').checked) filters.exact_players=true;
   if($('wbUnfiled').checked) filters.unfiled=true;
   if($('wbExactFolder').checked) {filters.folder_exact=true;filters.folder=$('wbFilter-folder').value.trim();}
   if($('wbFavorites').checked) filters.favorite=true;
@@ -63,6 +65,8 @@ function wbApplyFilters(filters) {
   $('wbPlayer').value=filters.player || '';
   $('wbResult').value=filters.result || '';
   $('wbVariant').value=filters.variant || '';
+  $('wbMissing').value=filters.missing || '';
+  $('wbExactPlayers').checked=Boolean(filters.exact_players);
   $('wbFavorites').checked=Boolean(filters.favorite);
   $('wbUnfiled').checked=Boolean(filters.unfiled);
   $('wbExactFolder').checked=Boolean(filters.folder_exact);
@@ -119,6 +123,7 @@ function wbRenderRows() {
   wbDisabled('wbPrevious',wb.offset===0);wbDisabled('wbNext',wb.offset+wb.limit>=wb.total);
   document.querySelectorAll('[data-wb-sort]').forEach(button=>{button.parentElement.setAttribute('aria-sort',button.dataset.wbSort===wb.sort?(wb.direction==='asc'?'ascending':'descending'):'none');});
   wbSelectionStatus();
+  if(typeof wbRenderProductivity==='function')wbRenderProductivity();
 }
 function wbSelectionStatus() {
   $('wbSelectedCount').textContent=`${wb.selected.size} selected`;
@@ -245,10 +250,11 @@ function wbRenderPreview() {
   const moves=$('wbMoves');moves.replaceChildren();
   wb.preview?.positions.forEach((position,ply)=>{
     const button=wbButton(position.label || 'Start',()=>{wbStop();wb.ply=ply;wbRenderPreview();},'wb-move');
-    button.classList.toggle('active',ply===wb.ply);button.setAttribute('aria-current',ply===wb.ply?'step':'false');moves.append(button);
+    button.dataset.wbPly=ply;button.classList.toggle('active',ply===wb.ply);button.setAttribute('aria-current',ply===wb.ply?'step':'false');moves.append(button);
   });
   const active=moves.querySelector('.active');
   if(active) moves.scrollTop=active.offsetTop-moves.offsetTop-moves.clientHeight/2;
+  if(typeof wbRenderPreviewTools==='function')wbRenderPreviewTools();
 }
 function wbStep(delta) {if(!wb.preview)return;wb.ply=Math.max(0,Math.min(wb.preview.positions.length-1,wb.ply+delta));wbRenderPreview();}
 function wbPlay() {

@@ -3352,6 +3352,10 @@ class Handler(SimpleHTTPRequestHandler):
                 action = payload.get("action", "search")
                 if action == "search":
                     self._json(workbench.search(payload))
+                elif action == "matching_ids":
+                    self._json(workbench.matching_ids(payload.get("filters", {})))
+                elif action == "export_line":
+                    self._json(workbench.export_line(payload))
                 elif action == "preview":
                     self._json(workbench.preview(int(payload.get("id", 0))))
                 elif action == "organize":

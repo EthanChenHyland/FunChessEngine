@@ -1409,3 +1409,15 @@ html[data-desktop="true"] .board-stage {
 .book-edit-row>input {width:80px;flex:0 0 80px;}
 .book-edit-row>div {flex:1 1 120px;}
 .wb-tree-row .wb-tree-book-save {grid-column:2;grid-row:auto;justify-self:start;}
+
+.wb-filter-chips {display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;}
+.wb-filter-chips button {max-width:100%;white-space:normal;overflow-wrap:anywhere;border-radius:16px;}
+.wb-pagination {flex-wrap:wrap;gap:8px;}
+.wb-page-jump {display:flex;align-items:center;gap:6px;}
+.wb-page-jump input {width:65px;}
+.wb-move.notation-match {border-color:var(--accent);text-decoration:underline;}
+.wb-notation-tools,.wb-tree-options {margin:8px 0;padding:8px;border:1px solid var(--line);border-radius:8px;}
+.wb-tree-options>.wb-actions {margin-top:8px;}
+.wb-tree-options input {width:95px;}
+#wbTreePath {display:flex;flex-wrap:wrap;align-items:center;gap:4px;}
+.wb-tree-row .wb-tree-example {grid-column:2;grid-row:auto;justify-self:start;}

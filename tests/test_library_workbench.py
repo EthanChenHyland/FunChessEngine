@@ -399,3 +399,63 @@ class LibraryWorkbenchTests(unittest.TestCase):
             self.workbench.explorer({"variant": "atomic"})
         with self.assertRaises(ValueError):
             self.workbench.explorer({"fen": "8/8/8/8/8/8/8/8 w - - 0 1"})
+
+    def test_exact_player_filters_and_missing_metadata(self) -> None:
+        self.assertEqual(self.search(player="Al")["total"], 1)
+        self.assertEqual(self.search(player="Al", exact_players=True)["total"], 0)
+        self.assertEqual(self.search(player="alpha", exact_players=True)["total"], 1)
+        self.assertEqual(self.search(white="Alpha", black="Beta", exact_players=True)["total"], 1)
+        self.assertEqual(self.search(white="Al", exact_players=True)["total"], 0)
+        self.database.import_pgn_text('[Event "Missing metadata"]\n\n1. c4 *')
+        for field in ("eco", "rating", "date", "players"):
+            self.assertEqual(self.search(missing=field)["total"], 1)
+        with self.assertRaises(ValueError):
+            self.search(missing="unsupported")
+
+    def test_matching_selection_is_complete_and_bounded(self) -> None:
+        ids = self.workbench.matching_ids({"player": "Alpha"})["ids"]
+        self.assertEqual(len(ids), 1)
+        self.assertEqual(self.workbench.preview(ids[0])["game"]["white"], "Alpha")
+        self.assertEqual(self.workbench.matching_ids({"player": "Nobody"})["ids"], [])
+        self.database.import_pgn_text(
+            "\n\n".join(f'[Event "Selection {index}"]\n\n1. e4 *' for index in range(501))
+        )
+        with self.assertRaisesRegex(ValueError, "500"):
+            self.workbench.matching_ids({"event": "Selection"})
+
+    def test_saved_search_rename_preserves_filters_and_rejects_collision(self) -> None:
+        filters = {"player": "Alpha", "exact_players": True, "missing": "eco"}
+        self.workbench.views({"action": "save", "name": "Old", "filters": filters})
+        self.workbench.views({"action": "save", "name": "Taken", "filters": {}})
+        with self.assertRaisesRegex(ValueError, "already"):
+            self.workbench.views({"action": "rename", "name": "Old", "new_name": "Taken"})
+        result = self.workbench.views({"action": "rename", "name": "Old", "new_name": "New"})
+        self.assertEqual(
+            next(view for view in result["views"] if view["name"] == "New")["filters"], filters
+        )
+        with self.assertRaisesRegex(ValueError, "existing"):
+            self.workbench.views({"action": "rename", "name": "Old", "new_name": "Lost"})
+
+    def test_preparation_export_round_trips_setup_comments_and_chess960(self) -> None:
+        for variant, fen, moves in (
+            ("standard", chess.STARTING_FEN, ["e2e4", "c7c5"]),
+            ("chess960", "4k3/8/8/8/8/8/8/R3K2R w KQ - 0 1", ["e1h1"]),
+        ):
+            result = self.workbench.export_line(
+                {
+                    "variant": variant,
+                    "fen": fen,
+                    "moves": [{"uci": move, "comment": "Sample: 12 games"} for move in moves],
+                }
+            )
+            game = chess.pgn.read_game(io.StringIO(result["pgn"]))
+            self.assertIsNotNone(game)
+            assert game is not None
+            self.assertFalse(game.errors)
+            self.assertEqual([move.uci() for move in game.mainline_moves()], moves)
+            self.assertEqual(game.board().chess960, variant == "chess960")
+            self.assertEqual(game.next().comment, "Sample: 12 games")
+        with self.assertRaises(ValueError):
+            self.workbench.export_line({"moves": [{"uci": "e2e5"}]})
+        with self.assertRaises(ValueError):
+            self.workbench.export_line({"moves": [{"uci": "e2e4"}] * 256})

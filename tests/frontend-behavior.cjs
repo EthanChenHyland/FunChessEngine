@@ -357,3 +357,63 @@ test('adding a zero-weight book move preserves a newer move draft',async()=>{
   const saving=c.addCurrentOpeningBookMove();fields.openingBookMove.value='d2d4';resolve({});await saving;
   assert.equal(payload.weight,0);assert.equal(fields.openingBookMove.value,'d2d4');
 });
+const productivitySource=fs.readFileSync(require('node:path').join(__dirname,'../gui/static/database-productivity.js'),'utf8');
+function loadProductivity(names,globals={}) {
+  const ctx=vm.createContext({...globals});
+  for(const name of names) {
+    const start=productivitySource.search(new RegExp(`(?:async )?function ${name}\\(`));
+    assert.ok(start>=0,name);vm.runInContext(productivitySource.slice(start,productivitySource.indexOf('\n}',start)+2),ctx);
+  }
+  return ctx;
+}
+test('page jumps clamp to real pages and reject fractional input',()=>{
+  const c=loadProductivity(['wbPageOffset']);
+  assert.equal(c.wbPageOffset(999,34,25),25);assert.equal(c.wbPageOffset(1,0,25),0);
+  assert.throws(()=>c.wbPageOffset(1.5,100,25));assert.throws(()=>c.wbPageOffset(0,100,25));
+});
+test('inverting page selection retains other pages and rejects overflow atomically',()=>{
+  const c=loadProductivity(['wbInvertSelection']);
+  const selected=new Set([1,100]);const next=c.wbInvertSelection(selected,[1,2]);
+  assert.deepEqual([...next],[100,2]);assert.deepEqual([...selected],[1,100]);
+  const full=new Set(Array.from({length:500},(_,n)=>n));
+  assert.throws(()=>c.wbInvertSelection(full,[999]));assert.equal(full.size,500);
+});
+test('select-all ignores results for a superseded search',async()=>{
+  const wb={sequence:1,filters:{player:'Old'},selected:new Set([1])};let resolve;
+  const c=loadProductivity(['wbSelectMatching'],{wb,wbApi:()=>new Promise(r=>resolve=r),wbStatus:()=>{},wbRenderRows:()=>assert.fail('Stale selection rendered')});
+  const selecting=c.wbSelectMatching();wb.sequence++;resolve({ids:[2,3]});await selecting;
+  assert.deepEqual([...wb.selected],[1]);
+});
+test('notation search and annotation navigation include comments and wrap both ways',()=>{
+  const c=loadProductivity(['wbNotationMatches','wbAnnotatedPlies','wbNextMarked']);
+  const positions=[{comment:'Root plan'},{san:'e4',label:'1. e4'},{san:'c5',comment:'Sicilian plan',nags:[1]},{san:'Nf3',alternatives:1}];
+  assert.equal(JSON.stringify(c.wbNotationMatches(positions,'PLAN')),JSON.stringify([0,2]));
+  assert.equal(JSON.stringify(c.wbAnnotatedPlies(positions)),JSON.stringify([0,2,3]));
+  assert.equal(c.wbNextMarked([0,2,3],3),0);assert.equal(c.wbNextMarked([0,2,3],0,-1),3);
+});
+test('material balance counts promotions and does not score kings',()=>{
+  const c=loadProductivity(['wbMaterialBalance']);
+  const material=c.wbMaterialBalance('4k3/8/8/8/8/8/8/Q2QK2r w - - 0 1');
+  assert.equal(material.balance,13);assert.equal(material.counts.white.q,2);
+});
+test('opening sorting uses selected perspective and leaves unknown scores last',()=>{
+  const c=loadExplorer(['wbTreeScore','wbTreeRows']);
+  const result={fen:'position b - - 0 1',moves:[{move_uci:'a',san:'a',games:20,white_score:.8},{move_uci:'b',san:'b',games:3,white_score:.2},{move_uci:'c',san:'c',games:50,white_score:null}]};
+  assert.equal(c.wbTreeRows(result,'score',1,'black')[0].move_uci,'b');
+  assert.equal(c.wbTreeRows(result,'score',1,'turn').at(-1).move_uci,'c');
+  assert.equal(c.wbTreeRows(result,'games',10).length,2);
+  assert.equal(result.moves[0].move_uci,'a');
+});
+test('example preview cancellation leaves the current move alone',async()=>{
+  const wb={ply:4,preview:{}};
+  const c=loadProductivity(['wbPreviewExample'],{wb,wbPreview:async()=>false,wbRenderPreview:()=>assert.fail('Cancelled example moved preview')});
+  await c.wbPreviewExample(1,'fen','e2e4');assert.equal(wb.ply,4);
+});
+test('SVG diagrams escape metadata and export the selected orientation',()=>{
+  const board=loadWorkbench(['wbBoardSquares']);
+  const c=loadProductivity(['wbDiagramSvg'],{wbBoardSquares:board.wbBoardSquares,escapeHtml:s=>String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')});
+  const preview={game:{white:'<script>bad</script>',black:'B'},positions:[{fen:'4k3/8/8/8/8/8/8/4K3 w - - 0 1'}]};
+  const svg=c.wbDiagramSvg(preview,0,true);
+  assert.equal(svg.includes('<script>'),false);assert.equal((svg.match(/<g>/g)||[]).length,64);
+  assert.ok(svg.includes('>h1</text>'));assert.ok(svg.includes('&lt;script&gt;'));
+});

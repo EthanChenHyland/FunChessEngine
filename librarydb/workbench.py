@@ -70,12 +70,30 @@ def where_clause(filters: dict[str, Any]) -> tuple[str, list[Any]]:
         if key == "folder" and filters.get("folder_exact"):
             clauses.append("d.folder=?")
             values.append(str(filters.get(key, "")))
+        elif filters.get(key) and key in {"white", "black"} and filters.get("exact_players"):
+            clauses.append(f"{column}=? COLLATE NOCASE")
+            values.append(str(filters[key]).strip())
         elif filters.get(key):
             clauses.append(f"{column} LIKE ? ESCAPE '\\'")
             values.append(literal_like(str(filters[key]).strip()[:300]))
+    missing = filters.get("missing")
+    if missing:
+        missing_clauses = {
+            "eco": "(g.eco IS NULL OR g.eco='' OR g.eco='?')",
+            "rating": "(g.white_elo IS NULL OR g.black_elo IS NULL)",
+            "date": "(g.year IS NULL OR g.game_date LIKE '%?%')",
+            "players": "(g.white IS NULL OR g.white IN ('','?') "
+            "OR g.black IS NULL OR g.black IN ('','?'))",
+        }
+        if missing not in missing_clauses:
+            raise ValueError("Unknown missing-metadata filter.")
+        clauses.append(missing_clauses[missing])
     if filters.get("unfiled"):
         clauses.append("d.folder=''")
-    if filters.get("player"):
+    if filters.get("player") and filters.get("exact_players"):
+        clauses.append("(g.white=? COLLATE NOCASE OR g.black=? COLLATE NOCASE)")
+        values.extend([str(filters["player"]).strip()] * 2)
+    elif filters.get("player"):
         clauses.append("(g.white LIKE ? ESCAPE '\\' OR g.black LIKE ? ESCAPE '\\')")
         values.extend([literal_like(str(filters["player"])[:200])] * 2)
     for key, column, operator in (
@@ -154,6 +172,49 @@ class LibraryWorkbench:
             ).fetchall()
         games = [{**dict(row), "tags": json.loads(row["tags"])} for row in rows]
         return {"games": games, "total": total, "offset": offset, "limit": limit}
+
+    def matching_ids(self, filters: Any) -> dict[str, Any]:
+        if not isinstance(filters, dict):
+            raise ValueError("Selection filters must be an object.")
+        where, values = where_clause(filters)
+        with self.database._connect() as connection:
+            rows = connection.execute(
+                f"""SELECT g.id FROM games g JOIN game_details d ON d.game_id=g.id
+                WHERE {where} ORDER BY g.id LIMIT 501""",
+                values,
+            ).fetchall()
+        if len(rows) > 500:
+            raise ValueError("More than 500 games match. Narrow the filters before selecting all.")
+        return {"ids": [row[0] for row in rows]}
+
+    @staticmethod
+    def export_line(payload: dict[str, Any]) -> dict[str, str]:
+        variant = payload.get("variant", "standard")
+        if variant not in {"standard", "chess960"}:
+            raise ValueError("Choose Standard or Chess960 for the line.")
+        board = chess.Board(
+            str(payload.get("fen", chess.STARTING_FEN)), chess960=variant == "chess960"
+        )
+        if not board.is_valid():
+            raise ValueError("The preparation line needs a valid starting position.")
+        moves = payload.get("moves", [])
+        if not isinstance(moves, list) or len(moves) > 255:
+            raise ValueError("Export at most 255 preparation moves.")
+        game = chess.pgn.Game()
+        game.setup(board)
+        game.headers["Event"] = "Opening preparation"
+        node: chess.pgn.GameNode = game
+        for item in moves:
+            if not isinstance(item, dict) or not isinstance(item.get("uci"), str):
+                raise ValueError("Preparation moves must specify legal UCI moves.")
+            comment = item.get("comment", "")
+            if not isinstance(comment, str) or len(comment) > 1000:
+                raise ValueError("Preparation comments are limited to 1000 characters.")
+            move = board.parse_uci(item["uci"])
+            node = node.add_variation(move)
+            node.comment = comment
+            board.push(move)
+        return {"pgn": str(game) + "\n"}
 
     def preview(self, game_id: int) -> dict[str, Any]:
         with self.database._connect() as connection:
@@ -470,7 +531,23 @@ class LibraryWorkbench:
     def views(self, payload: dict[str, Any]) -> dict[str, Any]:
         action = payload.get("action", "list")
         with self.database._connect() as connection:
-            if action in {"save", "delete"}:
+            if action == "rename":
+                old_name = str(payload.get("name", "")).strip()
+                new_name = str(payload.get("new_name", "")).strip()
+                if not 1 <= len(new_name) <= 60:
+                    raise ValueError("Search names must be 1-60 characters.")
+                if (
+                    old_name != new_name
+                    and connection.execute(
+                        "SELECT 1 FROM library_views WHERE name=?", (new_name,)
+                    ).fetchone()
+                ):
+                    raise ValueError("A saved search already uses that name.")
+                if not connection.execute(
+                    "UPDATE library_views SET name=? WHERE name=?", (new_name, old_name)
+                ).rowcount:
+                    raise ValueError("Select an existing saved search to rename.")
+            elif action in {"save", "delete"}:
                 name = str(payload.get("name", "")).strip()
                 if not 1 <= len(name) <= 60:
                     raise ValueError("Search names must be 1-60 characters.")
@@ -531,8 +608,7 @@ class LibraryWorkbench:
         with self.database._connect() as connection:
             totals = dict(
                 connection.execute(
-                    cte
-                    + "SELECT COUNT(*) AS games,COALESCE(SUM(move_uci IS NULL),0) AS ended "
+                    cte + "SELECT COUNT(*) AS games,COALESCE(SUM(move_uci IS NULL),0) AS ended "
                     "FROM chosen",
                     arguments,
                 ).fetchone()

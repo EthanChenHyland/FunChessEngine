@@ -5,6 +5,9 @@ Import reference PGNs from Library first, or use the browser's **Import PGN…**
 game is paused while browsing. The separate preview never replaces its board or move history;
 closing the browser leaves the live game paused until you resume it.
 
+The [final 20 additions](FINAL20_FEATURES.md) extend paging, selection, filters, previews, opening
+preparation, and exports.
+
 ## Feature inventory
 
 | # | Addition | Where to use it |
@@ -137,7 +140,7 @@ comparison, saved searches, player reports, study creation, additive/removal tag
 collection counts, position searches, persistent undo, and opening-tree navigation. Optional screenshots inspect desktop
 and narrow-screen layouts. Engine search is unchanged.
 
-Local validation passed with **200 Python tests and 33 JavaScript tests**, plus the Electron
+Local validation passed with **204 Python tests and 41 JavaScript tests**, plus the Electron
 workflow and layout checks. A single synthetic 10,000-game benchmark (12 plies per game) imported
 130,000 positions in 12.13 seconds. Measured database calls took 3.44 ms for browser search,
 5.95 ms for duplicate search, and 5.98 ms for reports. These are local timings on repeated opening
