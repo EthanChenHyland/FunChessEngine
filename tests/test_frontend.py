@@ -142,6 +142,7 @@ class FrontendTransitionContractTests(unittest.TestCase):
             "workspaceBackupPayload", 'format: "FunChessEngine.WorkspaceBackup"'
         )
         self.assert_function_contains("restoreWorkspaceText", "validateWorkspaceBackup")
+        self.assert_function_contains("restoreWorkspaceText", "persistenceResults.some")
         self.assert_function_contains("copyShareText", "currentPgnText")
         self.assert_function_contains("showOnboarding", "ONBOARDING_KEY")
         self.assertIn('const POSITION_CACHE_KEY = "funChessEngine.positionCache.v1"', self.source)
@@ -287,11 +288,11 @@ class FrontendTransitionContractTests(unittest.TestCase):
 
     def test_display_settings_sanitize_corrupt_local_storage_values(self) -> None:
         self.assert_function_contains(
-            "loadDisplaySettings",
+            "sanitizeDisplaySettings",
             '["forest", "walnut", "ocean", "slate"]',
         )
-        self.assert_function_contains("loadDisplaySettings", '["white", "turn"]')
-        self.assert_function_contains("loadDisplaySettings", "Number.isFinite(pieceScale)")
+        self.assert_function_contains("sanitizeDisplaySettings", '["white", "turn"]')
+        self.assert_function_contains("sanitizeDisplaySettings", "Number.isFinite(pieceScale)")
 
     def test_dock_icon_build_preserves_svg_transparency(self) -> None:
         self.assertIn('sips -s format png "$SOURCE"', self.icon_build)

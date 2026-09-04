@@ -57,6 +57,36 @@ test('history save is recovered from IndexedDB after fallback is removed', async
   const spec=c.durableMetadataSpecs().find(s=>s.key==='CALIBRATION_HISTORY');
   spec.set(disk.get(spec.key)); assert.equal(c.calibrationHistory[0].estimated_elo,1600);
 });
+test('durable saves report whether any storage copy survived', async () => {
+  const failures=[];
+  const blocked={setItem:()=>{throw new Error('storage blocked')},getItem:()=>null,removeItem:()=>{}};
+  const c=load(['persistDurableValue'],{
+    durableMetadataDirty:new Set(),durableWriteChains:new Map(),localStorage:blocked,
+    engineLabDesktop:{writeMetadata:async()=>{throw new Error('disk blocked')}},
+    writeDurableValue:async()=>{throw new Error('database blocked')},reportPersistenceError:error=>failures.push(error.message),console:{warn:()=>{}},
+  });
+  assert.equal(await c.persistDurableValue('library',[{id:1}]),false);
+  assert.equal(failures.length,1);
+  c.writeDurableValue=async()=>{};
+  assert.equal(await c.persistDurableValue('library',[{id:2}]),true);
+});
+test('preference saves accept either browser or desktop persistence', async () => {
+  const failures=[];
+  const c=load(['persistPreferenceValue'],{
+    localStorage:{setItem:()=>{throw new Error('storage blocked')}},
+    engineLabDesktop:{writeMetadata:async()=>{}},reportPersistenceError:error=>failures.push(error.message),console:{warn:()=>{}},
+  });
+  assert.equal(await c.persistPreferenceValue('display',{theme:'ocean'}),true);
+  c.engineLabDesktop.writeMetadata=async()=>{throw new Error('disk blocked')};
+  assert.equal(await c.persistPreferenceValue('display',{theme:'forest'}),false);
+  assert.equal(failures.length,1);
+});
+test('restored display settings are sanitized without reading stale local storage',()=>{
+  const defaults={theme:'forest',accent:'green',appearance:'dark',pieceTheme:'classic',pieceScale:78,coords:true,targets:true,lastMove:true,autoOrient:true,evalPerspective:'white',sound:true,sidebarWidth:460,zen:false,highContrast:false,largeText:false,analysisPreset:'balanced',visionMode:'normal'};
+  const c=load(['sanitizeDisplaySettings'],{DISPLAY_DEFAULTS:defaults});
+  const restored=c.sanitizeDisplaySettings({theme:'ocean',pieceTheme:'invalid',pieceScale:500,sidebarWidth:10,coords:'yes'});
+  assert.equal(restored.theme,'ocean');assert.equal(restored.pieceTheme,'classic');assert.equal(restored.pieceScale,90);assert.equal(restored.sidebarWidth,330);assert.equal(restored.coords,true);
+});
 test('transposition move prefixes follow edges rather than first incoming node moves', () => {
   const path=[{id:'root'},{id:'B',move_uci:'b1c3'},{id:'C',move_uci:'g8f6'},{id:'shared',move_uci:'b1c3'}];
   const moves=['b1c3','g8f6','g1f3'];

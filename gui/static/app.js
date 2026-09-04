@@ -236,24 +236,77 @@ function persistDurableValue(key, value) {
       snapshot = snapshot ?? JSON.parse(JSON.stringify(value));
     } catch (cloneError) {
       reportPersistenceError(cloneError);
-      return;
+      const failed = Promise.resolve(false);
+      durableWriteChains.set(key, failed);
+      return failed;
     }
   }
 
   const previous = durableWriteChains.get(key) || Promise.resolve();
   const pending = previous.catch(() => {}).then(async () => {
-    if (globalThis.engineLabDesktop?.writeMetadata) await globalThis.engineLabDesktop.writeMetadata(key, snapshot);
-    await writeDurableValue(key, snapshot);
-    try {
-      if (localStorage.getItem(key) === serialized) localStorage.removeItem(key);
-    } catch (_) {
-      // IndexedDB is authoritative once its transaction commits.
+    const errors = [];
+    let desktopSaved = false;
+    let indexedDbSaved = false;
+    if (globalThis.engineLabDesktop?.writeMetadata) {
+      try {
+        await globalThis.engineLabDesktop.writeMetadata(key, snapshot);
+        desktopSaved = true;
+      } catch (error) {
+        errors.push(error);
+      }
     }
+    try {
+      await writeDurableValue(key, snapshot);
+      indexedDbSaved = true;
+      try {
+        if (localStorage.getItem(key) === serialized) localStorage.removeItem(key);
+      } catch (_) {
+        // IndexedDB is authoritative once its transaction commits.
+      }
+    } catch (error) {
+      errors.push(error);
+    }
+    if (!desktopSaved && !indexedDbSaved) {
+      const error = errors[0] || localError || new Error(`Could not save ${key}.`);
+      if (localError) reportPersistenceError(error);
+      else console.warn(`Durable save failed for ${key}; localStorage fallback retained.`, error);
+      return !localError;
+    }
+    if (errors.length) {
+      console.warn(`One metadata copy failed for ${key}; another durable copy was saved.`, errors[0]);
+    }
+    return true;
   }).catch((error) => {
     if (localError) reportPersistenceError(error);
-    else console.warn(`IndexedDB save failed for ${key}; localStorage fallback retained.`, error);
+    else console.warn(`Durable save failed for ${key}; localStorage fallback retained.`, error);
+    return !localError;
   });
   durableWriteChains.set(key, pending);
+  return pending;
+}
+
+async function persistPreferenceValue(key, value) {
+  let localSaved = false;
+  let localError = null;
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    localSaved = true;
+  } catch (error) {
+    localError = error;
+  }
+  let desktopSaved = false;
+  if (globalThis.engineLabDesktop?.writeMetadata) {
+    try {
+      await globalThis.engineLabDesktop.writeMetadata(key, value);
+      desktopSaved = true;
+    } catch (error) {
+      if (!localError) localError = error;
+      else console.warn(`Desktop preference mirror failed for ${key}.`, error);
+    }
+  }
+  if (!localSaved && !desktopSaved) reportPersistenceError(localError || new Error(`Could not save ${key}.`));
+  else if (localError) console.warn(`One preference copy failed for ${key}; another copy was saved.`, localError);
+  return localSaved || desktopSaved;
 }
 
 function durableMetadataSpecs() {
@@ -746,8 +799,7 @@ function saveExternalEngines() {
 }
 
 function saveSessionGoals() {
-  localStorage.setItem(SESSION_GOALS_KEY, JSON.stringify(sessionGoals));
-    mirrorDesktopPreference(SESSION_GOALS_KEY);
+  return persistPreferenceValue(SESSION_GOALS_KEY, sessionGoals);
 }
 
 function saveCalibrationHistory() {
@@ -1832,48 +1884,46 @@ function discardRecovery() {
   render();
 }
 
+function sanitizeDisplaySettings(saved) {
+  const merged = { ...DISPLAY_DEFAULTS, ...(saved && typeof saved === "object" ? saved : {}) };
+  // Logo color used to be configurable. Keep the mark intentionally fixed
+  // and independent from appearance/accent settings, including old profiles.
+  delete merged.logoColor;
+  const legacyAccents = { lime: "green", cyan: "blue", violet: "purple", amber: "orange" };
+  merged.accent = legacyAccents[merged.accent] || merged.accent;
+  if (!["green", "blue", "purple", "orange"].includes(merged.accent)) {
+    merged.accent = DISPLAY_DEFAULTS.accent;
+  }
+  if (!["dark", "light"].includes(merged.appearance)) merged.appearance = DISPLAY_DEFAULTS.appearance;
+  if (!["forest", "walnut", "ocean", "slate"].includes(merged.theme)) merged.theme = DISPLAY_DEFAULTS.theme;
+  if (!["classic", "clean", "bold", "soft", "outline", "tournament"].includes(merged.pieceTheme)) {
+    merged.pieceTheme = DISPLAY_DEFAULTS.pieceTheme;
+  }
+  if (!["white", "turn"].includes(merged.evalPerspective)) merged.evalPerspective = DISPLAY_DEFAULTS.evalPerspective;
+  if (!["quick", "balanced", "deep", "study", "custom"].includes(merged.analysisPreset)) merged.analysisPreset = DISPLAY_DEFAULTS.analysisPreset;
+  if (!["normal", "blindfold", "hide-white", "hide-black"].includes(merged.visionMode)) merged.visionMode = DISPLAY_DEFAULTS.visionMode;
+  const pieceScale = Number(merged.pieceScale);
+  merged.pieceScale = Number.isFinite(pieceScale)
+    ? Math.max(66, Math.min(90, pieceScale))
+    : DISPLAY_DEFAULTS.pieceScale;
+  const sidebarWidth = Number(merged.sidebarWidth);
+  merged.sidebarWidth = Number.isFinite(sidebarWidth) ? Math.max(330, Math.min(520, sidebarWidth)) : DISPLAY_DEFAULTS.sidebarWidth;
+  for (const key of ["coords", "targets", "lastMove", "autoOrient", "sound", "zen", "highContrast", "largeText"]) {
+    if (typeof merged[key] !== "boolean") merged[key] = DISPLAY_DEFAULTS[key];
+  }
+  return merged;
+}
+
 function loadDisplaySettings() {
   try {
-    const saved = JSON.parse(localStorage.getItem(DISPLAY_KEY) || "null");
-    const merged = { ...DISPLAY_DEFAULTS, ...(saved && typeof saved === "object" ? saved : {}) };
-    // Logo color used to be configurable. Keep the mark intentionally fixed
-    // and independent from appearance/accent settings, including old profiles.
-    delete merged.logoColor;
-    const legacyAccents = { lime: "green", cyan: "blue", violet: "purple", amber: "orange" };
-    merged.accent = legacyAccents[merged.accent] || merged.accent;
-    if (!["green", "blue", "purple", "orange"].includes(merged.accent)) {
-      merged.accent = DISPLAY_DEFAULTS.accent;
-    }
-    if (!["dark", "light"].includes(merged.appearance)) merged.appearance = DISPLAY_DEFAULTS.appearance;
-    if (!["forest", "walnut", "ocean", "slate"].includes(merged.theme)) merged.theme = DISPLAY_DEFAULTS.theme;
-    if (!["classic", "clean", "bold", "soft", "outline", "tournament"].includes(merged.pieceTheme)) {
-      merged.pieceTheme = DISPLAY_DEFAULTS.pieceTheme;
-    }
-    if (!["white", "turn"].includes(merged.evalPerspective)) merged.evalPerspective = DISPLAY_DEFAULTS.evalPerspective;
-    if (!["quick", "balanced", "deep", "study", "custom"].includes(merged.analysisPreset)) merged.analysisPreset = DISPLAY_DEFAULTS.analysisPreset;
-    if (!["normal", "blindfold", "hide-white", "hide-black"].includes(merged.visionMode)) merged.visionMode = DISPLAY_DEFAULTS.visionMode;
-    const pieceScale = Number(merged.pieceScale);
-    merged.pieceScale = Number.isFinite(pieceScale)
-      ? Math.max(66, Math.min(90, pieceScale))
-      : DISPLAY_DEFAULTS.pieceScale;
-    const sidebarWidth = Number(merged.sidebarWidth);
-    merged.sidebarWidth = Number.isFinite(sidebarWidth) ? Math.max(330, Math.min(520, sidebarWidth)) : DISPLAY_DEFAULTS.sidebarWidth;
-    for (const key of ["coords", "targets", "lastMove", "autoOrient", "sound", "zen", "highContrast", "largeText"]) {
-      if (typeof merged[key] !== "boolean") merged[key] = DISPLAY_DEFAULTS[key];
-    }
-    return merged;
+    return sanitizeDisplaySettings(JSON.parse(localStorage.getItem(DISPLAY_KEY) || "null"));
   } catch (_) {
     return { ...DISPLAY_DEFAULTS };
   }
 }
 
 function saveDisplaySettings() {
-  try {
-    localStorage.setItem(DISPLAY_KEY, JSON.stringify(display));
-    mirrorDesktopPreference(DISPLAY_KEY);
-  } catch (_) {
-    // Display preferences are optional; the GUI still works if storage is blocked.
-  }
+  return persistPreferenceValue(DISPLAY_KEY, display);
 }
 
 function applyDisplaySettings(renderAfter = true) {
@@ -3893,17 +3943,18 @@ async function restoreWorkspaceText(text, beforeApply = null) {
     calibrationHistory = payload.calibration_history || [];
     externalCompareHistory = payload.external_comparisons || [];
     regressionHistory = payload.regression_history || [];
-    if (payload.session_goals) { sessionGoals = payload.session_goals; saveSessionGoals(); }
+    const preferenceWrites = [];
+    if (payload.session_goals) {
+      sessionGoals = payload.session_goals;
+      preferenceWrites.push(saveSessionGoals());
+    }
     saveCalibrationHistory(); saveExternalCompareHistory(); saveRegressionHistory();
     positionAnalysisCache.clear();
     for (const entry of Array.isArray(payload.position_cache) ? payload.position_cache.slice(-30) : []) {
       if (Array.isArray(entry) && typeof entry[0] === "string" && entry[1]) positionAnalysisCache.set(entry[0], entry[1]);
     }
-    try {
-      localStorage.setItem(DISPLAY_KEY, JSON.stringify(payload.display || DISPLAY_DEFAULTS));
-      mirrorDesktopPreference(DISPLAY_KEY);
-    } catch (_) {}
-    display = loadDisplaySettings();
+    display = sanitizeDisplaySettings(payload.display);
+    preferenceWrites.push(saveDisplaySettings());
     saveRecentGames();
     persistVariationWorkspaces();
     savePositionBookmarks();
@@ -3930,7 +3981,14 @@ async function restoreWorkspaceText(text, beforeApply = null) {
     renderEnginePresets();
     renderPlugins();
     renderExternalEngines();
-    await Promise.all([...durableWriteChains.values()]);
+    const requiredWrites = durableMetadataSpecs()
+      .map(({ key }) => durableWriteChains.get(key))
+      .filter(Boolean);
+    const persistenceResults = await Promise.all([...requiredWrites, ...preferenceWrites]);
+    if (persistenceResults.some(result => result === false)) {
+      setStatus("Workspace restored, but some library or settings data could not be saved. Free storage, then create another backup.", "error");
+      return true;
+    }
     setStatus("Workspace restored from backup.", "success");
     return true;
   } catch (error) {
