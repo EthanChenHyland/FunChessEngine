@@ -107,6 +107,22 @@ async function run() {
       && !homeAutoPaused`,
   );
 
+  const playSetupLayout = await window.webContents.executeJavaScript(`(() => {
+    const setup = document.querySelector('.play-setup');
+    const controls = [...setup.querySelectorAll(':scope > .section-card')];
+    const selects = [...setup.querySelectorAll(':scope > .section-card > select')];
+    return {
+      label: document.getElementById('playSetupTitle')?.textContent,
+      cards: controls.length,
+      minSelectHeight: Math.min(...selects.map(element => element.getBoundingClientRect().height)),
+      gaps: controls.slice(1).map((element,index) => element.getBoundingClientRect().top-controls[index].getBoundingClientRect().bottom),
+    };
+  })()`, true);
+  if (playSetupLayout.label !== 'Choose how you play' || playSetupLayout.cards !== 3
+    || playSetupLayout.minSelectHeight < 40 || playSetupLayout.gaps.some(gap => gap < 8)) {
+    throw new Error(`Play setup controls are cramped: ${JSON.stringify(playSetupLayout)}`);
+  }
+
   const stableLayout = await window.webContents.executeJavaScript(`(async () => {
     const rect = (element) => {
       const box = element.getBoundingClientRect();

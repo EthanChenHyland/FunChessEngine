@@ -6,7 +6,7 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:">
   <title>FunChessEngine · Default Lab</title>
   <link rel="icon" href="/app-mark.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/style.css?v=22">
+  <link rel="stylesheet" href="/style.css?v=23">
 </head>
 <body>
   <a class="skip-link" href="#board" hidden>Skip to chessboard</a>
@@ -129,6 +129,11 @@
           <div id="statusLine" class="status-line" role="status" aria-live="polite" aria-atomic="true">Ready.</div>
           <div id="openingLine" class="opening-line"><span id="openingEco">—</span><strong id="openingName">Opening not identified</strong><span id="phaseLabel">Opening</span></div>
 
+          <section class="play-setup" aria-labelledby="playSetupTitle">
+          <div class="play-setup-heading">
+            <div><p class="eyebrow">GAME SETUP</p><h3 id="playSetupTitle">Choose how you play</h3></div>
+            <span>Mode · variant · strength</span>
+          </div>
           <div class="section-card play-controls">
             <label for="humanSide">Game mode</label>
             <select id="humanSide">
@@ -166,6 +171,7 @@
             </select>
             <p id="engineStrengthHint" class="hint">Full search strength and the engine's strongest move selection.</p>
           </div>
+          </section>
 
           <div class="game-actions">
             <button id="newGameBtn" class="primary">New game</button>

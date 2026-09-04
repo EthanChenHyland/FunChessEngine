@@ -612,6 +612,24 @@ h2 { margin: 0; font-size: 19px; letter-spacing: -.025em; }
 .tournament-card { margin-bottom: 12px; }
 .variant-card .setting-heading label,
 .engine-strength-card .setting-heading label { margin-bottom: 0; }
+.play-setup {
+  display: grid;
+  gap: 10px;
+  margin: 4px 0 16px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line));
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--panel-2) 58%, var(--panel));
+}
+.play-setup-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 14px; padding: 1px 2px 3px; }
+.play-setup-heading .eyebrow { margin: 0 0 3px; color: var(--accent); font-size: 8px; letter-spacing: .12em; }
+.play-setup-heading h3 { margin: 0; font-size: 14px; letter-spacing: -.012em; }
+.play-setup-heading > span { color: var(--muted); font-size: 8px; line-height: 1.35; text-align: right; }
+.play-setup > .section-card { margin: 0; padding: 15px; border-color: color-mix(in srgb, var(--line) 82%, var(--accent)); background: var(--panel-3); }
+.play-setup > .section-card > select { min-height: 44px; padding-inline: 12px 38px; font-size: 12px; font-weight: 720; }
+.play-setup > .section-card > .hint { margin: 9px 0 0; line-height: 1.55; }
+.play-setup .setting-heading { align-items: center; }
+.play-setup .setting-value { max-width: 52%; padding: 3px 7px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--accent) 9%, transparent); text-overflow: ellipsis; white-space: nowrap; }
 .tournament-card[open] > summary { margin-bottom: 10px; }
 .mini-report,
 .compact-list {
@@ -1294,6 +1312,9 @@ kbd { padding: 2px 5px; border: 1px solid var(--line-strong); border-bottom-widt
   .board-actions { grid-template-columns: 1fr 1fr; }
   .tab-panel { padding: 15px; }
   .play-controls, .row.two, .row.three, .analysis-engine-controls { grid-template-columns: 1fr; }
+  .play-setup { padding: 10px; }
+  .play-setup-heading { align-items: flex-start; }
+  .play-setup-heading > span { max-width: 105px; }
   .game-actions { grid-template-columns: 1fr 1fr; }
   #resignBtn:not([hidden]) { grid-column: 1 / -1; }
   .promotion-options { grid-template-columns: repeat(2, 1fr); }

@@ -64,6 +64,8 @@ class FrontendTransitionContractTests(unittest.TestCase):
     def test_sidebar_scrolls_per_tab_and_engine_strength_is_live_configurable(self) -> None:
         self.assertIn('id="engineStrengthSelect"', self.html)
         self.assertIn('id="engineStrengthValue"', self.html)
+        self.assertIn('class="play-setup"', self.html)
+        self.assertIn('id="playSetupTitle"', self.html)
         self.assert_function_contains("applyEngineStrength", 'api("/api/engine-config"')
         self.assert_function_contains("applyEngineStrength", "engineProfileForSkill")
         self.assert_function_contains("activateTab", "tabScrollPositions.set")
