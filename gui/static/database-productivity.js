@@ -51,12 +51,27 @@ function wbMaterialBalance(fen) {
   return {balance,counts};
 }
 function wbPositionKey(fen) {return String(fen || '').trim().split(/\s+/).slice(0,4).join(' ');}
+function wbPositionPhase(fen,ply=0) {
+  const pieces=[...String(fen).split(' ')[0]].filter(piece=>/[prnbqk]/i.test(piece)),queens=pieces.filter(piece=>piece.toLowerCase()==='q').length,nonPawns=pieces.filter(piece=>!/[pk]/i.test(piece)).length;
+  return pieces.length<=10 || (!queens && nonPawns<=4)?'Endgame':ply<=20 && queens===2 && pieces.length>=24?'Opening':'Middlegame';
+}
+function wbMoveKinds(position) {
+  const san=position?.san || '',kinds=[];if(san.includes('x'))kinds.push('capture');if(/[+#]$/.test(san))kinds.push('check');if(san.endsWith('#'))kinds.push('mate');if(san.includes('='))kinds.push('promotion');if(/^O-O/.test(san))kinds.push('castle');if(position?.comment?.trim() || position?.nags?.length)kinds.push('annotation');if(position?.alternatives)kinds.push('variation');return kinds;
+}
+function wbMoveFilterPlies(positions,kind) {
+  if(kind==='critical')return wbCriticalPlies(positions);
+  if(kind==='phase')return positions.flatMap((position,ply)=>ply && wbPositionPhase(position.fen,ply)!==wbPositionPhase(positions[ply-1].fen,ply-1)?[ply]:[]);
+  return positions.flatMap((position,ply)=>ply && wbMoveKinds(position).includes(kind)?[ply]:[]);
+}
+function wbGameSummary(positions) {
+  const all=positions.slice(1).flatMap(wbMoveKinds),counts=kind=>all.filter(value=>value===kind).length,keys=new Map();for(const position of positions)keys.set(wbPositionKey(position.fen),(keys.get(wbPositionKey(position.fen)) || 0)+1);
+  return {moves:positions.length-1,captures:counts('capture'),checks:counts('check'),mates:counts('mate'),castles:counts('castle'),promotions:counts('promotion'),annotations:counts('annotation'),variations:counts('variation'),repetitions:[...keys.values()].reduce((total,count)=>total+Math.max(0,count-1),0)};
+}
 function wbPositionFacts(positions,ply) {
   const position=positions[ply],fields=position.fen.trim().split(/\s+/),board=fields[0] || '';
-  const pieces=[...board].filter(piece=>/[prnbqk]/i.test(piece)),queens=pieces.filter(piece=>piece.toLowerCase()==='q').length,nonPawns=pieces.filter(piece=>!/[pk]/i.test(piece)).length;
-  const phase=pieces.length<=10 || (!queens && nonPawns<=4)?'Endgame':ply<=20 && queens===2 && pieces.length>=24?'Opening':'Middlegame';
+  const pieces=[...board].filter(piece=>/[prnbqk]/i.test(piece)),phase=wbPositionPhase(position.fen,ply);
   const key=wbPositionKey(position.fen),occurrences=positions.flatMap((row,index)=>wbPositionKey(row.fen)===key?[index]:[]),seen=occurrences.filter(index=>index<=ply).length;
-  const san=position.san || '',traits=[];if(san.includes('x'))traits.push('capture');if(/[+#]$/.test(san))traits.push(san.endsWith('#')?'mate':'check');if(san.includes('='))traits.push('promotion');if(/^O-O/.test(san))traits.push('castling');if(position.comment?.trim())traits.push('comment');if(position.nags?.length)traits.push('NAG');if(position.alternatives)traits.push('variations');
+  const traits=wbMoveKinds(position).map(kind=>({castle:'castling',annotation:position.comment?.trim()?'comment':'NAG',variation:'variations'}[kind] || kind));
   return {phase,pieces:pieces.length,side:fields[1]==='b'?'Black':'White',castling:fields[2]==='-'?'None':fields[2],enPassant:fields[3]==='-'?'None':fields[3],halfmove:Number(fields[4] || 0),fullmove:Number(fields[5] || 1),occurrences,seen,traits};
 }
 function wbCriticalPlies(positions) {return positions.flatMap((position,ply)=>ply && (/[x+#=]/.test(position.san || '') || /^O-O/.test(position.san || '') || position.comment?.trim() || position.nags?.length || position.alternatives)?[ply]:[]);}
@@ -96,10 +111,14 @@ function wbRenderPreviewTools() {
     const critical=wbCriticalPlies(preview.positions),previousCritical=critical.some(ply=>ply<wb.ply),nextCritical=critical.some(ply=>ply>wb.ply),previousOccurrence=facts.occurrences.some(ply=>ply<wb.ply),nextOccurrence=facts.occurrences.some(ply=>ply>wb.ply);
     wbDisabled('wbBackFive',wb.ply===0);wbDisabled('wbForwardFive',wb.ply===preview.positions.length-1);wbDisabled('wbPreviousCritical',!previousCritical);wbDisabled('wbNextCritical',!nextCritical);wbDisabled('wbPreviousOccurrence',!previousOccurrence);wbDisabled('wbNextOccurrence',!nextOccurrence);
     for(const id of ['wbCopyEpd','wbCopySanLine','wbCopyUciLine','wbCopyPositionJson'])wbDisabled(id,false);
+    const summary=wbGameSummary(preview.positions);$('wbGameStats').replaceChildren(...[['Moves',summary.moves],['Captures',summary.captures],['Checks',summary.checks],['Annotations',summary.annotations],['Variations',summary.variations],['Repetitions',summary.repetitions]].map(([label,value])=>{const item=wbElement('span');item.append(wbElement('b',value),document.createTextNode(` ${label}`));return item;}));
+    const map=$('wbGameMap'),focused=map.contains(document.activeElement)?document.activeElement.dataset.ply:null;map.style.setProperty('--wb-map-count',Math.max(1,preview.positions.length));map.replaceChildren(...preview.positions.map((row,ply)=>{const kinds=wbMoveKinds(row),button=wbButton('',()=>{wbStop();wb.ply=ply;wbRenderPreview();},`wb-map-ply ${kinds.join(' ')}`);button.dataset.ply=ply;button.classList.toggle('active',ply===wb.ply);button.setAttribute('aria-label',`${row.label || 'Start'}${kinds.length?' · '+kinds.join(', '):' · quiet'}`);button.title=button.getAttribute('aria-label');return button;}));
+    const active=map.querySelector('.active');active?.scrollIntoView({block:'nearest',inline:'nearest'});if(focused!=null)map.querySelector(`[data-ply="${focused}"]`)?.focus({preventScroll:true});
+    const filtered=wbMoveFilterPlies(preview.positions,$('wbMoveNavigator').value);wbDisabled('wbPreviousFiltered',!filtered.some(ply=>ply<wb.ply));wbDisabled('wbNextFiltered',!filtered.some(ply=>ply>wb.ply));
     $('wbInspectorHint').textContent=facts.traits.length?`This move is marked: ${facts.traits.join(', ')}.`:'Quiet position. Critical navigation finds captures, checks, promotions, castling, comments, NAGs, and variations.';
   } else {
-    $('wbMaterial').textContent='';$('wbInspectorGrid').replaceChildren();$('wbInspectorHint').textContent='Select a game to inspect its positions.';
-    for(const id of ['wbBackFive','wbForwardFive','wbPreviousCritical','wbNextCritical','wbPreviousOccurrence','wbNextOccurrence','wbCopyEpd','wbCopySanLine','wbCopyUciLine','wbCopyPositionJson'])wbDisabled(id,true);
+    $('wbMaterial').textContent='';$('wbInspectorGrid').replaceChildren();$('wbGameStats').replaceChildren();$('wbGameMap').replaceChildren();$('wbInspectorHint').textContent='Select a game to inspect its positions.';
+    for(const id of ['wbBackFive','wbForwardFive','wbPreviousCritical','wbNextCritical','wbPreviousOccurrence','wbNextOccurrence','wbPreviousFiltered','wbNextFiltered','wbCopyEpd','wbCopySanLine','wbCopyUciLine','wbCopyPositionJson'])wbDisabled(id,true);
   }
   const matches=wbNotationMatches(preview?.positions || [],$('wbNotationQuery').value);
   $('wbNotationCount').textContent=$('wbNotationQuery').value?`${matches.length} matching positions`:'Search SAN moves or PGN comments. Matches wrap at the end.';
@@ -111,7 +130,7 @@ function wbRenderPreviewTools() {
 }
 function wbJumpMarked(kind,direction=1) {
   const preview=wbRequirePreview();
-  const plies=kind==='annotation'?wbAnnotatedPlies(preview.positions):kind==='critical'?wbCriticalPlies(preview.positions):kind==='occurrence'?wbPositionFacts(preview.positions,wb.ply).occurrences:wbNotationMatches(preview.positions,$('wbNotationQuery').value);
+  const plies=kind==='annotation'?wbAnnotatedPlies(preview.positions):kind==='critical'?wbCriticalPlies(preview.positions):kind==='occurrence'?wbPositionFacts(preview.positions,wb.ply).occurrences:kind==='filtered'?wbMoveFilterPlies(preview.positions,$('wbMoveNavigator').value):wbNotationMatches(preview.positions,$('wbNotationQuery').value);
   const ply=wbNextMarked(plies,wb.ply,direction);
   if(ply==null){wbStatus('No matching positions.');return;}
   wbStop();wb.ply=ply;wbRenderPreview();wbStatus(`Preview at ply ${ply}.`);
@@ -142,6 +161,7 @@ function bindDatabaseProductivity() {
   on('wbPreviousGame',()=>wbNextGame(-1));on('wbNextGame',()=>wbNextGame(1));
   on('wbPreviousAnnotation',()=>wbJumpMarked('annotation',-1));on('wbNextAnnotation',()=>wbJumpMarked('annotation'));
   on('wbBackFive',()=>{wbStop();wbStep(-10);});on('wbForwardFive',()=>{wbStop();wbStep(10);});on('wbPreviousCritical',()=>wbJumpMarked('critical',-1));on('wbNextCritical',()=>wbJumpMarked('critical'));on('wbPreviousOccurrence',()=>wbJumpMarked('occurrence',-1));on('wbNextOccurrence',()=>wbJumpMarked('occurrence'));
+  on('wbPreviousFiltered',()=>wbJumpMarked('filtered',-1));on('wbNextFiltered',()=>wbJumpMarked('filtered'));$('wbMoveNavigator').addEventListener('change',wbRenderPreviewTools);
   on('wbCopyEpd',async()=>{const preview=wbRequirePreview();await navigator.clipboard.writeText(wbEpd(preview.positions[wb.ply].fen));wbStatus('Position EPD copied.');});
   on('wbCopySanLine',async()=>{const preview=wbRequirePreview();await navigator.clipboard.writeText(wbLineNotation(preview.positions,wb.ply));wbStatus('SAN line through this position copied.');});
   on('wbCopyUciLine',async()=>{const preview=wbRequirePreview();await navigator.clipboard.writeText(preview.positions.slice(1,wb.ply+1).map(row=>row.uci).filter(Boolean).join(' '));wbStatus('UCI line through this position copied.');});

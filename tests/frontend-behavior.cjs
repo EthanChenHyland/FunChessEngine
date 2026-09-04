@@ -397,7 +397,7 @@ test('material balance counts promotions and does not score kings',()=>{
   assert.equal(material.balance,13);assert.equal(material.counts.white.q,2);
 });
 test('position inspector reports phase, FEN state, traits and repetition',()=>{
-  const c=loadProductivity(['wbPositionKey','wbPositionFacts']);
+  const c=loadProductivity(['wbPositionKey','wbPositionPhase','wbMoveKinds','wbPositionFacts']);
   const positions=[{fen:'8/8/8/8/8/8/4K3/7k w - - 0 40'},{fen:'8/8/8/8/8/8/4K3/7k b - - 1 40',san:'Kf2+'},{fen:'8/8/8/8/8/8/4K3/7k w - - 2 41',san:'Kh2',comment:'repeat'}];
   const facts=c.wbPositionFacts(positions,2);assert.equal(facts.phase,'Endgame');assert.equal(facts.pieces,2);assert.equal(facts.side,'White');assert.equal(facts.castling,'None');assert.equal(facts.fullmove,41);assert.equal(facts.seen,2);assert.deepEqual([...facts.occurrences],[0,2]);assert.deepEqual([...facts.traits],['comment']);
 });
@@ -406,9 +406,15 @@ test('critical-position navigation includes tactical and annotated plies',()=>{
   assert.deepEqual([...c.wbCriticalPlies(positions)],[2,3,4,5]);
 });
 test('EPD and portable position records retain bounded current-line context',()=>{
-  const c=loadProductivity(['wbPositionKey','wbPositionFacts','wbLineNotation','wbEpd','wbPositionPayload']);
+  const c=loadProductivity(['wbPositionKey','wbPositionPhase','wbMoveKinds','wbPositionFacts','wbLineNotation','wbEpd','wbPositionPayload']);
   const preview={game:{id:7,white:'A',black:'B',result:'1-0',variant:'standard'},positions:[{fen:'8/8/8/8/8/8/4K3/7k w - - 0 40'},{fen:'8/8/8/8/8/8/5K2/7k b - - 1 40',san:'Kf3',label:'40. Kf3',uci:'e2f3'}]};
   assert.equal(c.wbEpd(preview.positions[1].fen),'8/8/8/8/8/8/5K2/7k b - - hmvc 1; fmvn 40;');const payload=c.wbPositionPayload(preview,1);assert.equal(payload.ply,1);assert.equal(payload.phase,'Endgame');assert.equal(payload.sanLine,'40. Kf3');assert.deepEqual([...payload.uciLine],['e2f3']);
+});
+test('game map filters classify moves and phase changes',()=>{
+  const c=loadProductivity(['wbPositionKey','wbPositionPhase','wbMoveKinds','wbCriticalPlies','wbMoveFilterPlies','wbGameSummary']);
+  const opening='rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR',middle='r3k2r/ppp3pp/2n5/3qp3/8/2N2N2/PPP2PPP/R2Q1RK1',end='8/8/8/8/8/8/4K3/7k';
+  const positions=[{fen:`${opening} w KQkq - 0 1`},{fen:`${opening} b KQkq - 0 1`,san:'e4'},{fen:`${middle} w kq - 1 12`,san:'Bxh7+',comment:'idea'},{fen:`${end} b - - 0 40`,san:'a8=Q',alternatives:1}];
+  assert.deepEqual([...c.wbMoveKinds(positions[2])],['capture','check','annotation']);assert.deepEqual([...c.wbMoveFilterPlies(positions,'capture')],[2]);assert.deepEqual([...c.wbMoveFilterPlies(positions,'phase')],[2,3]);const summary=c.wbGameSummary(positions);assert.equal(summary.moves,3);assert.equal(summary.captures,1);assert.equal(summary.checks,1);assert.equal(summary.promotions,1);assert.equal(summary.annotations,1);assert.equal(summary.variations,1);
 });
 test('opening sorting uses selected perspective and leaves unknown scores last',()=>{
   const c=loadExplorer(['wbTreeScore','wbTreeRows']);
