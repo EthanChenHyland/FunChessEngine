@@ -569,6 +569,11 @@ test('geometric and slim artwork extend the complete piece catalog',()=>{
   for(const family of [geometric,slim]){assert.deepEqual(Object.keys(family).sort(),['b','k','n','p','q','r']);for(const path of Object.values(family))assert.match(path,/^M/);}
   for(const set of ['geometric','slim','shield'])assert.equal(c.wsSanitize({whiteSet:set}).whiteSet,set);
 });
+test('gothic artwork and shaped tokens extend the catalog to twelve sets',()=>{
+  const c=loadWorkstation(),gothic=vm.runInContext('WS_GOTHIC_SHAPES',c),sets=vm.runInContext('WS_ENUMS.pieceSet',c);
+  assert.deepEqual(Object.keys(gothic).sort(),['b','k','n','p','q','r']);for(const path of Object.values(gothic))assert.match(path,/^M/);
+  assert.equal(sets.length,12);for(const set of ['gothic','roundel','hex'])assert.equal(c.wsSanitize({blackSet:set}).blackSet,set);
+});
 test('automatic outlines maximize the weakest piece and square contrast',()=>{
   const c=loadWorkstation({display:{theme:'forest'}}),prefs=c.wsSanitize(null);
   assert.equal(c.wsBestOutline('#fffdf4',prefs),'#101820');assert.equal(c.wsBestOutline('#101820',prefs),'#fffdf4');

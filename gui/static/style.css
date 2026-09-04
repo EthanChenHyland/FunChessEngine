@@ -1467,6 +1467,7 @@ html[data-desktop="true"] .board-stage {
 .ws-art-piece svg { width: 1em; height: 1em; overflow: visible; pointer-events: none; }
 .ws-art-piece svg :is(path,circle,polygon) { fill: currentColor; stroke: var(--ws-outline-color); stroke-width: var(--ws-outline,1.4); stroke-linejoin: round; stroke-linecap: round; }
 .ws-art-piece svg text { fill: var(--ws-outline-color); stroke: none; font: bold 24px ui-sans-serif,system-ui,sans-serif; }
+.ws-art-piece svg text.ws-token-symbol { font: 25px var(--piece-font); }
 :is(.piece,.wb-piece,.ws-gallery-piece,[data-promotion-icon]).white-piece { color: var(--ws-white,#fff8e7); --ws-outline-color: #24313a; }
 :is(.piece,.wb-piece,.ws-gallery-piece,[data-promotion-icon]).black-piece { color: var(--ws-black,#202c38); --ws-outline-color: #e7e0cd; }
 .ws-art-piece { text-shadow: none !important; -webkit-text-stroke: 0 !important; }
