@@ -51,6 +51,7 @@ module.exports=async function productivitySmoke(window,waitFor) {
     document.getElementById('wbForwardFive').click();if(wb.ply!==wb.preview.positions.length-1)throw new Error('Five-move forward navigation failed');document.getElementById('wbBackFive').click();if(wb.ply!==0)throw new Error('Five-move back navigation failed');
     document.getElementById('wbMoveNavigator').value='annotation';wbRenderPreviewTools();document.getElementById('wbNextFiltered').click();if(wb.ply!==1)throw new Error('Filtered move navigation failed');wb.ply=0;wbRenderPreview();
     document.getElementById('wbNextCritical').click();if(wb.ply!==1)throw new Error('Critical-position navigation failed');
+    await wbLoadPositionReference();if(!document.getElementById('wbReferenceStatus').textContent.includes('34 games') || !document.getElementById('wbReferenceMoves').textContent.includes('e5') || document.getElementById('wbReferenceTree').disabled)throw new Error('Exact-position reference statistics failed');
     document.getElementById('wbViews').value='Smoke models';document.getElementById('wbViewName').value='Smoke models renamed';document.getElementById('wbRenameView').click();
   })()`,true);
   await waitFor(window,`wb.views.some(view=>view.name==='Smoke models renamed')`);

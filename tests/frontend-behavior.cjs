@@ -416,6 +416,15 @@ test('game map filters classify moves and phase changes',()=>{
   const positions=[{fen:`${opening} w KQkq - 0 1`},{fen:`${opening} b KQkq - 0 1`,san:'e4'},{fen:`${middle} w kq - 1 12`,san:'Bxh7+',comment:'idea'},{fen:`${end} b - - 0 40`,san:'a8=Q',alternatives:1}];
   assert.deepEqual([...c.wbMoveKinds(positions[2])],['capture','check','annotation']);assert.deepEqual([...c.wbMoveFilterPlies(positions,'capture')],[2]);assert.deepEqual([...c.wbMoveFilterPlies(positions,'phase')],[2,3]);const summary=c.wbGameSummary(positions);assert.equal(summary.moves,3);assert.equal(summary.captures,1);assert.equal(summary.checks,1);assert.equal(summary.promotions,1);assert.equal(summary.annotations,1);assert.equal(summary.variations,1);
 });
+test('position reference metrics exclude unfinished games from score',()=>{
+  const c=loadProductivity(['wbReferenceMetrics']);const metrics=c.wbReferenceMetrics({games:8,ended:2,moves:[{white_wins:2,draws:1,black_wins:1},{white_wins:0,draws:2,black_wins:0}]});
+  assert.equal(metrics.games,8);assert.equal(metrics.ended,2);assert.equal(metrics.finished,6);assert.equal(metrics.continuations,2);assert.equal(metrics.whiteScore,7/12);
+});
+test('stale position-reference responses cannot overwrite a newer preview ply',async()=>{
+  let resolve;const wb={ply:0,filters:{tag:'study',fen:'old'},preview:{game:{id:3,variant:'standard'},positions:[{fen:'8/8/8/8/8/8/4K3/7k w - - 0 1'},{fen:'8/8/8/8/8/8/5K2/7k b - - 1 1'}]}};
+  const fields={wbReferenceStatus:{textContent:''},wbReferenceMoves:{replaceChildren:()=>{}}};const c=loadProductivity(['wbLoadPositionReference'],{wb,$:id=>fields[id],wbRequirePreview:()=>wb.preview,wbApi:()=>new Promise(done=>resolve=done),wbRenderPositionReference:()=>assert.fail('Stale reference rendered')});
+  const request=c.wbLoadPositionReference();wb.ply=1;resolve({games:1,moves:[]});await request;assert.equal(wb.positionReference,undefined);
+});
 test('opening sorting uses selected perspective and leaves unknown scores last',()=>{
   const c=loadExplorer(['wbTreeScore','wbTreeRows']);
   const result={fen:'position b - - 0 1',moves:[{move_uci:'a',san:'a',games:20,white_score:.8},{move_uci:'b',san:'b',games:3,white_score:.2},{move_uci:'c',san:'c',games:50,white_score:null}]};

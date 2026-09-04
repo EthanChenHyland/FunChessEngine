@@ -147,8 +147,12 @@ The preview position inspector adds ChessBase-style position context without tou
 game: phase, piece count, side to move, castling and en-passant state, move counters, repetition
 occurrences, and tactical/annotation traits. It can jump five moves, wrap through critical moves
 or repeated positions, and copy EPD, SAN, UCI, or a portable JSON position record.
+Its visual game map summarizes captures, checks, annotations, variations, and repetitions and can
+filter navigation by move type or phase change. On-demand position reference statistics use the
+active database filters, show the top continuations with score, Elo, and year context, open example
+games, save standard-chess moves to the opening book, or transfer the position into the full tree.
 
-Local validation passed with **204 Python tests and 65 JavaScript tests**, plus the Electron
+Local validation passed with **204 Python tests and 67 JavaScript tests**, plus the Electron
 workflow and layout checks. A single synthetic 10,000-game benchmark (12 plies per game) imported
 130,000 positions in 12.13 seconds. Measured database calls took 3.44 ms for browser search,
 5.95 ms for duplicate search, and 5.98 ms for reports. These are local timings on repeated opening
