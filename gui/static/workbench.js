@@ -112,11 +112,11 @@ function wbRenderRows() {
     select.setAttribute('aria-label',`Select ${game.white} versus ${game.black}`);
     select.addEventListener('change',()=>{try{wbSetSelection(game.id,select.checked);}catch(error){select.checked=false;wbStatus(error.message,true);}wbSelectionStatus();});
     const cell=wbElement('td');cell.append(select);row.append(cell);
-    const favorite=wbElement('td');
+    const favorite=wbElement('td');favorite.dataset.wbIdentity='favorite';
     favorite.append(wbButton(game.favorite?'★':'☆',async()=>{await wbApi('organize',{ids:[game.id],changes:{favorite:!game.favorite}});await wbLoadCollections();await wbSearch(false);},'wb-star'));
     favorite.firstChild.setAttribute('aria-label',game.favorite?'Remove favorite':'Favorite game');row.append(favorite);
     for(const key of ['white','black','result','rating','game_date','eco','event','plies','folder']) {
-      const td=wbElement('td');
+      const td=wbElement('td');td.dataset.wbColumn=key;if(key==='white' || key==='black')td.dataset.wbIdentity=key;
       if(key==='white') td.append(wbButton(game.white || 'White',()=>wbPreview(game.id),'wb-link'));
       else if(key==='black') td.textContent=game.black || 'Black';
       else if(key==='rating') td.textContent=[game.white_elo ?? '—',game.black_elo ?? '—'].join(' / ');

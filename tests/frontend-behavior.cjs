@@ -371,6 +371,11 @@ test('page jumps clamp to real pages and reject fractional input',()=>{
   assert.equal(c.wbPageOffset(999,34,25),25);assert.equal(c.wbPageOffset(1,0,25),0);
   assert.throws(()=>c.wbPageOffset(1.5,100,25));assert.throws(()=>c.wbPageOffset(0,100,25));
 });
+test('database table layouts whitelist columns and preserve boolean preferences',()=>{
+  const columns=['result','rating','game_date','eco','event','plies','folder'],defaults={columns:[...columns],stickyPlayers:false,zebra:true,wrap:false};
+  const c=loadProductivity(['wbSanitizeTablePrefs'],{WB_TABLE_COLUMNS:columns,WB_TABLE_DEFAULTS:defaults});const prefs=c.wbSanitizeTablePrefs({columns:['eco','event','eco','<style>'],stickyPlayers:true,zebra:false,wrap:true});
+  assert.deepEqual([...prefs.columns],['eco','event']);assert.equal(prefs.stickyPlayers,true);assert.equal(prefs.zebra,false);assert.equal(prefs.wrap,true);assert.deepEqual([...c.wbSanitizeTablePrefs(null).columns],columns);assert.equal(c.wbSanitizeTablePrefs({columns:'all'}).zebra,true);
+});
 test('inverting page selection retains other pages and rejects overflow atomically',()=>{
   const c=loadProductivity(['wbInvertSelection']);
   const selected=new Set([1,100]);const next=c.wbInvertSelection(selected,[1,2]);

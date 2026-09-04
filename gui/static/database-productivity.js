@@ -1,4 +1,20 @@
 // Database productivity controls; all board navigation stays inside the preview.
+const WB_TABLE_COLUMNS=['result','rating','game_date','eco','event','plies','folder'];
+const WB_TABLE_DEFAULTS={columns:[...WB_TABLE_COLUMNS],stickyPlayers:false,zebra:true,wrap:false};
+const WB_TABLE_LAYOUT_KEY='funchess-workbench-table-v1';
+function wbSanitizeTablePrefs(raw) {
+  const value=raw && typeof raw==='object'?raw:{},columns=Array.isArray(value.columns)?value.columns.filter((column,index,list)=>WB_TABLE_COLUMNS.includes(column) && list.indexOf(column)===index):[...WB_TABLE_DEFAULTS.columns];
+  return {columns,stickyPlayers:typeof value.stickyPlayers==='boolean'?value.stickyPlayers:WB_TABLE_DEFAULTS.stickyPlayers,zebra:typeof value.zebra==='boolean'?value.zebra:WB_TABLE_DEFAULTS.zebra,wrap:typeof value.wrap==='boolean'?value.wrap:WB_TABLE_DEFAULTS.wrap};
+}
+function wbTablePrefs() {try{return wbSanitizeTablePrefs(JSON.parse(localStorage.getItem(WB_TABLE_LAYOUT_KEY)));}catch{return wbSanitizeTablePrefs(null);}}
+function wbSaveTablePrefs(prefs) {localStorage.setItem(WB_TABLE_LAYOUT_KEY,JSON.stringify(wbSanitizeTablePrefs(prefs)));wbApplyTablePrefs();}
+function wbApplyTablePrefs() {
+  const prefs=wbTablePrefs(),table=$('wbTable');table.dataset.wbStickyPlayers=String(prefs.stickyPlayers);table.dataset.wbZebra=String(prefs.zebra);table.dataset.wbWrap=String(prefs.wrap);
+  for(const element of table.querySelectorAll('[data-wb-column]'))element.hidden=!prefs.columns.includes(element.dataset.wbColumn);
+  for(const input of $('wbColumnChoices').querySelectorAll('[data-wb-table-column]'))input.checked=prefs.columns.includes(input.dataset.wbTableColumn);
+  $('wbStickyPlayers').checked=prefs.stickyPlayers;$('wbZebraRows').checked=prefs.zebra;$('wbWrapCells').checked=prefs.wrap;
+}
+function wbSetTableColumns(columns) {wbSaveTablePrefs({...wbTablePrefs(),columns});}
 function wbPageOffset(page,total,limit) {
   if(!Number.isInteger(page) || page<1)throw new Error('Enter a whole page number starting at 1.');
   return (Math.min(page,Math.max(1,Math.ceil(total/limit)))-1)*limit;
@@ -35,6 +51,7 @@ function wbRenderProductivity() {
     const button=wbButton(`${label} ×`,async()=>{const filters={...wb.filters};delete filters[key];wbApplyFilters(filters);$('wbViews').value='';await wbSearch();},'secondary compact');
     button.setAttribute('aria-label',`Remove ${label} filter`);target.append(button);
   }
+  wbApplyTablePrefs();
 }
 async function wbNextGame(delta) {
   if(wb.searching)return;
@@ -176,6 +193,10 @@ async function wbPreviewExample(id,fen,move) {
 }
 function bindDatabaseProductivity() {
   const on=(id,callback)=>$(id).addEventListener('click',()=>wbAction(callback,$(id)));
+  const columnLabels={result:'Result',rating:'Elo',game_date:'Date',eco:'ECO',event:'Event',plies:'Plies',folder:'Folder and tags'};
+  for(const column of WB_TABLE_COLUMNS){const label=wbElement('label'),input=document.createElement('input');input.type='checkbox';input.dataset.wbTableColumn=column;input.addEventListener('change',()=>{const columns=[...$('wbColumnChoices').querySelectorAll('[data-wb-table-column]:checked')].map(item=>item.dataset.wbTableColumn);wbSetTableColumns(columns);});label.append(input,document.createTextNode(columnLabels[column]));$('wbColumnChoices').append(label);}
+  on('wbColumnsEssential',()=>wbSetTableColumns(['result','rating','game_date','eco']));on('wbColumnsResearch',()=>wbSetTableColumns(['result','rating','game_date','eco','event','plies']));on('wbColumnsAll',()=>wbSetTableColumns(WB_TABLE_COLUMNS));
+  for(const [id,key] of [['wbStickyPlayers','stickyPlayers'],['wbZebraRows','zebra'],['wbWrapCells','wrap']])$(id).addEventListener('change',()=>wbSaveTablePrefs({...wbTablePrefs(),[key]:$(id).checked}));
   on('wbFirstPage',async()=>{wb.offset=0;await wbSearch(false);});
   on('wbLastPage',async()=>{wb.offset=wbPageOffset(Math.max(1,Math.ceil(wb.total/wb.limit)),wb.total,wb.limit);await wbSearch(false);});
   const go=async()=>{wb.offset=wbPageOffset(Number($('wbPageNumber').value),wb.total,wb.limit);await wbSearch(false);};
