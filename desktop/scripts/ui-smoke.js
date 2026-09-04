@@ -96,6 +96,17 @@ async function run() {
     throw new Error(`Launcher contract failed: ${JSON.stringify(initial)}`);
   }
 
+  await window.webContents.executeJavaScript(`(async()=>{
+    if(document.getElementById('onboardingDialog').open) closeOnboarding();
+    await openDatabaseWorkbench();
+    onboardingComplete=false;
+    localStorage.removeItem(ONBOARDING_KEY);
+    showOnboarding(false);
+    if(document.getElementById('onboardingDialog').open) throw new Error('Onboarding stacked over the database workflow');
+    wbCloseWorkspace();
+    onboardingComplete=true;
+  })()`, true);
+
   await window.webContents.executeJavaScript(`document.getElementById("startPlayBtn").click()`, true);
   await waitFor(
     window,

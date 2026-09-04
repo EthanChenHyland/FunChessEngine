@@ -121,6 +121,7 @@ let durableMetadataHydrated = false;
 const durableMetadataDirty = new Set();
 const durableWriteChains = new Map();
 let persistenceErrorShown = false;
+let onboardingComplete = false;
 let trainerFocusMode = "due";
 let trainerSessionKeys = null;
 let applyingAnalysisPreset = false;
@@ -285,11 +286,11 @@ function persistDurableValue(key, value) {
   return pending;
 }
 
-async function persistPreferenceValue(key, value) {
+async function persistPreferenceValue(key, value, raw = false) {
   let localSaved = false;
   let localError = null;
   try {
-    localStorage.setItem(key, JSON.stringify(value));
+    localStorage.setItem(key, raw ? String(value) : JSON.stringify(value));
     localSaved = true;
   } catch (error) {
     localError = error;
@@ -449,25 +450,52 @@ function mirrorDesktopPreference(key) {
 
 async function hydrateDesktopPreferences() {
   if (!globalThis.engineLabDesktop?.readMetadata) return;
-  try {
-    for (const key of [DISPLAY_KEY, SESSION_GOALS_KEY, RECOVERY_KEY, POSITION_CACHE_KEY, ONBOARDING_KEY]) {
+  const nativeValues = new Map();
+  for (const key of [DISPLAY_KEY, SESSION_GOALS_KEY, RECOVERY_KEY, POSITION_CACHE_KEY, ONBOARDING_KEY]) {
+    try {
       const saved = await globalThis.engineLabDesktop.readMetadata(key);
       if (saved.found) {
-        if (saved.value == null) localStorage.removeItem(key);
-        else localStorage.setItem(key, key === ONBOARDING_KEY ? saved.value : JSON.stringify(saved.value));
+        nativeValues.set(key, saved.value);
+        try {
+          if (saved.value == null) localStorage.removeItem(key);
+          else localStorage.setItem(key, key === ONBOARDING_KEY ? saved.value : JSON.stringify(saved.value));
+        } catch (error) {
+          console.warn(`Browser preference cache is unavailable for ${key}; using the desktop copy.`, error);
+        }
       } else {
-        const value = localStorage.getItem(key);
-        if (value != null) await globalThis.engineLabDesktop.writeMetadata(key, key === ONBOARDING_KEY ? value : JSON.parse(value));
+        let value = null;
+        try {
+          value = localStorage.getItem(key);
+        } catch (error) {
+          console.warn(`Browser preference cache is unavailable for ${key}.`, error);
+        }
+        if (value != null) {
+          await globalThis.engineLabDesktop.writeMetadata(key, key === ONBOARDING_KEY ? value : JSON.parse(value));
+        }
       }
+    } catch (error) {
+      reportPersistenceError(error);
     }
-    display = loadDisplaySettings();
-    sessionGoals = loadSessionGoals();
-    startupRecovery = loadRecoverySnapshot();
-    recoveryResolved = !startupRecovery;
-    positionAnalysisCache.clear();
-    for (const [key, value] of loadPositionAnalysisCache()) positionAnalysisCache.set(key, value);
-    applyDisplaySettings(false);
-  } catch (error) { reportPersistenceError(error); }
+  }
+  display = nativeValues.has(DISPLAY_KEY)
+    ? sanitizeDisplaySettings(nativeValues.get(DISPLAY_KEY))
+    : loadDisplaySettings();
+  sessionGoals = nativeValues.has(SESSION_GOALS_KEY)
+    ? normalizeSessionGoals(nativeValues.get(SESSION_GOALS_KEY))
+    : loadSessionGoals();
+  startupRecovery = nativeValues.has(RECOVERY_KEY)
+    ? normalizeRecoverySnapshot(nativeValues.get(RECOVERY_KEY))
+    : loadRecoverySnapshot();
+  recoveryResolved = !startupRecovery;
+  const cachedPositions = nativeValues.has(POSITION_CACHE_KEY)
+    ? normalizePositionAnalysisCache(nativeValues.get(POSITION_CACHE_KEY))
+    : loadPositionAnalysisCache();
+  positionAnalysisCache.clear();
+  for (const [key, value] of cachedPositions) positionAnalysisCache.set(key, value);
+  onboardingComplete = nativeValues.has(ONBOARDING_KEY)
+    ? nativeValues.get(ONBOARDING_KEY) === "done"
+    : loadOnboardingComplete();
+  applyDisplaySettings(false);
 }
 
 function setEngineStatus(message, mode = "ready") {
@@ -604,12 +632,15 @@ async function applyEngineConfig() {
   }
 }
 
+function normalizeRecoverySnapshot(saved) {
+  if (!saved || saved.version !== 1 || !Array.isArray(saved.moves)) return null;
+  if (!saved.moves.length && saved.initial_fen === STARTING_FEN) return null;
+  return saved;
+}
+
 function loadRecoverySnapshot() {
   try {
-    const saved = JSON.parse(localStorage.getItem(RECOVERY_KEY) || "null");
-    if (!saved || saved.version !== 1 || !Array.isArray(saved.moves)) return null;
-    if (!saved.moves.length && saved.initial_fen === STARTING_FEN) return null;
-    return saved;
+    return normalizeRecoverySnapshot(JSON.parse(localStorage.getItem(RECOVERY_KEY) || "null"));
   } catch (_) {
     return null;
   }
@@ -727,33 +758,36 @@ function todayKey() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function normalizeSessionGoals(saved) {
+  const normalized = saved && typeof saved === "object" && !Array.isArray(saved) ? { ...saved } : {};
+  if (normalized.date !== todayKey()) {
+    normalized.date = todayKey();
+    normalized.progress = { tactics: 0, repertoire: 0, endgames: 0, losses: 0 };
+  }
+  const bounded = (value, fallback, maximum) => {
+    const number = Number(value ?? fallback);
+    return Number.isFinite(number) ? Math.max(0, Math.min(maximum, Math.floor(number))) : fallback;
+  };
+  normalized.targets = {
+    tactics: bounded(normalized.targets?.tactics, 20, 200),
+    repertoire: bounded(normalized.targets?.repertoire, 10, 200),
+    endgames: bounded(normalized.targets?.endgames, 1, 50),
+    losses: bounded(normalized.targets?.losses, 1, 50),
+  };
+  normalized.progress = {
+    tactics: bounded(normalized.progress?.tactics, 0, Number.MAX_SAFE_INTEGER),
+    repertoire: bounded(normalized.progress?.repertoire, 0, Number.MAX_SAFE_INTEGER),
+    endgames: bounded(normalized.progress?.endgames, 0, Number.MAX_SAFE_INTEGER),
+    losses: bounded(normalized.progress?.losses, 0, Number.MAX_SAFE_INTEGER),
+  };
+  return normalized;
+}
+
 function loadSessionGoals() {
   try {
-    const saved = JSON.parse(localStorage.getItem(SESSION_GOALS_KEY) || "null");
-    const normalized = saved && typeof saved === "object" ? saved : {};
-    if (normalized.date !== todayKey()) {
-      normalized.date = todayKey();
-      normalized.progress = { tactics: 0, repertoire: 0, endgames: 0, losses: 0 };
-    }
-    normalized.targets = {
-      tactics: Math.max(0, Math.min(200, Number(normalized.targets?.tactics || 20))),
-      repertoire: Math.max(0, Math.min(200, Number(normalized.targets?.repertoire || 10))),
-      endgames: Math.max(0, Math.min(50, Number(normalized.targets?.endgames || 1))),
-      losses: Math.max(0, Math.min(50, Number(normalized.targets?.losses || 1))),
-    };
-    normalized.progress = {
-      tactics: Math.max(0, Number(normalized.progress?.tactics || 0)),
-      repertoire: Math.max(0, Number(normalized.progress?.repertoire || 0)),
-      endgames: Math.max(0, Number(normalized.progress?.endgames || 0)),
-      losses: Math.max(0, Number(normalized.progress?.losses || 0)),
-    };
-    return normalized;
+    return normalizeSessionGoals(JSON.parse(localStorage.getItem(SESSION_GOALS_KEY) || "null"));
   } catch (_) {
-    return {
-      date: todayKey(),
-      targets: { tactics: 20, repertoire: 10, endgames: 1, losses: 1 },
-      progress: { tactics: 0, repertoire: 0, endgames: 0, losses: 0 },
-    };
+    return normalizeSessionGoals(null);
   }
 }
 
@@ -817,12 +851,15 @@ function saveRegressionHistory() {
   persistDurableValue(REGRESSION_HISTORY_KEY, regressionHistory);
 }
 
+function normalizePositionAnalysisCache(saved) {
+  return Array.isArray(saved)
+    ? saved.filter((entry) => Array.isArray(entry) && typeof entry[0] === "string" && entry[1]).slice(-30)
+    : [];
+}
+
 function loadPositionAnalysisCache() {
   try {
-    const saved = JSON.parse(localStorage.getItem(POSITION_CACHE_KEY) || "[]");
-    return Array.isArray(saved)
-      ? saved.filter((entry) => Array.isArray(entry) && typeof entry[0] === "string" && entry[1]).slice(-30)
-      : [];
+    return normalizePositionAnalysisCache(JSON.parse(localStorage.getItem(POSITION_CACHE_KEY) || "[]"));
   } catch (_) {
     return [];
   }
@@ -4370,9 +4407,14 @@ function renderOnboarding() {
 
 function showOnboarding(force = false) {
   if (!force) {
+    if (onboardingComplete) return;
     try {
-      if (localStorage.getItem(ONBOARDING_KEY) === "done") return;
+      if (localStorage.getItem(ONBOARDING_KEY) === "done") {
+        onboardingComplete = true;
+        return;
+      }
     } catch (_) {}
+    if (!launcherVisible() || document.querySelector("dialog[open]")) return;
   }
   onboardingStep = 0;
   renderOnboarding();
@@ -4380,11 +4422,17 @@ function showOnboarding(force = false) {
 }
 
 function closeOnboarding() {
-  try {
-    localStorage.setItem(ONBOARDING_KEY, "done");
-    if (globalThis.engineLabDesktop?.writeMetadata) void globalThis.engineLabDesktop.writeMetadata(ONBOARDING_KEY, "done").catch(reportPersistenceError);
-  } catch (_) {}
+  onboardingComplete = true;
+  void persistPreferenceValue(ONBOARDING_KEY, "done", true);
   if ($("onboardingDialog").open) $("onboardingDialog").close();
+}
+
+function loadOnboardingComplete() {
+  try {
+    return localStorage.getItem(ONBOARDING_KEY) === "done";
+  } catch (_) {
+    return false;
+  }
 }
 
 function gameSnapshot() {

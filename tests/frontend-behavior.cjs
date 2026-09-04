@@ -81,11 +81,43 @@ test('preference saves accept either browser or desktop persistence', async () =
   assert.equal(await c.persistPreferenceValue('display',{theme:'forest'}),false);
   assert.equal(failures.length,1);
 });
+test('raw preferences retain the onboarding storage format',async()=>{
+  const values=new Map();
+  const c=load(['persistPreferenceValue'],{localStorage:{setItem:(key,value)=>values.set(key,value)},reportPersistenceError:()=>{}});
+  assert.equal(await c.persistPreferenceValue('onboarding','done',true),true);
+  assert.equal(values.get('onboarding'),'done');
+});
 test('restored display settings are sanitized without reading stale local storage',()=>{
   const defaults={theme:'forest',accent:'green',appearance:'dark',pieceTheme:'classic',pieceScale:78,coords:true,targets:true,lastMove:true,autoOrient:true,evalPerspective:'white',sound:true,sidebarWidth:460,zen:false,highContrast:false,largeText:false,analysisPreset:'balanced',visionMode:'normal'};
   const c=load(['sanitizeDisplaySettings'],{DISPLAY_DEFAULTS:defaults});
   const restored=c.sanitizeDisplaySettings({theme:'ocean',pieceTheme:'invalid',pieceScale:500,sidebarWidth:10,coords:'yes'});
   assert.equal(restored.theme,'ocean');assert.equal(restored.pieceTheme,'classic');assert.equal(restored.pieceScale,90);assert.equal(restored.sidebarWidth,330);assert.equal(restored.coords,true);
+});
+test('daily goal normalization preserves zero and rejects non-finite values',()=>{
+  const c=load(['todayKey','normalizeSessionGoals']);
+  const goals=c.normalizeSessionGoals({date:c.todayKey(),targets:{tactics:0,repertoire:'bad',endgames:4.8,losses:70},progress:{tactics:Infinity,repertoire:3.9}});
+  assert.deepEqual({...goals.targets},{tactics:0,repertoire:10,endgames:4,losses:50});
+  assert.deepEqual({...goals.progress},{tactics:0,repertoire:3,endgames:0,losses:0});
+});
+test('desktop preferences hydrate when the browser cache is blocked',async()=>{
+  const defaults={theme:'forest',accent:'green',appearance:'dark',pieceTheme:'classic',pieceScale:78,coords:true,targets:true,lastMove:true,autoOrient:true,evalPerspective:'white',sound:true,sidebarWidth:460,zen:false,highContrast:false,largeText:false,analysisPreset:'balanced',visionMode:'normal'};
+  const values=new Map([
+    ['display',{theme:'ocean'}],['goals',{date:'never',targets:{tactics:0}}],['recovery',{version:1,moves:['e2e4'],initial_fen:'start'}],['cache',[['fen',{lines:[]}]]],['onboarding','done'],
+  ]), failures=[];
+  const c=load(['todayKey','sanitizeDisplaySettings','normalizeSessionGoals','loadSessionGoals','normalizeRecoverySnapshot','loadRecoverySnapshot','normalizePositionAnalysisCache','loadPositionAnalysisCache','loadDisplaySettings','loadOnboardingComplete','hydrateDesktopPreferences'],{
+    DISPLAY_KEY:'display',SESSION_GOALS_KEY:'goals',RECOVERY_KEY:'recovery',POSITION_CACHE_KEY:'cache',ONBOARDING_KEY:'onboarding',DISPLAY_DEFAULTS:defaults,STARTING_FEN:'start-position',
+    engineLabDesktop:{readMetadata:async key=>({found:true,value:values.get(key)})},localStorage:{setItem:()=>{throw new Error('blocked')},removeItem:()=>{throw new Error('blocked')},getItem:()=>{throw new Error('blocked')}},
+    display:null,sessionGoals:null,startupRecovery:null,recoveryResolved:true,positionAnalysisCache:new Map(),onboardingComplete:false,applyDisplaySettings:()=>{},reportPersistenceError:error=>failures.push(error.message),console:{warn:()=>{}},
+  });
+  await c.hydrateDesktopPreferences();
+  assert.equal(c.display.theme,'ocean');assert.equal(c.sessionGoals.targets.tactics,0);assert.equal(c.startupRecovery.moves[0],'e2e4');assert.equal(c.positionAnalysisCache.has('fen'),true);assert.equal(c.onboardingComplete,true);assert.deepEqual(failures,[]);
+});
+test('automatic onboarding never stacks over an active workflow dialog',()=>{
+  let shown=0;
+  const elements={onboardingDialog:{open:false,showModal:()=>{shown++;}},onboardingContent:{append:()=>{}},onboardingPrevBtn:{},onboardingNextBtn:{}};
+  const c=load(['renderOnboarding','showOnboarding'],{onboardingComplete:false,onboardingStep:0,ONBOARDING_KEY:'onboarding',ONBOARDING_STEPS:[['Welcome','Copy']],localStorage:{getItem:()=>null},launcherVisible:()=>true,document:{querySelector:()=>({open:true}),createElement:()=>({className:'',textContent:'',append:()=>{}})},$:id=>elements[id]});
+  c.showOnboarding(false);assert.equal(shown,0);
+  c.showOnboarding(true);assert.equal(shown,1);
 });
 test('transposition move prefixes follow edges rather than first incoming node moves', () => {
   const path=[{id:'root'},{id:'B',move_uci:'b1c3'},{id:'C',move_uci:'g8f6'},{id:'shared',move_uci:'b1c3'}];
