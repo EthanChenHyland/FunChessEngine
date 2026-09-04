@@ -186,6 +186,19 @@ test('interrupted tournament opens partial standings and keeps it distinct from 
   assert.deepEqual(revealed,[['advancedTournamentStandings','tools']]);
 });
 
+test('tournament stop reports engine-profile restoration failures without losing results',async()=>{
+  const fields={humanSide:{value:'none'}},statuses=[];
+  const c=load(['stopTournament'],{
+    tournamentState:{active:true,total:4,completed:2,whiteSkill:85,blackSkill:60,whiteWins:1,blackWins:0,draws:1,restoreHumanSide:'black',restoreProfile:'maximum',restoreSkill:100,restoreCap:2500},
+    autoplay:true,autoplayTimer:null,clearTimeout:()=>{},$:id=>fields[id],previousHumanSide:'none',
+    api:async()=>{throw new Error('backend unavailable');},state:{engine_profile:'intermediate',engine_skill:60,engine_move_time_cap_ms:700},
+    tournamentHistory:[],saveTournamentHistory:()=>{},orientForHuman:()=>{},render:()=>{},setStatus:(text,tone)=>statuses.push({text,tone}),
+  });
+  await c.stopTournament(false);
+  assert.equal(fields.humanSide.value,'black');assert.equal(c.tournamentHistory.length,1);assert.equal(c.tournamentState,null);
+  assert.equal(c.state.engine_skill,60);assert.equal(statuses[0].tone,'error');assert.match(statuses[0].text,/could not be restored: backend unavailable/);
+});
+
 const workbenchSource=fs.readFileSync(require('node:path').join(__dirname,'../gui/static/workbench.js'),'utf8');
 function loadWorkbench(names, globals={}) {
   const ctx=vm.createContext({console,...globals});

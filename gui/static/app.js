@@ -7667,6 +7667,7 @@ async function stopTournament(completed = false) {
     : "white";
   $("humanSide").value = restoreSide;
   previousHumanSide = restoreSide;
+  let restorationError = "";
   try {
     const config = await api("/api/engine-config", {
       profile: finished.restoreProfile,
@@ -7678,7 +7679,9 @@ async function stopTournament(completed = false) {
       state.engine_skill = config.skill;
       state.engine_move_time_cap_ms = config.move_time_cap_ms;
     }
-  } catch (_) {}
+  } catch (error) {
+    restorationError = error?.message || String(error);
+  }
   if (finished.completed > 0) {
     tournamentHistory.unshift({
       games: finished.completed,
@@ -7695,7 +7698,11 @@ async function stopTournament(completed = false) {
   tournamentState = null;
   orientForHuman();
   render();
-  setStatus(completed ? "Engine match series complete." : "Engine match series stopped.", completed ? "success" : "info");
+  const outcome = completed ? "Engine match series complete." : "Engine match series stopped.";
+  setStatus(
+    restorationError ? `${outcome} Original engine settings could not be restored: ${restorationError}` : outcome,
+    restorationError ? "error" : completed ? "success" : "info",
+  );
 }
 
 function scheduleComputerReply() {
