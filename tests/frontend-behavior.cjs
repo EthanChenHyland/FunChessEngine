@@ -36,6 +36,16 @@ test('repertoire queue excludes other colors and repertoires', () => {
   c.trainerItems[1].due_at=Date.now()+100000;
   assert.equal(c.trainerFocusedItems('opening').length,0);
 });
+test('trainer position loads are atomic and ignore stale responses',async()=>{
+  const pending=new Map(),statuses=[];
+  const c=load(['loadTrainerItem'],{
+    trainerItems:[{fen:'first'},{fen:'second'}],trainerLoadSequence:0,trainerItemIndex:-1,trainerSelected:null,trainerRevealBest:false,trainerAwaitingNext:false,trainerSnapshot:null,trainerMode:false,
+    api:(_url,{fen})=>new Promise((resolve,reject)=>pending.set(fen,{resolve,reject})),setStatus:(text,tone)=>statuses.push({text,tone}),render:()=>{},
+  });
+  const first=c.loadTrainerItem(0),second=c.loadTrainerItem(1);pending.get('first').resolve({fen:'first-board'});assert.equal(await first,false);assert.equal(c.trainerItemIndex,-1);
+  pending.get('second').resolve({fen:'second-board'});assert.equal(await second,true);assert.equal(c.trainerItemIndex,1);assert.equal(c.trainerSnapshot.fen,'second-board');
+  c.api=async()=>{throw new Error('offline');};const before=c.trainerSnapshot;assert.equal(await c.loadTrainerItem(0),false);assert.equal(c.trainerSnapshot,before);assert.equal(c.trainerItemIndex,1);assert.equal(statuses[0].tone,'error');assert.match(statuses[0].text,/offline/);
+});
 test('history save is recovered from IndexedDB after fallback is removed', async () => {
   const local=new Map(), disk=new Map();
   const names=['CALIBRATION_HISTORY','EXTERNAL_COMPARE_HISTORY','REGRESSION_HISTORY','RECENTS','TRAINER','VARIATIONS','BOOKMARKS','ANNOTATIONS','BENCHMARK_HISTORY','ANALYSIS_QUEUE','TOURNAMENT_HISTORY','LESSONS','ENGINE_PRESETS','PLUGINS','EXTERNAL_ENGINES'];

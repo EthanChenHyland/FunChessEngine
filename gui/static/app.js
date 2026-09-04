@@ -102,6 +102,7 @@ let trainerItems = loadTrainerItems();
 let trainerMode = false;
 let trainerSnapshot = null;
 let trainerItemIndex = -1;
+let trainerLoadSequence = 0;
 let trainerSelected = null;
 let trainerRevealBest = false;
 let trainerAwaitingNext = false;
@@ -2827,11 +2828,20 @@ function trainerFocusedItems(mode = trainerFocusMode) {
 async function loadTrainerItem(index) {
   const item = trainerItems[index];
   if (!item) return false;
+  const sequence = ++trainerLoadSequence;
+  let snapshot;
+  try {
+    snapshot = await api("/api/position", { fen: item.fen });
+  } catch (error) {
+    if (sequence === trainerLoadSequence) setStatus(`Could not open training position: ${error?.message || error}`, "error");
+    return false;
+  }
+  if (sequence !== trainerLoadSequence || trainerItems[index] !== item) return false;
   trainerItemIndex = index;
   trainerSelected = null;
   trainerRevealBest = false;
   trainerAwaitingNext = false;
-  trainerSnapshot = await api("/api/position", { fen: item.fen });
+  trainerSnapshot = snapshot;
   trainerMode = true;
   render();
   return true;
@@ -2910,7 +2920,7 @@ async function startTrainer(focus = "due", keys = null) {
   const target = focused[0].index;
   trainerSessionSolved = 0;
   trainerSessionStreak = 0;
-  await loadTrainerItem(target);
+  if (!await loadTrainerItem(target)) return;
   document.querySelector('[data-tab="train"]')?.click();
   $("statusLine").textContent = "Personal trainer active — find the engine's best move.";
 }
@@ -2973,6 +2983,7 @@ function trainerHint() {
 }
 
 async function exitTrainer(resumeGame = true) {
+  trainerLoadSequence += 1;
   trainerSessionKeys = null;
   trainerMode = false;
   trainerSnapshot = null;
