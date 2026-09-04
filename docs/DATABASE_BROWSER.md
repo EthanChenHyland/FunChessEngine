@@ -52,7 +52,7 @@ preparation, and exports.
 | 35 | Opening distribution with score and drill-down filters | Database insights → Build report |
 | 36 | Games-by-year histogram and JSON report export | Database insights |
 | 37 | Create a study directly from the preview position | Study this position |
-| 38 | Comfortable/compact table density and active-filter count | Table toolbar and Advanced filters |
+| 38 | Persistent compact/comfortable/spacious table density and active-filter count | Table toolbar and Advanced filters |
 
 The existing **Open in Analysis** workflow is also available from a preview. It uses the normal
 confirmation flow before replacing a game. Creating a study preserves the current live game.

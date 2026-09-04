@@ -1,20 +1,21 @@
 // Database productivity controls; all board navigation stays inside the preview.
 const WB_TABLE_COLUMNS=['result','rating','game_date','eco','event','plies','folder'];
-const WB_TABLE_DEFAULTS={columns:[...WB_TABLE_COLUMNS],stickyPlayers:false,zebra:true,wrap:false};
+const WB_TABLE_DEFAULTS={columns:[...WB_TABLE_COLUMNS],density:'comfortable',stickyPlayers:false,zebra:true,wrap:false};
 const WB_TABLE_LAYOUT_KEY='funchess-workbench-table-v1';
 const WB_SEARCH_HISTORY_KEY='funchess-workbench-search-history-v1';
 const WB_SEARCH_KEYS=['player','white','black','event','site','eco','opening','source','folder','tag','notes','annotation','year_from','year_to','min_elo','max_elo','min_plies','max_plies','result','variant','missing','exact_players','unfiled','folder_exact','favorite','duplicates','fen'];
 function wbSanitizeTablePrefs(raw) {
   const value=raw && typeof raw==='object'?raw:{},columns=Array.isArray(value.columns)?value.columns.filter((column,index,list)=>WB_TABLE_COLUMNS.includes(column) && list.indexOf(column)===index):[...WB_TABLE_DEFAULTS.columns];
-  return {columns,stickyPlayers:typeof value.stickyPlayers==='boolean'?value.stickyPlayers:WB_TABLE_DEFAULTS.stickyPlayers,zebra:typeof value.zebra==='boolean'?value.zebra:WB_TABLE_DEFAULTS.zebra,wrap:typeof value.wrap==='boolean'?value.wrap:WB_TABLE_DEFAULTS.wrap};
+  const density=['compact','comfortable','spacious'].includes(value.density)?value.density:WB_TABLE_DEFAULTS.density;
+  return {columns,density,stickyPlayers:typeof value.stickyPlayers==='boolean'?value.stickyPlayers:WB_TABLE_DEFAULTS.stickyPlayers,zebra:typeof value.zebra==='boolean'?value.zebra:WB_TABLE_DEFAULTS.zebra,wrap:typeof value.wrap==='boolean'?value.wrap:WB_TABLE_DEFAULTS.wrap};
 }
 function wbTablePrefs() {try{return wbSanitizeTablePrefs(JSON.parse(localStorage.getItem(WB_TABLE_LAYOUT_KEY)));}catch{return wbSanitizeTablePrefs(null);}}
 function wbSaveTablePrefs(prefs) {localStorage.setItem(WB_TABLE_LAYOUT_KEY,JSON.stringify(wbSanitizeTablePrefs(prefs)));wbApplyTablePrefs();}
 function wbApplyTablePrefs() {
-  const prefs=wbTablePrefs(),table=$('wbTable');table.dataset.wbStickyPlayers=String(prefs.stickyPlayers);table.dataset.wbZebra=String(prefs.zebra);table.dataset.wbWrap=String(prefs.wrap);
+  const prefs=wbTablePrefs(),table=$('wbTable');table.dataset.wbStickyPlayers=String(prefs.stickyPlayers);table.dataset.wbZebra=String(prefs.zebra);table.dataset.wbWrap=String(prefs.wrap);table.dataset.wbDensity=prefs.density;
   for(const element of table.querySelectorAll('[data-wb-column]'))element.hidden=!prefs.columns.includes(element.dataset.wbColumn);
   for(const input of $('wbColumnChoices').querySelectorAll('[data-wb-table-column]'))input.checked=prefs.columns.includes(input.dataset.wbTableColumn);
-  $('wbStickyPlayers').checked=prefs.stickyPlayers;$('wbZebraRows').checked=prefs.zebra;$('wbWrapCells').checked=prefs.wrap;
+  $('wbDensity').value=prefs.density;$('wbStickyPlayers').checked=prefs.stickyPlayers;$('wbZebraRows').checked=prefs.zebra;$('wbWrapCells').checked=prefs.wrap;
 }
 function wbSetTableColumns(columns) {wbSaveTablePrefs({...wbTablePrefs(),columns});}
 function wbSanitizeSearchFilters(raw) {

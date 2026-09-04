@@ -1349,7 +1349,8 @@ html[data-desktop="true"] .board-stage {
 #wbTable { border-collapse: collapse; width: 100%; font-size: 12px; }
 #wbTable th { position: sticky; top: 0; z-index: 1; background: var(--panel-2); text-align: left; border-bottom: 1px solid var(--line-strong); }
 #wbTable td, #wbTable th { padding: 10px 8px; white-space: nowrap; max-width: 210px; overflow: hidden; text-overflow: ellipsis; }
-#wbTable.compact td, #wbTable.compact th { padding: 4px 6px; font-size: 11px; }
+#wbTable[data-wb-density=compact] td, #wbTable[data-wb-density=compact] th { padding: 4px 6px; font-size: 11px; }
+#wbTable[data-wb-density=spacious] td, #wbTable[data-wb-density=spacious] th { padding: 14px 10px; font-size: 13px; }
 #wbTable tr:nth-child(even) { background: var(--panel-3); }
 #wbTable[data-wb-zebra=false] tr { background: transparent; }
 #wbTable[data-wb-wrap=true] :is(td,th) { white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }

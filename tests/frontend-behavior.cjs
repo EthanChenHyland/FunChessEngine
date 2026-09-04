@@ -371,10 +371,10 @@ test('page jumps clamp to real pages and reject fractional input',()=>{
   assert.equal(c.wbPageOffset(999,34,25),25);assert.equal(c.wbPageOffset(1,0,25),0);
   assert.throws(()=>c.wbPageOffset(1.5,100,25));assert.throws(()=>c.wbPageOffset(0,100,25));
 });
-test('database table layouts whitelist columns and preserve boolean preferences',()=>{
-  const columns=['result','rating','game_date','eco','event','plies','folder'],defaults={columns:[...columns],stickyPlayers:false,zebra:true,wrap:false};
+test('database table layouts whitelist columns and preserve visual preferences',()=>{
+  const columns=['result','rating','game_date','eco','event','plies','folder'],defaults={columns:[...columns],density:'comfortable',stickyPlayers:false,zebra:true,wrap:false};
   const c=loadProductivity(['wbSanitizeTablePrefs'],{WB_TABLE_COLUMNS:columns,WB_TABLE_DEFAULTS:defaults});const prefs=c.wbSanitizeTablePrefs({columns:['eco','event','eco','<style>'],stickyPlayers:true,zebra:false,wrap:true});
-  assert.deepEqual([...prefs.columns],['eco','event']);assert.equal(prefs.stickyPlayers,true);assert.equal(prefs.zebra,false);assert.equal(prefs.wrap,true);assert.deepEqual([...c.wbSanitizeTablePrefs(null).columns],columns);assert.equal(c.wbSanitizeTablePrefs({columns:'all'}).zebra,true);
+  assert.deepEqual([...prefs.columns],['eco','event']);assert.equal(prefs.density,'comfortable');assert.equal(prefs.stickyPlayers,true);assert.equal(prefs.zebra,false);assert.equal(prefs.wrap,true);assert.deepEqual([...c.wbSanitizeTablePrefs(null).columns],columns);assert.equal(c.wbSanitizeTablePrefs({columns:'all'}).zebra,true);assert.equal(c.wbSanitizeTablePrefs({density:'spacious'}).density,'spacious');assert.equal(c.wbSanitizeTablePrefs({density:'giant'}).density,'comfortable');
 });
 test('recent database searches sanitize filters and produce readable labels',()=>{
   const keys=['player','eco','year_from','favorite','fen'];const c=loadProductivity(['wbSanitizeSearchFilters','wbSearchLabel'],{WB_SEARCH_KEYS:keys});const filters=c.wbSanitizeSearchFilters({player:'  Carlsen  ',eco:'B90',year_from:2020,favorite:false,fen:'x'.repeat(500),injected:'bad'});

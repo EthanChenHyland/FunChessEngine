@@ -436,7 +436,7 @@ function bindDatabaseWorkbench() {
   on('wbPrevious',async()=>{wb.offset=Math.max(0,wb.offset-wb.limit);await wbSearch(false);});
   on('wbNext',async()=>{wb.offset+=wb.limit;await wbSearch(false);});
   $('wbPageSize').addEventListener('change',()=>wbAction(()=>wbSearch()));
-  $('wbDensity').addEventListener('change',()=>{$('wbTable').classList.toggle('compact',$('wbDensity').value==='compact');});
+  $('wbDensity').addEventListener('change',()=>wbSaveTablePrefs({...wbTablePrefs(),density:$('wbDensity').value}));
   $('wbSelectPage').addEventListener('change',()=>{try{for(const game of wb.games)wbSetSelection(game.id,$('wbSelectPage').checked);}catch(error){wbStatus(error.message,true);}wbRenderRows();});
   on('wbClearSelection',()=>{wb.selected.clear();wbRenderRows();});
   on('wbFavoriteBatch',()=>wbOrganize({favorite:true}));on('wbUnfavoriteBatch',()=>wbOrganize({favorite:false}));
