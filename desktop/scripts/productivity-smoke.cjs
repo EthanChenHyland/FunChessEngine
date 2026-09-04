@@ -2,6 +2,7 @@
 module.exports=async function productivitySmoke(window,waitFor) {
   await window.webContents.executeJavaScript(`(async()=>{
     wbApplyFilters({event:'DatabaseSmoke'});await wbSearch();wb.selected.clear();wbRenderRows();
+    if(!wbSearchHistory().some(row=>row.filters.event==='DatabaseSmoke') || !document.getElementById('wbSearchHistory').textContent.includes('Event: DatabaseSmoke') || document.querySelectorAll('[data-wb-search-preset]').length!==6)throw new Error('Recent search history or research presets missing');
     document.getElementById('wbColumnsEssential').click();if(!document.querySelector('[data-wb-column="event"]').hidden)throw new Error('Essential column preset failed');document.getElementById('wbStickyPlayers').checked=true;document.getElementById('wbStickyPlayers').dispatchEvent(new Event('change'));document.getElementById('wbWrapCells').checked=true;document.getElementById('wbWrapCells').dispatchEvent(new Event('change'));if(document.getElementById('wbTable').dataset.wbStickyPlayers!=='true' || document.getElementById('wbTable').dataset.wbWrap!=='true')throw new Error('Persistent table layout failed');document.getElementById('wbColumnsAll').click();document.getElementById('wbStickyPlayers').checked=false;document.getElementById('wbStickyPlayers').dispatchEvent(new Event('change'));document.getElementById('wbWrapCells').checked=false;document.getElementById('wbWrapCells').dispatchEvent(new Event('change'));
     document.getElementById('wbPageNumber').value='2';document.getElementById('wbGoPage').click();
   })()`,true);

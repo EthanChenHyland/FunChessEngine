@@ -2,6 +2,8 @@
 const WB_TABLE_COLUMNS=['result','rating','game_date','eco','event','plies','folder'];
 const WB_TABLE_DEFAULTS={columns:[...WB_TABLE_COLUMNS],stickyPlayers:false,zebra:true,wrap:false};
 const WB_TABLE_LAYOUT_KEY='funchess-workbench-table-v1';
+const WB_SEARCH_HISTORY_KEY='funchess-workbench-search-history-v1';
+const WB_SEARCH_KEYS=['player','white','black','event','site','eco','opening','source','folder','tag','notes','annotation','year_from','year_to','min_elo','max_elo','min_plies','max_plies','result','variant','missing','exact_players','unfiled','folder_exact','favorite','duplicates','fen'];
 function wbSanitizeTablePrefs(raw) {
   const value=raw && typeof raw==='object'?raw:{},columns=Array.isArray(value.columns)?value.columns.filter((column,index,list)=>WB_TABLE_COLUMNS.includes(column) && list.indexOf(column)===index):[...WB_TABLE_DEFAULTS.columns];
   return {columns,stickyPlayers:typeof value.stickyPlayers==='boolean'?value.stickyPlayers:WB_TABLE_DEFAULTS.stickyPlayers,zebra:typeof value.zebra==='boolean'?value.zebra:WB_TABLE_DEFAULTS.zebra,wrap:typeof value.wrap==='boolean'?value.wrap:WB_TABLE_DEFAULTS.wrap};
@@ -15,6 +17,21 @@ function wbApplyTablePrefs() {
   $('wbStickyPlayers').checked=prefs.stickyPlayers;$('wbZebraRows').checked=prefs.zebra;$('wbWrapCells').checked=prefs.wrap;
 }
 function wbSetTableColumns(columns) {wbSaveTablePrefs({...wbTablePrefs(),columns});}
+function wbSanitizeSearchFilters(raw) {
+  if(!raw || typeof raw!=='object' || Array.isArray(raw))return {};
+  const result={};for(const key of WB_SEARCH_KEYS){const value=raw[key];if(typeof value==='boolean'){if(value)result[key]=true;}else if((typeof value==='string' || typeof value==='number') && String(value).trim())result[key]=String(value).trim().slice(0,300);}return result;
+}
+function wbSearchLabel(filters) {
+  const names={player:'Player',white:'White',black:'Black',event:'Event',site:'Site',eco:'ECO',opening:'Opening',source:'Source',folder:'Folder',tag:'Tag',notes:'Notes',annotation:'PGN',year_from:'Since',year_to:'Through',min_elo:'Min Elo',max_elo:'Max Elo',min_plies:'Min plies',max_plies:'Max plies',result:'Result',variant:'Variant',missing:'Missing',exact_players:'Exact names',unfiled:'Unfiled',folder_exact:'Exact folder',favorite:'Favorites',duplicates:'Duplicates',fen:'Position'};
+  const entries=Object.entries(filters);if(!entries.length)return 'All games';return entries.slice(0,4).map(([key,value])=>value===true?names[key] || key:key==='fen'?'Exact position':`${names[key] || key}: ${value}`).join(' · ')+(entries.length>4?` · +${entries.length-4}`:'');
+}
+function wbSearchHistory() {try{const rows=JSON.parse(localStorage.getItem(WB_SEARCH_HISTORY_KEY));return Array.isArray(rows)?rows.slice(0,10).map(row=>({filters:wbSanitizeSearchFilters(row?.filters),at:Number.isFinite(row?.at)?row.at:0})).filter(row=>Object.keys(row.filters).length):[];}catch{return [];}}
+function wbRememberSearch(filters) {
+  const clean=wbSanitizeSearchFilters(filters);if(!Object.keys(clean).length)return;const key=JSON.stringify(clean),rows=wbSearchHistory().filter(row=>JSON.stringify(row.filters)!==key);rows.unshift({filters:clean,at:Date.now()});localStorage.setItem(WB_SEARCH_HISTORY_KEY,JSON.stringify(rows.slice(0,10)));wbRenderSearchHistory();
+}
+function wbRenderSearchHistory() {
+  const target=$('wbSearchHistory'),rows=wbSearchHistory();target.replaceChildren();for(const [index,row] of rows.entries()){const item=wbElement('div',undefined,'wb-search-history-row'),apply=wbButton(wbSearchLabel(row.filters),async()=>{wbApplyFilters(row.filters);$('wbViews').value='';await wbSearch();},'text-button');apply.title=row.at?new Date(row.at).toLocaleString():'Saved search';item.append(apply,wbButton('Remove',()=>{const next=wbSearchHistory();next.splice(index,1);localStorage.setItem(WB_SEARCH_HISTORY_KEY,JSON.stringify(next));wbRenderSearchHistory();},'text-button compact'));target.append(item);}if(!rows.length)target.append(wbElement('p','Searches with active filters appear here.','hint'));
+}
 function wbPageOffset(page,total,limit) {
   if(!Number.isInteger(page) || page<1)throw new Error('Enter a whole page number starting at 1.');
   return (Math.min(page,Math.max(1,Math.ceil(total/limit)))-1)*limit;
@@ -197,6 +214,9 @@ function bindDatabaseProductivity() {
   for(const column of WB_TABLE_COLUMNS){const label=wbElement('label'),input=document.createElement('input');input.type='checkbox';input.dataset.wbTableColumn=column;input.addEventListener('change',()=>{const columns=[...$('wbColumnChoices').querySelectorAll('[data-wb-table-column]:checked')].map(item=>item.dataset.wbTableColumn);wbSetTableColumns(columns);});label.append(input,document.createTextNode(columnLabels[column]));$('wbColumnChoices').append(label);}
   on('wbColumnsEssential',()=>wbSetTableColumns(['result','rating','game_date','eco']));on('wbColumnsResearch',()=>wbSetTableColumns(['result','rating','game_date','eco','event','plies']));on('wbColumnsAll',()=>wbSetTableColumns(WB_TABLE_COLUMNS));
   for(const [id,key] of [['wbStickyPlayers','stickyPlayers'],['wbZebraRows','zebra'],['wbWrapCells','wrap']])$(id).addEventListener('change',()=>wbSaveTablePrefs({...wbTablePrefs(),[key]:$(id).checked}));
+  const searchPresets={masters:{min_elo:'2400'},recent:{year_from:String(new Date().getFullYear()-5)},long:{min_plies:'80'},commented:{annotation:'{'},chess960:{variant:'chess960'},unfiled:{unfiled:true}};
+  for(const button of document.querySelectorAll('[data-wb-search-preset]'))button.addEventListener('click',()=>wbAction(async()=>{wbApplyFilters(searchPresets[button.dataset.wbSearchPreset]);$('wbViews').value='';await wbSearch();},button));
+  on('wbClearSearchHistory',()=>{localStorage.removeItem(WB_SEARCH_HISTORY_KEY);wbRenderSearchHistory();});wbRenderSearchHistory();
   on('wbFirstPage',async()=>{wb.offset=0;await wbSearch(false);});
   on('wbLastPage',async()=>{wb.offset=wbPageOffset(Math.max(1,Math.ceil(wb.total/wb.limit)),wb.total,wb.limit);await wbSearch(false);});
   const go=async()=>{wb.offset=wbPageOffset(Number($('wbPageNumber').value),wb.total,wb.limit);await wbSearch(false);};

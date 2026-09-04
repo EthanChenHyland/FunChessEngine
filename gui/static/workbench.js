@@ -85,6 +85,7 @@ async function wbSearch(reset=true) {
     const result=await wbApi('search',{filters:wb.filters,sort:wb.sort,direction:wb.direction,limit:Number($('wbPageSize').value),offset:wb.offset});
     if(sequence!==wb.sequence)return;
     Object.assign(wb,{games:result.games,total:result.total,offset:result.offset,limit:result.limit});
+    if(typeof wbRememberSearch==='function')wbRememberSearch(wb.filters);
     wbRenderRows();
     wbStatus(result.total ? `${result.total.toLocaleString()} matching games. Select a White player name to preview a game.` : 'No matches. Import a reference PGN or reset the filters.');
   } catch(error) {

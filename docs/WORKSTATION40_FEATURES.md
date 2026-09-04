@@ -107,7 +107,7 @@ previous 20-feature batch are not counted again.
 
 ## Validation
 
-Local validation passed with **204 Python tests and 68 JavaScript tests**.
+Local validation passed with **204 Python tests and 70 JavaScript tests**.
 The release gate covers lint/type checks,
 engine package isolation, a short engine arena, desktop syntax checks, dependency
 audit, and the Electron smoke suite. Workstation smoke coverage exercises actual

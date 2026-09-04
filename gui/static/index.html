@@ -910,6 +910,7 @@
           <details class="wb-filters"><summary>Advanced filters<span id="wbActiveFilters"></span></summary><div id="wbFilterFields" class="wb-filter-grid"><label>Missing metadata<select id="wbMissing"><option value="">Any completeness</option><option value="eco">Missing ECO</option><option value="rating">Missing rating</option><option value="date">Incomplete date</option><option value="players">Missing player</option></select></label><label>Variant<select id="wbVariant"><option value="">All variants</option><option value="standard">Standard</option><option value="chess960">Chess960</option></select></label></div><div class="wb-actions"><label><input id="wbExactPlayers" type="checkbox"> Exact player names</label><label><input id="wbUnfiled" type="checkbox"> Unfiled</label><label><input id="wbExactFolder" type="checkbox"> Exact folder</label><label><input id="wbFavorites" type="checkbox"> Favorites</label><label><input id="wbDuplicates" type="checkbox"> Same main line</label><label><input id="wbPositionFilter" type="checkbox"> Matching position</label></div><p class="hint">Rating bounds apply to both players; unknown ratings are excluded. Move limits count half-moves (plies). Text searches are literal.</p></details>
           <div class="wb-actions"><input id="wbViewName" type="text" maxlength="60" placeholder="Name this search" aria-label="Saved search name"><button id="wbSaveView" type="button" class="secondary compact">Save search</button><button id="wbRenameView" type="button" class="secondary compact">Rename selected search</button><button id="wbDeleteView" type="button" class="text-button">Remove saved search</button></div>
         </form>
+        <details id="wbSearchShortcuts" class="wb-search-shortcuts"><summary>Quick searches and recent filters</summary><div class="wb-actions"><button data-wb-search-preset="masters" class="secondary compact">Master games</button><button data-wb-search-preset="recent" class="secondary compact">Recent games</button><button data-wb-search-preset="long" class="secondary compact">Long games</button><button data-wb-search-preset="commented" class="secondary compact">Commented games</button><button data-wb-search-preset="chess960" class="secondary compact">Chess960</button><button data-wb-search-preset="unfiled" class="secondary compact">Unfiled</button></div><div class="wb-reference-head"><strong>Recent searches</strong><button id="wbClearSearchHistory" class="text-button compact">Clear</button></div><div id="wbSearchHistory" class="wb-search-history"></div></details>
         <div id="wbFilterChips" class="wb-filter-chips" aria-label="Active filters"></div>
         <details id="wbOpeningTree" class="wb-opening-tree">
           <summary>Opening tree</summary>
@@ -958,7 +959,7 @@
   <script src="/app.js?v=20"></script>
   <script src="/workbench.js?v=9"></script>
   <script src="/database-explorer.js?v=4"></script>
-  <script src="/database-productivity.js?v=6"></script>
+  <script src="/database-productivity.js?v=7"></script>
   <script src="/workstation-ui.js?v=4"></script>
 </body>
 </html>

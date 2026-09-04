@@ -376,6 +376,15 @@ test('database table layouts whitelist columns and preserve boolean preferences'
   const c=loadProductivity(['wbSanitizeTablePrefs'],{WB_TABLE_COLUMNS:columns,WB_TABLE_DEFAULTS:defaults});const prefs=c.wbSanitizeTablePrefs({columns:['eco','event','eco','<style>'],stickyPlayers:true,zebra:false,wrap:true});
   assert.deepEqual([...prefs.columns],['eco','event']);assert.equal(prefs.stickyPlayers,true);assert.equal(prefs.zebra,false);assert.equal(prefs.wrap,true);assert.deepEqual([...c.wbSanitizeTablePrefs(null).columns],columns);assert.equal(c.wbSanitizeTablePrefs({columns:'all'}).zebra,true);
 });
+test('recent database searches sanitize filters and produce readable labels',()=>{
+  const keys=['player','eco','year_from','favorite','fen'];const c=loadProductivity(['wbSanitizeSearchFilters','wbSearchLabel'],{WB_SEARCH_KEYS:keys});const filters=c.wbSanitizeSearchFilters({player:'  Carlsen  ',eco:'B90',year_from:2020,favorite:false,fen:'x'.repeat(500),injected:'bad'});
+  assert.equal(filters.player,'Carlsen');assert.equal(filters.year_from,'2020');assert.equal(filters.favorite,undefined);assert.equal(filters.fen.length,300);assert.equal(filters.injected,undefined);assert.equal(c.wbSearchLabel({player:'Carlsen',favorite:true}),'Player: Carlsen · Favorites');assert.equal(c.wbSearchLabel({}),'All games');
+});
+test('recent database searches deduplicate and stay bounded',()=>{
+  const values=new Map(),localStorage={getItem:key=>values.get(key) ?? null,setItem:(key,value)=>values.set(key,value)};const keys=['player','eco'];let renders=0;
+  const c=loadProductivity(['wbSanitizeSearchFilters','wbSearchHistory','wbRememberSearch'],{WB_SEARCH_KEYS:keys,WB_SEARCH_HISTORY_KEY:'history',localStorage,wbRenderSearchHistory:()=>renders++});
+  for(let index=0;index<12;index++)c.wbRememberSearch({player:`Player ${index}`});c.wbRememberSearch({player:'Player 5'});const history=c.wbSearchHistory();assert.equal(history.length,10);assert.equal(history[0].filters.player,'Player 5');assert.equal(history.filter(row=>row.filters.player==='Player 5').length,1);assert.equal(renders,13);
+});
 test('inverting page selection retains other pages and rejects overflow atomically',()=>{
   const c=loadProductivity(['wbInvertSelection']);
   const selected=new Set([1,100]);const next=c.wbInvertSelection(selected,[1,2]);
