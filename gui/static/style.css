@@ -1627,5 +1627,5 @@ body { background-color: var(--bg); }
 :root[data-ws-transitions=true][data-ws-reduced=false] .tab-panel.active { animation-timing-function: var(--ws-easing,ease-out); }
 .ws-board-actions { grid-template-columns: repeat(3,minmax(0,1fr)); }
 #wsCustomizeBoard { padding-inline: 6px; }
-.ws-piece-gallery { grid-template-columns: repeat(4,minmax(0,1fr)); }
+.ws-piece-gallery { grid-template-columns: repeat(3,minmax(0,1fr)); }
 @media(max-width:460px) { .ws-piece-gallery { grid-template-columns: repeat(2,minmax(0,1fr)); }.ws-board-actions { grid-template-columns: 1fr 1fr; }#wsCustomizeBoard { grid-column:1/-1; } }

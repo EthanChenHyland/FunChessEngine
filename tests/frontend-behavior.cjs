@@ -559,6 +559,11 @@ test('neo piece artwork defines every chessman with distinct fixed paths',()=>{
   const c=loadWorkstation(),classic=vm.runInContext('WS_SHAPES',c),neo=vm.runInContext('WS_NEO_SHAPES',c);
   assert.deepEqual(Object.keys(neo).sort(),['b','k','n','p','q','r']);for(const piece of Object.keys(neo)){assert.match(neo[piece],/^M/);assert.notEqual(neo[piece],classic[piece]);}
 });
+test('staunton and minimal artwork provide complete original piece families',()=>{
+  const c=loadWorkstation(),classic=vm.runInContext('WS_SHAPES',c),staunton=vm.runInContext('WS_STAUNTON_SHAPES',c),minimal=vm.runInContext('WS_MINIMAL_SHAPES',c);
+  for(const family of [staunton,minimal]){assert.deepEqual(Object.keys(family).sort(),['b','k','n','p','q','r']);for(const piece of Object.keys(family)){assert.match(family[piece],/^M/);assert.notEqual(family[piece],classic[piece]);}}
+  assert.equal(c.wsSanitize({whiteSet:'staunton',blackSet:'minimal'}).whiteSet,'staunton');assert.equal(c.wsSanitize({whiteSet:'staunton',blackSet:'minimal'}).blackSet,'minimal');
+});
 test('automatic outlines maximize the weakest piece and square contrast',()=>{
   const c=loadWorkstation({display:{theme:'forest'}}),prefs=c.wsSanitize(null);
   assert.equal(c.wsBestOutline('#fffdf4',prefs),'#101820');assert.equal(c.wsBestOutline('#101820',prefs),'#fffdf4');

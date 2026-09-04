@@ -8,7 +8,7 @@ white-piece visibility problem without discarding saved preferences.
 
 ## Piece controls
 
-- Choose Sculpted, Neo, filled glyph, or letter-token pieces independently for White
+- Choose Sculpted, Neo, Staunton, Minimal, filled glyph, or letter-token pieces independently for White
   and Black, or choose one set for both from the visual gallery.
 - Switch font pieces between high-contrast filled silhouettes and traditional
   white/black Unicode symbols.
@@ -19,7 +19,7 @@ white-piece visibility problem without discarding saved preferences.
   the shadow color, or let the app choose contrasting outlines automatically.
 - Choose Matte, Flat, Gloss, or Glass finishes and optionally add a glow.
 - Apply one-click Maximum clarity, Tournament, Flat modern, Study letters,
-  Classic solid, or Glass token recipes.
+  Classic solid, Glass token, Staunton club, or Minimal analysis recipes.
 - The live contrast dashboard scores all four piece/square combinations. It
   accounts for the outline as well as the fill and flags weak combinations.
 
