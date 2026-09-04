@@ -1465,7 +1465,7 @@ html[data-desktop="true"] .board-stage {
 .ws-gallery-piece { font: 30px var(--piece-font); line-height: 1; }
 .ws-art-piece { display: inline-flex; justify-content: center; align-items: center; line-height: 1; }
 .ws-art-piece svg { width: 1em; height: 1em; overflow: visible; pointer-events: none; }
-.ws-art-piece svg path, .ws-art-piece svg circle { fill: currentColor; stroke: var(--ws-outline-color); stroke-width: var(--ws-outline,1.4); stroke-linejoin: round; stroke-linecap: round; }
+.ws-art-piece svg :is(path,circle,polygon) { fill: currentColor; stroke: var(--ws-outline-color); stroke-width: var(--ws-outline,1.4); stroke-linejoin: round; stroke-linecap: round; }
 .ws-art-piece svg text { fill: var(--ws-outline-color); stroke: none; font: bold 24px ui-sans-serif,system-ui,sans-serif; }
 :is(.piece,.wb-piece,.ws-gallery-piece,[data-promotion-icon]).white-piece { color: var(--ws-white,#fff8e7); --ws-outline-color: #24313a; }
 :is(.piece,.wb-piece,.ws-gallery-piece,[data-promotion-icon]).black-piece { color: var(--ws-black,#202c38); --ws-outline-color: #e7e0cd; }
@@ -1601,7 +1601,7 @@ html[data-desktop="true"] .board-stage {
 :root[data-ws-clock-style=digital] .clock.active:not([data-low=true]) { color: var(--ws-clock-active); border-color: var(--ws-clock-active); }
 
 /* Customization studio v4: neo pieces, detailed boards, and app surfaces. */
-:root[data-ws-outline-style=dashed] .ws-art-piece svg :is(path,circle) { stroke-dasharray: 2.2 1.25; }
+:root[data-ws-outline-style=dashed] .ws-art-piece svg :is(path,circle,polygon) { stroke-dasharray: 2.2 1.25; }
 :is(.piece,.wb-piece,[data-promotion-icon])[data-piece] { filter: drop-shadow(0 calc(var(--ws-pieceShadow,42) * .025px) calc(var(--ws-pieceShadow,42) * .04px) color-mix(in srgb,var(--ws-shadow-color,#000) calc(var(--ws-pieceShadow,42) * 1%),transparent)); }
 :is(.piece,.wb-piece,[data-promotion-icon]).white-piece[data-piece] { --ws-sideScale: var(--ws-whiteScale,100); transform: translateY(var(--ws-pieceY,0)) scaleX(calc(var(--ws-pieceWidth,100) / 100)) scale(calc(var(--ws-sideScale) / 100)); }
 :is(.piece,.wb-piece,[data-promotion-icon]).black-piece[data-piece] { --ws-sideScale: var(--ws-blackScale,100); transform: translateY(var(--ws-pieceY,0)) scaleX(calc(var(--ws-pieceWidth,100) / 100)) scale(calc(var(--ws-sideScale) / 100)); }

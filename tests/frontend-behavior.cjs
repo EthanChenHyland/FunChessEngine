@@ -564,6 +564,11 @@ test('staunton and minimal artwork provide complete original piece families',()=
   for(const family of [staunton,minimal]){assert.deepEqual(Object.keys(family).sort(),['b','k','n','p','q','r']);for(const piece of Object.keys(family)){assert.match(family[piece],/^M/);assert.notEqual(family[piece],classic[piece]);}}
   assert.equal(c.wsSanitize({whiteSet:'staunton',blackSet:'minimal'}).whiteSet,'staunton');assert.equal(c.wsSanitize({whiteSet:'staunton',blackSet:'minimal'}).blackSet,'minimal');
 });
+test('geometric and slim artwork extend the complete piece catalog',()=>{
+  const c=loadWorkstation(),geometric=vm.runInContext('WS_GEOMETRIC_SHAPES',c),slim=vm.runInContext('WS_SLIM_SHAPES',c);
+  for(const family of [geometric,slim]){assert.deepEqual(Object.keys(family).sort(),['b','k','n','p','q','r']);for(const path of Object.values(family))assert.match(path,/^M/);}
+  for(const set of ['geometric','slim','shield'])assert.equal(c.wsSanitize({whiteSet:set}).whiteSet,set);
+});
 test('automatic outlines maximize the weakest piece and square contrast',()=>{
   const c=loadWorkstation({display:{theme:'forest'}}),prefs=c.wsSanitize(null);
   assert.equal(c.wsBestOutline('#fffdf4',prefs),'#101820');assert.equal(c.wsBestOutline('#101820',prefs),'#fffdf4');
