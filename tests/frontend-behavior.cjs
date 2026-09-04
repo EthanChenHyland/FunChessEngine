@@ -385,6 +385,14 @@ test('recent database searches deduplicate and stay bounded',()=>{
   const c=loadProductivity(['wbSanitizeSearchFilters','wbSearchHistory','wbRememberSearch'],{WB_SEARCH_KEYS:keys,WB_SEARCH_HISTORY_KEY:'history',localStorage,wbRenderSearchHistory:()=>renders++});
   for(let index=0;index<12;index++)c.wbRememberSearch({player:`Player ${index}`});c.wbRememberSearch({player:'Player 5'});const history=c.wbSearchHistory();assert.equal(history.length,10);assert.equal(history[0].filters.player,'Player 5');assert.equal(history.filter(row=>row.filters.player==='Player 5').length,1);assert.equal(renders,13);
 });
+test('database page snapshots calculate result, rating, year and ECO summaries',()=>{
+  const keys=['event'];const c=loadProductivity(['wbSanitizeSearchFilters','wbPageSnapshot'],{WB_SEARCH_KEYS:keys});const snapshot=c.wbPageSnapshot([{result:'1-0',white_elo:2400,black_elo:2200,game_date:'2024.02.03',eco:'B90',plies:80,favorite:true},{result:'1/2-1/2',white_elo:null,black_elo:2000,game_date:'2022.??.??',eco:'B90',plies:60},{result:'abandoned',game_date:'????.??.??',eco:'C20',plies:0}],200,{event:'Open',bad:'x'});
+  assert.equal(snapshot.pageGames,3);assert.equal(snapshot.total,200);assert.equal(snapshot.results['1-0'],1);assert.equal(snapshot.results['1/2-1/2'],1);assert.equal(snapshot.results['*'],1);assert.equal(snapshot.averageElo,2200);assert.equal(snapshot.averagePlies,140/3);assert.equal(snapshot.yearFrom,2022);assert.equal(snapshot.yearTo,2024);assert.equal(snapshot.favorites,1);assert.deepEqual([...snapshot.ecos[0]],['B90',2]);assert.deepEqual({...snapshot.filters},{event:'Open'});
+});
+test('database page snapshot text states scope and active filters',()=>{
+  const c=loadProductivity(['wbSearchLabel','wbSnapshotText']);const text=c.wbSnapshotText({pageGames:25,total:80,results:{'1-0':10,'1/2-1/2':8,'0-1':6,'*':1},averageElo:2345.4,averagePlies:77.25,yearFrom:2019,yearTo:2025,favorites:4,filters:{eco:'C65'}});
+  assert.match(text,/25 loaded of 80/);assert.match(text,/\+10 =8 -6/);assert.match(text,/Average Elo 2345/);assert.match(text,/2019–2025/);assert.match(text,/ECO: C65/);
+});
 test('inverting page selection retains other pages and rejects overflow atomically',()=>{
   const c=loadProductivity(['wbInvertSelection']);
   const selected=new Set([1,100]);const next=c.wbInvertSelection(selected,[1,2]);

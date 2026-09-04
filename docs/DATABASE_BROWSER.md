@@ -157,8 +157,11 @@ display are optional, sanitized, and persisted for the local workstation.
 Quick research presets cover master, recent, long, commented, Chess960, and unfiled games. The
 browser also retains the ten most recent distinct filtered searches, with readable summaries and
 one-click restore, remove, and clear actions. Unknown fields are discarded before persistence.
+The current-result snapshot summarizes the loaded page with result distribution, average Elo and
+game length, year span, favorites, and leading ECO groups. ECO chips immediately refine the search;
+the complete page-versus-total scope can be copied as text or exported as portable JSON.
 
-Local validation passed with **204 Python tests and 70 JavaScript tests**, plus the Electron
+Local validation passed with **204 Python tests and 72 JavaScript tests**, plus the Electron
 workflow and layout checks. A single synthetic 10,000-game benchmark (12 plies per game) imported
 130,000 positions in 12.13 seconds. Measured database calls took 3.44 ms for browser search,
 5.95 ms for duplicate search, and 5.98 ms for reports. These are local timings on repeated opening

@@ -912,6 +912,7 @@
         </form>
         <details id="wbSearchShortcuts" class="wb-search-shortcuts"><summary>Quick searches and recent filters</summary><div class="wb-actions"><button data-wb-search-preset="masters" class="secondary compact">Master games</button><button data-wb-search-preset="recent" class="secondary compact">Recent games</button><button data-wb-search-preset="long" class="secondary compact">Long games</button><button data-wb-search-preset="commented" class="secondary compact">Commented games</button><button data-wb-search-preset="chess960" class="secondary compact">Chess960</button><button data-wb-search-preset="unfiled" class="secondary compact">Unfiled</button></div><div class="wb-reference-head"><strong>Recent searches</strong><button id="wbClearSearchHistory" class="text-button compact">Clear</button></div><div id="wbSearchHistory" class="wb-search-history"></div></details>
         <div id="wbFilterChips" class="wb-filter-chips" aria-label="Active filters"></div>
+        <details id="wbSearchSnapshot" class="wb-search-snapshot"><summary>Current result snapshot</summary><div id="wbSnapshotGrid" class="wb-inspector-grid"></div><div id="wbSnapshotResults" class="wb-result-bar" role="img" aria-label="Current page result distribution"></div><div id="wbSnapshotEco" class="wb-snapshot-eco"></div><div class="wb-actions"><button id="wbCopySnapshot" class="secondary compact">Copy summary</button><button id="wbExportSnapshot" class="secondary compact">Export snapshot JSON…</button></div><p class="hint">Statistics summarize the loaded page; the matching total and active filters are included in exports.</p></details>
         <details id="wbOpeningTree" class="wb-opening-tree">
           <summary>Opening tree</summary>
           <div class="wb-actions"><button id="wbTreeStart" class="secondary compact">Standard start</button><button id="wbTreePreview" class="secondary compact">From preview</button><button id="wbTreeBack" class="secondary compact" disabled>Back</button><button id="wbTreeRefresh" class="secondary compact">Refresh with filters</button></div>
@@ -959,7 +960,7 @@
   <script src="/app.js?v=20"></script>
   <script src="/workbench.js?v=9"></script>
   <script src="/database-explorer.js?v=4"></script>
-  <script src="/database-productivity.js?v=7"></script>
+  <script src="/database-productivity.js?v=8"></script>
   <script src="/workstation-ui.js?v=4"></script>
 </body>
 </html>

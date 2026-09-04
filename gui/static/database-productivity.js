@@ -29,6 +29,18 @@ function wbSearchHistory() {try{const rows=JSON.parse(localStorage.getItem(WB_SE
 function wbRememberSearch(filters) {
   const clean=wbSanitizeSearchFilters(filters);if(!Object.keys(clean).length)return;const key=JSON.stringify(clean),rows=wbSearchHistory().filter(row=>JSON.stringify(row.filters)!==key);rows.unshift({filters:clean,at:Date.now()});localStorage.setItem(WB_SEARCH_HISTORY_KEY,JSON.stringify(rows.slice(0,10)));wbRenderSearchHistory();
 }
+function wbPageSnapshot(games,total,filters={}) {
+  const results={'1-0':0,'1/2-1/2':0,'0-1':0,'*':0},ratings=[],years=[],ecos=new Map();let favorites=0;
+  for(const game of games){results[game.result]===undefined?results['*']++:results[game.result]++;for(const rating of [game.white_elo,game.black_elo])if(Number.isFinite(Number(rating)) && Number(rating)>0)ratings.push(Number(rating));const year=Number(String(game.game_date || '').slice(0,4));if(Number.isInteger(year) && year>0)years.push(year);const eco=String(game.eco || 'Unclassified');ecos.set(eco,(ecos.get(eco) || 0)+1);if(game.favorite)favorites++;}
+  const average=values=>values.length?values.reduce((sum,value)=>sum+value,0)/values.length:null;
+  return {pageGames:games.length,total,filters:wbSanitizeSearchFilters(filters),results,averageElo:average(ratings),averagePlies:average(games.map(game=>Number(game.plies) || 0)),yearFrom:years.length?Math.min(...years):null,yearTo:years.length?Math.max(...years):null,favorites,ecos:[...ecos].sort((a,b)=>b[1]-a[1] || a[0].localeCompare(b[0])).slice(0,8)};
+}
+function wbSnapshotText(snapshot) {return `Database snapshot: ${snapshot.pageGames} loaded of ${snapshot.total} matches. Results +${snapshot.results['1-0']} =${snapshot.results['1/2-1/2']} -${snapshot.results['0-1']}; unfinished ${snapshot.results['*']}. Average Elo ${snapshot.averageElo==null?'—':Math.round(snapshot.averageElo)}; average ${snapshot.averagePlies==null?'—':snapshot.averagePlies.toFixed(1)} plies; years ${snapshot.yearFrom==null?'—':snapshot.yearFrom===snapshot.yearTo?snapshot.yearFrom:`${snapshot.yearFrom}–${snapshot.yearTo}`}; favorites ${snapshot.favorites}. Filters: ${wbSearchLabel(snapshot.filters)}.`;}
+function wbRenderPageSnapshot() {
+  const snapshot=wbPageSnapshot(wb.games,wb.total,wb.filters),grid=$('wbSnapshotGrid'),rows=[['Loaded',`${snapshot.pageGames} / ${snapshot.total}`],['Average Elo',snapshot.averageElo==null?'—':Math.round(snapshot.averageElo)],['Average plies',snapshot.averagePlies==null?'—':snapshot.averagePlies.toFixed(1)],['Years',snapshot.yearFrom==null?'—':snapshot.yearFrom===snapshot.yearTo?snapshot.yearFrom:`${snapshot.yearFrom}–${snapshot.yearTo}`],['Favorites',snapshot.favorites],['Top ECO',snapshot.ecos[0]?.[0] || '—']];grid.replaceChildren(...rows.map(([label,value])=>{const item=wbElement('div');item.append(wbElement('span',label),wbElement('strong',value));return item;}));
+  const bar=$('wbSnapshotResults'),count=Math.max(1,snapshot.pageGames);bar.replaceChildren();for(const [key,label] of [['1-0','white'],['1/2-1/2','draw'],['0-1','black'],['*','unfinished']]){const segment=wbElement('span',undefined,`wb-result-${label}`);segment.style.width=`${snapshot.results[key]/count*100}%`;bar.append(segment);}bar.setAttribute('aria-label',`${snapshot.results['1-0']} White wins, ${snapshot.results['1/2-1/2']} draws, ${snapshot.results['0-1']} Black wins, ${snapshot.results['*']} unfinished`);
+  const eco=$('wbSnapshotEco');eco.replaceChildren(...snapshot.ecos.map(([code,count])=>wbButton(`${code} · ${count}`,async()=>{const filters={...wb.filters,eco:code==='Unclassified'?'':code};delete filters.fen;wbApplyFilters(filters);await wbSearch();},'secondary compact')));$('wbExportSnapshot').disabled=!snapshot.pageGames;$('wbCopySnapshot').disabled=!snapshot.pageGames;wb.pageSnapshot=snapshot;
+}
 function wbRenderSearchHistory() {
   const target=$('wbSearchHistory'),rows=wbSearchHistory();target.replaceChildren();for(const [index,row] of rows.entries()){const item=wbElement('div',undefined,'wb-search-history-row'),apply=wbButton(wbSearchLabel(row.filters),async()=>{wbApplyFilters(row.filters);$('wbViews').value='';await wbSearch();},'text-button');apply.title=row.at?new Date(row.at).toLocaleString():'Saved search';item.append(apply,wbButton('Remove',()=>{const next=wbSearchHistory();next.splice(index,1);localStorage.setItem(WB_SEARCH_HISTORY_KEY,JSON.stringify(next));wbRenderSearchHistory();},'text-button compact'));target.append(item);}if(!rows.length)target.append(wbElement('p','Searches with active filters appear here.','hint'));
 }
@@ -69,6 +81,7 @@ function wbRenderProductivity() {
     button.setAttribute('aria-label',`Remove ${label} filter`);target.append(button);
   }
   wbApplyTablePrefs();
+  wbRenderPageSnapshot();
 }
 async function wbNextGame(delta) {
   if(wb.searching)return;
@@ -217,6 +230,7 @@ function bindDatabaseProductivity() {
   const searchPresets={masters:{min_elo:'2400'},recent:{year_from:String(new Date().getFullYear()-5)},long:{min_plies:'80'},commented:{annotation:'{'},chess960:{variant:'chess960'},unfiled:{unfiled:true}};
   for(const button of document.querySelectorAll('[data-wb-search-preset]'))button.addEventListener('click',()=>wbAction(async()=>{wbApplyFilters(searchPresets[button.dataset.wbSearchPreset]);$('wbViews').value='';await wbSearch();},button));
   on('wbClearSearchHistory',()=>{localStorage.removeItem(WB_SEARCH_HISTORY_KEY);wbRenderSearchHistory();});wbRenderSearchHistory();
+  on('wbCopySnapshot',async()=>{await navigator.clipboard.writeText(wbSnapshotText(wb.pageSnapshot));wbStatus('Database snapshot copied.');});on('wbExportSnapshot',()=>exportJson(wb.pageSnapshot,'FunChessEngine-database-snapshot.json'));
   on('wbFirstPage',async()=>{wb.offset=0;await wbSearch(false);});
   on('wbLastPage',async()=>{wb.offset=wbPageOffset(Math.max(1,Math.ceil(wb.total/wb.limit)),wb.total,wb.limit);await wbSearch(false);});
   const go=async()=>{wb.offset=wbPageOffset(Number($('wbPageNumber').value),wb.total,wb.limit);await wbSearch(false);};
