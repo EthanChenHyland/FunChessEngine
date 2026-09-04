@@ -64,7 +64,10 @@ module.exports=async function workstationSmoke(window,waitFor) {
     if(!variationMode || variationNode().snapshot.fen!==treeFen)throw new Error('Tree study did not use tree position');
     if(JSON.stringify([state.fen,state.moves_uci])!==window.wsSmokeLive)throw new Error('Tree study changed live game');
     await exitVariationWorkspace();await activateTab(document.querySelector('[data-tab="display"]'));
-    document.getElementById('wsCustomizeBoard').click();await new Promise(resolve=>setTimeout(resolve,50));if(document.activeElement!==document.getElementById('wsSettingsSearch'))throw new Error('Quick Customize board action did not focus the studio');
+    document.getElementById('wsCustomizeBoard').click();
+  })()`,true);
+  await waitFor(window,`document.activeElement===document.getElementById('wsSettingsSearch')`);
+  await window.webContents.executeJavaScript(String.raw`(async()=>{
     document.querySelectorAll('#wsSettings details')[0].open=true;document.querySelectorAll('#wsSettings details')[1].open=true;document.getElementById('displayTab').scrollTop=0;
     display=window.wsSmokeSaved;saveDisplaySettings();applyDisplaySettings();
     wsSet({pieceSet:'vector',motion:'reduced'});wbRenderPreview();if(wbTree.result)wbTreeRender();

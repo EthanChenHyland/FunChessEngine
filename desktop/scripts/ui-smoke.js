@@ -9,6 +9,8 @@ const path = require("path");
 const {metadataStore} = require("../storage");
 const {registerMetadataHandlers} = require("../metadata-ipc");
 
+// Headless Linux runners do not provide a usable GPU shared-image context.
+app.disableHardwareAcceleration();
 const root = path.resolve(__dirname, "..", "..");
 const smokeUserData = fs.mkdtempSync(path.join(os.tmpdir(), "funchess-ui-smoke-"));
 app.setPath("userData", smokeUserData);
