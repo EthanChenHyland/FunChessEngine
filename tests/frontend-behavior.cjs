@@ -396,6 +396,20 @@ test('material balance counts promotions and does not score kings',()=>{
   const material=c.wbMaterialBalance('4k3/8/8/8/8/8/8/Q2QK2r w - - 0 1');
   assert.equal(material.balance,13);assert.equal(material.counts.white.q,2);
 });
+test('position inspector reports phase, FEN state, traits and repetition',()=>{
+  const c=loadProductivity(['wbPositionKey','wbPositionFacts']);
+  const positions=[{fen:'8/8/8/8/8/8/4K3/7k w - - 0 40'},{fen:'8/8/8/8/8/8/4K3/7k b - - 1 40',san:'Kf2+'},{fen:'8/8/8/8/8/8/4K3/7k w - - 2 41',san:'Kh2',comment:'repeat'}];
+  const facts=c.wbPositionFacts(positions,2);assert.equal(facts.phase,'Endgame');assert.equal(facts.pieces,2);assert.equal(facts.side,'White');assert.equal(facts.castling,'None');assert.equal(facts.fullmove,41);assert.equal(facts.seen,2);assert.deepEqual([...facts.occurrences],[0,2]);assert.deepEqual([...facts.traits],['comment']);
+});
+test('critical-position navigation includes tactical and annotated plies',()=>{
+  const c=loadProductivity(['wbCriticalPlies']);const positions=[{},{san:'e4'},{san:'Bxh7+',nags:[]},{san:'O-O'},{san:'a8=Q'},{san:'Kh8',alternatives:2}];
+  assert.deepEqual([...c.wbCriticalPlies(positions)],[2,3,4,5]);
+});
+test('EPD and portable position records retain bounded current-line context',()=>{
+  const c=loadProductivity(['wbPositionKey','wbPositionFacts','wbLineNotation','wbEpd','wbPositionPayload']);
+  const preview={game:{id:7,white:'A',black:'B',result:'1-0',variant:'standard'},positions:[{fen:'8/8/8/8/8/8/4K3/7k w - - 0 40'},{fen:'8/8/8/8/8/8/5K2/7k b - - 1 40',san:'Kf3',label:'40. Kf3',uci:'e2f3'}]};
+  assert.equal(c.wbEpd(preview.positions[1].fen),'8/8/8/8/8/8/5K2/7k b - - hmvc 1; fmvn 40;');const payload=c.wbPositionPayload(preview,1);assert.equal(payload.ply,1);assert.equal(payload.phase,'Endgame');assert.equal(payload.sanLine,'40. Kf3');assert.deepEqual([...payload.uciLine],['e2f3']);
+});
 test('opening sorting uses selected perspective and leaves unknown scores last',()=>{
   const c=loadExplorer(['wbTreeScore','wbTreeRows']);
   const result={fen:'position b - - 0 1',moves:[{move_uci:'a',san:'a',games:20,white_score:.8},{move_uci:'b',san:'b',games:3,white_score:.2},{move_uci:'c',san:'c',games:50,white_score:null}]};

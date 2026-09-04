@@ -23,7 +23,7 @@ jobs:
         working-directory: desktop
       - run: npm run check
         working-directory: desktop
-      - run: npm audit
+      - run: npm run audit:ci
         working-directory: desktop
       - name: Configure Electron SUID sandbox
         run: |

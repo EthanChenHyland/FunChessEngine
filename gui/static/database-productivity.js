@@ -50,6 +50,28 @@ function wbMaterialBalance(fen) {
   }
   return {balance,counts};
 }
+function wbPositionKey(fen) {return String(fen || '').trim().split(/\s+/).slice(0,4).join(' ');}
+function wbPositionFacts(positions,ply) {
+  const position=positions[ply],fields=position.fen.trim().split(/\s+/),board=fields[0] || '';
+  const pieces=[...board].filter(piece=>/[prnbqk]/i.test(piece)),queens=pieces.filter(piece=>piece.toLowerCase()==='q').length,nonPawns=pieces.filter(piece=>!/[pk]/i.test(piece)).length;
+  const phase=pieces.length<=10 || (!queens && nonPawns<=4)?'Endgame':ply<=20 && queens===2 && pieces.length>=24?'Opening':'Middlegame';
+  const key=wbPositionKey(position.fen),occurrences=positions.flatMap((row,index)=>wbPositionKey(row.fen)===key?[index]:[]),seen=occurrences.filter(index=>index<=ply).length;
+  const san=position.san || '',traits=[];if(san.includes('x'))traits.push('capture');if(/[+#]$/.test(san))traits.push(san.endsWith('#')?'mate':'check');if(san.includes('='))traits.push('promotion');if(/^O-O/.test(san))traits.push('castling');if(position.comment?.trim())traits.push('comment');if(position.nags?.length)traits.push('NAG');if(position.alternatives)traits.push('variations');
+  return {phase,pieces:pieces.length,side:fields[1]==='b'?'Black':'White',castling:fields[2]==='-'?'None':fields[2],enPassant:fields[3]==='-'?'None':fields[3],halfmove:Number(fields[4] || 0),fullmove:Number(fields[5] || 1),occurrences,seen,traits};
+}
+function wbCriticalPlies(positions) {return positions.flatMap((position,ply)=>ply && (/[x+#=]/.test(position.san || '') || /^O-O/.test(position.san || '') || position.comment?.trim() || position.nags?.length || position.alternatives)?[ply]:[]);}
+function wbLineNotation(positions,ply) {
+  if(typeof wsSanLine==='function')return wsSanLine(positions,ply);
+  return positions.slice(1,ply+1).map(position=>position.label || position.san).filter(Boolean).join(' ');
+}
+function wbEpd(fen) {
+  const fields=String(fen).trim().split(/\s+/);if(fields.length<4)throw new Error('This position does not contain a valid FEN.');
+  return `${fields.slice(0,4).join(' ')} hmvc ${Number(fields[4] || 0)}; fmvn ${Number(fields[5] || 1)};`;
+}
+function wbPositionPayload(preview,ply) {
+  const position=preview.positions[ply],facts=wbPositionFacts(preview.positions,ply);
+  return {format:'FunChessEngine position',version:1,game:{id:preview.game.id,white:preview.game.white || '',black:preview.game.black || '',result:preview.game.result || '*',variant:preview.game.variant || 'standard'},ply,fen:position.fen,epd:wbEpd(position.fen),sanLine:wbLineNotation(preview.positions,ply),uciLine:preview.positions.slice(1,ply+1).map(row=>row.uci).filter(Boolean),phase:facts.phase,traits:facts.traits,repetitionCount:facts.seen};
+}
 function wbNotationMatches(positions,query) {
   const needle=query.trim().toLocaleLowerCase();
   if(!needle)return [];
@@ -69,7 +91,16 @@ function wbRenderPreviewTools() {
     $('wbMaterial').textContent=balance===0?'Material: even':`Material: ${balance>0?'White':'Black'} +${Math.abs(balance)} points`;
     const inventory=side=>['q','r','b','n','p'].map(piece=>`${piece.toUpperCase()} ${counts[side][piece] || 0}`).join(' · ');
     $('wbMaterial').title=`White: ${inventory('white')}\nBlack: ${inventory('black')}\nPawn=1, knight/bishop=3, rook=5, queen=9; not an engine evaluation.`;
-  } else $('wbMaterial').textContent='';
+    const facts=wbPositionFacts(preview.positions,wb.ply),rows=[['Phase',facts.phase],['Pieces',facts.pieces],['To move',facts.side],['Castling',facts.castling],['En passant',facts.enPassant],['50-move clock',facts.halfmove],['Full move',facts.fullmove],['Occurrences',`${facts.occurrences.length} total · ${facts.seen} seen`],['Move traits',facts.traits.join(' · ') || 'Quiet']];
+    $('wbInspectorGrid').replaceChildren(...rows.map(([label,value])=>{const item=wbElement('div');item.append(wbElement('span',label),wbElement('strong',value));return item;}));
+    const critical=wbCriticalPlies(preview.positions),previousCritical=critical.some(ply=>ply<wb.ply),nextCritical=critical.some(ply=>ply>wb.ply),previousOccurrence=facts.occurrences.some(ply=>ply<wb.ply),nextOccurrence=facts.occurrences.some(ply=>ply>wb.ply);
+    wbDisabled('wbBackFive',wb.ply===0);wbDisabled('wbForwardFive',wb.ply===preview.positions.length-1);wbDisabled('wbPreviousCritical',!previousCritical);wbDisabled('wbNextCritical',!nextCritical);wbDisabled('wbPreviousOccurrence',!previousOccurrence);wbDisabled('wbNextOccurrence',!nextOccurrence);
+    for(const id of ['wbCopyEpd','wbCopySanLine','wbCopyUciLine','wbCopyPositionJson'])wbDisabled(id,false);
+    $('wbInspectorHint').textContent=facts.traits.length?`This move is marked: ${facts.traits.join(', ')}.`:'Quiet position. Critical navigation finds captures, checks, promotions, castling, comments, NAGs, and variations.';
+  } else {
+    $('wbMaterial').textContent='';$('wbInspectorGrid').replaceChildren();$('wbInspectorHint').textContent='Select a game to inspect its positions.';
+    for(const id of ['wbBackFive','wbForwardFive','wbPreviousCritical','wbNextCritical','wbPreviousOccurrence','wbNextOccurrence','wbCopyEpd','wbCopySanLine','wbCopyUciLine','wbCopyPositionJson'])wbDisabled(id,true);
+  }
   const matches=wbNotationMatches(preview?.positions || [],$('wbNotationQuery').value);
   $('wbNotationCount').textContent=$('wbNotationQuery').value?`${matches.length} matching positions`:'Search SAN moves or PGN comments. Matches wrap at the end.';
   const matched=new Set(matches);
@@ -80,7 +111,7 @@ function wbRenderPreviewTools() {
 }
 function wbJumpMarked(kind,direction=1) {
   const preview=wbRequirePreview();
-  const plies=kind==='annotation'?wbAnnotatedPlies(preview.positions):wbNotationMatches(preview.positions,$('wbNotationQuery').value);
+  const plies=kind==='annotation'?wbAnnotatedPlies(preview.positions):kind==='critical'?wbCriticalPlies(preview.positions):kind==='occurrence'?wbPositionFacts(preview.positions,wb.ply).occurrences:wbNotationMatches(preview.positions,$('wbNotationQuery').value);
   const ply=wbNextMarked(plies,wb.ply,direction);
   if(ply==null){wbStatus('No matching positions.');return;}
   wbStop();wb.ply=ply;wbRenderPreview();wbStatus(`Preview at ply ${ply}.`);
@@ -110,6 +141,11 @@ function bindDatabaseProductivity() {
   on('wbRenameView',async()=>{const name=$('wbViewName').value.trim();await wbApi('views',{view:{action:'rename',name:$('wbViews').value,new_name:name}});await wbLoadViews();$('wbViews').value=name;wbStatus('Saved search renamed.');});
   on('wbPreviousGame',()=>wbNextGame(-1));on('wbNextGame',()=>wbNextGame(1));
   on('wbPreviousAnnotation',()=>wbJumpMarked('annotation',-1));on('wbNextAnnotation',()=>wbJumpMarked('annotation'));
+  on('wbBackFive',()=>{wbStop();wbStep(-10);});on('wbForwardFive',()=>{wbStop();wbStep(10);});on('wbPreviousCritical',()=>wbJumpMarked('critical',-1));on('wbNextCritical',()=>wbJumpMarked('critical'));on('wbPreviousOccurrence',()=>wbJumpMarked('occurrence',-1));on('wbNextOccurrence',()=>wbJumpMarked('occurrence'));
+  on('wbCopyEpd',async()=>{const preview=wbRequirePreview();await navigator.clipboard.writeText(wbEpd(preview.positions[wb.ply].fen));wbStatus('Position EPD copied.');});
+  on('wbCopySanLine',async()=>{const preview=wbRequirePreview();await navigator.clipboard.writeText(wbLineNotation(preview.positions,wb.ply));wbStatus('SAN line through this position copied.');});
+  on('wbCopyUciLine',async()=>{const preview=wbRequirePreview();await navigator.clipboard.writeText(preview.positions.slice(1,wb.ply+1).map(row=>row.uci).filter(Boolean).join(' '));wbStatus('UCI line through this position copied.');});
+  on('wbCopyPositionJson',async()=>{await navigator.clipboard.writeText(JSON.stringify(wbPositionPayload(wbRequirePreview(),wb.ply),null,2));wbStatus('Portable position record copied.');});
   on('wbFindNotation',()=>wbJumpMarked('search'));$('wbNotationQuery').addEventListener('input',wbRenderPreviewTools);
   $('wbNotationQuery').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();wbJumpMarked('search');}});
   on('wbDiagram',()=>downloadBlob(new Blob([wbDiagramSvg(wbRequirePreview(),wb.ply,wb.flipped)],{type:'image/svg+xml'}),'FunChessEngine-position.svg'));

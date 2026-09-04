@@ -64,7 +64,7 @@ release-gate: gate verify-zip
 	node --check gui/static/workstation-ui.js
 	node --check gui/static/database-productivity.js
 	cd desktop && npm run check
-	cd desktop && npm audit
+	cd desktop && npm run audit:ci
 	cd desktop && npm run smoke:ui
 
 release-build: release-gate desktop-build

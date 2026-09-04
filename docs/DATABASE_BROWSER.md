@@ -143,7 +143,12 @@ comparison, saved searches, player reports, study creation, additive/removal tag
 collection counts, position searches, persistent undo, and opening-tree navigation. Optional screenshots inspect desktop
 and narrow-screen layouts. Engine search is unchanged.
 
-Local validation passed with **204 Python tests and 61 JavaScript tests**, plus the Electron
+The preview position inspector adds ChessBase-style position context without touching the live
+game: phase, piece count, side to move, castling and en-passant state, move counters, repetition
+occurrences, and tactical/annotation traits. It can jump five moves, wrap through critical moves
+or repeated positions, and copy EPD, SAN, UCI, or a portable JSON position record.
+
+Local validation passed with **204 Python tests and 64 JavaScript tests**, plus the Electron
 workflow and layout checks. A single synthetic 10,000-game benchmark (12 plies per game) imported
 130,000 positions in 12.13 seconds. Measured database calls took 3.44 ms for browser search,
 5.95 ms for duplicate search, and 5.98 ms for reports. These are local timings on repeated opening

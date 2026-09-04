@@ -1417,6 +1417,13 @@ html[data-desktop="true"] .board-stage {
 .wb-page-jump input {width:65px;}
 .wb-move.notation-match {border-color:var(--accent);text-decoration:underline;}
 .wb-notation-tools,.wb-tree-options {margin:8px 0;padding:8px;border:1px solid var(--line);border-radius:8px;}
+.wb-position-inspector {margin:8px 0;padding:8px;border:1px solid var(--line);border-radius:8px;}
+.wb-position-inspector>summary {cursor:pointer;font-weight:650;}
+.wb-inspector-grid {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin:10px 0;}
+.wb-inspector-grid>div {display:flex;flex-direction:column;gap:2px;padding:7px 8px;border:1px solid var(--line);border-radius:7px;background:var(--panel-2);min-width:0;}
+.wb-inspector-grid span {font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;}
+.wb-inspector-grid strong {font-size:12px;overflow-wrap:anywhere;}
+@media(max-width:520px) {.wb-inspector-grid {grid-template-columns:repeat(2,minmax(0,1fr));}}
 .wb-tree-options>.wb-actions {margin-top:8px;}
 .wb-tree-options input {width:95px;}
 #wbTreePath {display:flex;flex-wrap:wrap;align-items:center;gap:4px;}

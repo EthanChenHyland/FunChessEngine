@@ -15,7 +15,8 @@
     "build:mac": "npm run build:icon && npm run build:backend && npm run clean:dist && electron-builder --mac --arm64 && npm run verify:build",
     "build:linux": "npm run build:backend && npm run clean:dist && electron-builder --linux --x64",
     "build:win": "npm run build:backend && npm run clean:dist && electron-builder --win --x64",
-    "check": "node --check main.js && node --check preload.js && node --check scripts/build-backend.js && node --check scripts/clean-dist.js && node --check scripts/notarize.js && node --check scripts/ui-smoke.js && node --check scripts/verify-build.js && bash -n scripts/build-icon.sh && node --check storage.js && node --check ../gui/static/workflows.js && node --check metadata-ipc.js",
+    "check": "node --check main.js && node --check preload.js && node --check scripts/audit-dependencies.js && node --check scripts/build-backend.js && node --check scripts/clean-dist.js && node --check scripts/notarize.js && node --check scripts/ui-smoke.js && node --check scripts/verify-build.js && bash -n scripts/build-icon.sh && node --check storage.js && node --check ../gui/static/workflows.js && node --check metadata-ipc.js",
+    "audit:ci": "node scripts/audit-dependencies.js",
     "verify:build": "node scripts/verify-build.js",
     "smoke:ui": "electron scripts/ui-smoke.js"
   },

@@ -82,7 +82,7 @@ module.exports=async function databaseSmoke(window,waitFor) {
   await require('./productivity-smoke.cjs')(window,waitFor);
   await require('./workstation-smoke.cjs')(window,waitFor);
   if(process.env.FUNCHESS_SMOKE_SCREENSHOT) {
-    await window.webContents.executeJavaScript(`document.querySelector('.wb-collections').open=false;document.querySelector('.wb-filters').open=false;document.getElementById('wbReports').open=false;document.getElementById('wbComparison').hidden=true;document.querySelector('.wb-browser').scrollTop=0;document.querySelector('.wb-preview').scrollTop=0;`,true);
+    await window.webContents.executeJavaScript(`document.querySelector('.wb-collections').open=false;document.querySelector('.wb-filters').open=false;document.getElementById('wbReports').open=false;document.getElementById('wbComparison').hidden=true;document.getElementById('wbPositionInspector').open=true;document.querySelector('.wb-browser').scrollTop=0;document.querySelector('.wb-preview').scrollTop=700;`,true);
     window.setSize(1400,950);
     await new Promise(resolve=>setTimeout(resolve,150));
     fs.writeFileSync(process.env.FUNCHESS_SMOKE_SCREENSHOT.replace(/\.png$/,'-database.png'),(await window.webContents.capturePage()).toPNG());

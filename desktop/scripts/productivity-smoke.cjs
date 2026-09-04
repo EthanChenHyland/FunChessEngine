@@ -45,6 +45,10 @@ module.exports=async function productivitySmoke(window,waitFor) {
     if(wb.ply!==1 || !document.querySelector('#wbMoves .notation-match'))throw new Error('Notation search failed');
     wb.ply=0;wbRenderPreview();document.getElementById('wbNextAnnotation').click();
     if(wb.ply!==1 || !document.getElementById('wbMaterial').textContent.includes('even'))throw new Error('Annotation/material tools failed');
+    if(!document.getElementById('wbInspectorGrid').textContent.includes('Opening') || !document.getElementById('wbInspectorGrid').textContent.includes('Castling'))throw new Error('Position inspector facts missing');
+    const record=wbPositionPayload(wb.preview,wb.ply);if(record.ply!==1 || record.uciLine[0]!=='e2e4' || !record.epd.includes('hmvc'))throw new Error('Portable position record failed');
+    document.getElementById('wbForwardFive').click();if(wb.ply!==wb.preview.positions.length-1)throw new Error('Five-move forward navigation failed');document.getElementById('wbBackFive').click();if(wb.ply!==0)throw new Error('Five-move back navigation failed');
+    document.getElementById('wbNextCritical').click();if(wb.ply!==1)throw new Error('Critical-position navigation failed');
     document.getElementById('wbViews').value='Smoke models';document.getElementById('wbViewName').value='Smoke models renamed';document.getElementById('wbRenameView').click();
   })()`,true);
   await waitFor(window,`wb.views.some(view=>view.name==='Smoke models renamed')`);
