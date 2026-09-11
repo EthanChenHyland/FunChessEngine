@@ -21,6 +21,9 @@ jobs:
           - os: windows-latest
             script: build:win
             artifact: windows-x64
+          - os: macos-14
+            script: build:mac
+            artifact: macos-arm64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -43,6 +46,41 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: FunChessEngine-${{ matrix.artifact }}
-          path: desktop/dist/*
+          path: |
+            desktop/dist/*.AppImage
+            desktop/dist/*.dmg
+            desktop/dist/*.exe
+            desktop/dist/*.zip
           if-no-files-found: error
 
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12.14"
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run python -m harness.package
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: FunChessEngine-*
+          path: release-artifacts
+          merge-multiple: true
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mapfile -d '' files < <(find release-artifacts -type f -print0)
+          test "${#files[@]}" -gt 0
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${files[@]}" engine-package.zip --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" engine-package.zip \
+              --verify-tag --generate-notes --title "FunChessEngine ${GITHUB_REF_NAME#v}"
+          fi

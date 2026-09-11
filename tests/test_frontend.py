@@ -403,7 +403,11 @@ class FrontendTransitionContractTests(unittest.TestCase):
         self.assertIn('process.platform === "win32" ? "funchess-backend.exe"', self.desktop_main)
         self.assertIn("ubuntu-latest", self.desktop_builds)
         self.assertIn("windows-latest", self.desktop_builds)
+        self.assertIn("macos-14", self.desktop_builds)
         self.assertIn("actions/upload-artifact@v4", self.desktop_builds)
+        self.assertIn("actions/download-artifact@v5", self.desktop_builds)
+        self.assertIn('gh release create "$GITHUB_REF_NAME"', self.desktop_builds)
+        self.assertIn("uv run python -m harness.package", self.desktop_builds)
 
     def test_chess_intelligence_maps_tablebases_and_external_engines_are_wired(self) -> None:
         for control in (
