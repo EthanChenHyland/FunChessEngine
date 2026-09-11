@@ -1,6 +1,6 @@
 // Local workstation preferences and preview tools. No engine or live-game mutations.
 const WS_DEFAULTS={pieceSet:'vector',whiteSet:'vector',blackSet:'vector',whiteScale:100,blackScale:100,autoContrast:false,outlineStyle:'solid',shadowColor:'#000000',fontSymbols:'solid',pieceFinish:'matte',white:'#fffdf4',black:'#182431',whiteOutline:'#263746',blackOutline:'#fffdf4',outline:2,pieceShadow:42,pieceOpacity:100,pieceY:0,pieceWidth:100,pieceGlow:false,customPalette:false,light:'#e7dfcc',dark:'#66847a',texture:'none',frame:1,frameColor:'#465046',radius:11,boardShadow:38,boardBrightness:100,boardSaturation:100,lastColor:'#b9d85a',selectColor:'#8fe06d',targetColor:'#24351f',checkColor:'#d95757',highlightOpacity:45,targetStyle:'dot',targetSize:22,lastStyle:'fill',coordsTone:'auto',coordsMode:'edges',coordSize:11,coordOpacity:80,textureScale:100,frameStyle:'solid',turnGlow:false,boardMax:720,boardAlign:'center',boardTilt:0,showCaptured:true,showRoles:true,showMaterial:true,playerStyle:'plain',clockStyle:'boxed',clockScale:100,clockActive:'#7bdc5c',clockLow:'#ff665f',clockThreshold:10,clockPulse:true,hideTenths:false,moveNumbers:true,uiDensity:'cozy',fontScale:100,panelRadius:12,glassPanels:false,scrollbar:'standard',hoverMotion:true,reduceTransparency:false,customAccent:false,accentColor:'#7bdc5c',customSurfaces:false,appBg:'#0d100e',panelBg:'#171b18',textColor:'#f3f5f1',mutedColor:'#9da69c',wallpaper:'none',buttonShape:'rounded',focusColor:'#7bdc5c',animationEasing:'smooth',motion:'system',duration:180,transitions:true,follow:true,scrollLock:false,smooth:true,wheel:false,notationHeight:220,previewWidth:360,layout:'split',sticky:true,practice:false,orient:false,treeHidden:false,treeScores:false};
-const WS_ENUMS={pieceSet:['font','vector','neo','staunton','minimal','geometric','slim','gothic','shield','roundel','hex','letters'],whiteSet:['font','vector','neo','staunton','minimal','geometric','slim','gothic','shield','roundel','hex','letters'],blackSet:['font','vector','neo','staunton','minimal','geometric','slim','gothic','shield','roundel','hex','letters'],fontSymbols:['solid','classic'],pieceFinish:['matte','flat','gloss','glass'],outlineStyle:['solid','dashed'],texture:['none','grain','linen','marble','carbon','dots'],frameStyle:['solid','double','glow'],targetStyle:['dot','ring','fill'],lastStyle:['fill','frame','corners'],coordsTone:['auto','dark','light'],coordsMode:['edges','all'],boardAlign:['left','center','right'],playerStyle:['plain','cards'],clockStyle:['boxed','minimal','digital'],uiDensity:['compact','cozy','airy'],scrollbar:['slim','standard','wide'],wallpaper:['none','grid','aurora','vignette'],buttonShape:['square','rounded','pill'],animationEasing:['smooth','snap','spring','linear'],motion:['system','reduced','full'],layout:['split','stack','preview']};
+const WS_ENUMS={pieceSet:['font','vector','neo','staunton','minimal','geometric','slim','gothic','academy','pixel','shield','roundel','hex','diamond','tile','letters'],whiteSet:['font','vector','neo','staunton','minimal','geometric','slim','gothic','academy','pixel','shield','roundel','hex','diamond','tile','letters'],blackSet:['font','vector','neo','staunton','minimal','geometric','slim','gothic','academy','pixel','shield','roundel','hex','diamond','tile','letters'],fontSymbols:['solid','classic'],pieceFinish:['matte','flat','gloss','glass'],outlineStyle:['solid','dashed'],texture:['none','grain','linen','marble','carbon','dots'],frameStyle:['solid','double','glow'],targetStyle:['dot','ring','fill'],lastStyle:['fill','frame','corners'],coordsTone:['auto','dark','light'],coordsMode:['edges','all'],boardAlign:['left','center','right'],playerStyle:['plain','cards'],clockStyle:['boxed','minimal','digital'],uiDensity:['compact','cozy','airy'],scrollbar:['slim','standard','wide'],wallpaper:['none','grid','aurora','vignette'],buttonShape:['square','rounded','pill'],animationEasing:['smooth','snap','spring','linear'],motion:['system','reduced','full'],layout:['split','stack','preview']};
 const WS_RANGES={outline:[0,4],whiteScale:[75,125],blackScale:[75,125],pieceShadow:[0,100],pieceOpacity:[50,100],pieceY:[-8,8],pieceWidth:[80,120],frame:[0,12],radius:[0,24],boardShadow:[0,100],boardBrightness:[70,130],boardSaturation:[0,160],highlightOpacity:[10,80],targetSize:[12,90],coordSize:[7,18],coordOpacity:[30,100],textureScale:[50,200],boardMax:[420,900],boardTilt:[-3,3],clockScale:[80,140],clockThreshold:[5,60],fontScale:[85,125],panelRadius:[0,24],duration:[80,500],notationHeight:[120,480],previewWidth:[280,520]};
 const WS_BOARD_PRESETS=[
   ['Classic','#f0d9b5','#b58863'],['Tournament','#e8ebd2','#779455'],['Midnight','#9ca7b8','#364152'],['Ocean glass','#d9eef0','#4e8190'],['Rosewood','#efd6c1','#955f59'],['Amethyst','#e8dded','#806b91'],['High contrast','#f7f4dc','#3e6045'],['Monochrome','#dedede','#60656b'],['Sandstone','#eee0bd','#ad8057'],['Candy','#f4d8e4','#9c7498'],['Blueprint','#dbe7f5','#5876a3'],['Coffee','#e8d5bd','#785944']
@@ -18,8 +18,12 @@ const WS_PIECE_PRESETS=[
   ['Slimline',{whiteSet:'slim',blackSet:'slim',white:'#ffffff',black:'#17202a',whiteOutline:'#283746',blackOutline:'#f0eadc',outline:1.5,pieceShadow:32,pieceFinish:'matte'}],
   ['Shield tokens',{whiteSet:'shield',blackSet:'shield',white:'#f7ead0',black:'#263a47',whiteOutline:'#253540',blackOutline:'#fff4dc',outline:2,pieceShadow:38,pieceFinish:'gloss'}],
   ['Gothic court',{whiteSet:'gothic',blackSet:'gothic',white:'#fff3d2',black:'#251e2b',whiteOutline:'#35283c',blackOutline:'#fff0cf',outline:1.7,pieceShadow:58,pieceFinish:'gloss'}],
+  ['Academy',{whiteSet:'academy',blackSet:'academy',white:'#fff9e8',black:'#25303a',whiteOutline:'#34414c',blackOutline:'#f5ead0',outline:1.6,pieceShadow:42,pieceFinish:'matte'}],
+  ['Pixel arcade',{whiteSet:'pixel',blackSet:'pixel',white:'#f5ffe8',black:'#182734',whiteOutline:'#20333e',blackOutline:'#eaffd1',outline:1.3,pieceShadow:18,pieceFinish:'flat'}],
   ['Roundel symbols',{whiteSet:'roundel',blackSet:'roundel',white:'#f8f8f3',black:'#1f2b34',whiteOutline:'#1f2b34',blackOutline:'#f8f8f3',outline:2.3,pieceShadow:28,pieceFinish:'flat'}],
-  ['Hex notation',{whiteSet:'hex',blackSet:'hex',white:'#edf7ff',black:'#18344b',whiteOutline:'#18344b',blackOutline:'#edf7ff',outline:1.8,pieceShadow:35,pieceFinish:'matte'}]
+  ['Hex notation',{whiteSet:'hex',blackSet:'hex',white:'#edf7ff',black:'#18344b',whiteOutline:'#18344b',blackOutline:'#edf7ff',outline:1.8,pieceShadow:35,pieceFinish:'matte'}],
+  ['Diamond notation',{whiteSet:'diamond',blackSet:'diamond',white:'#fff5dc',black:'#302447',whiteOutline:'#3d3150',blackOutline:'#fff2d2',outline:1.8,pieceShadow:32,pieceFinish:'glass'}],
+  ['Tile notation',{whiteSet:'tile',blackSet:'tile',white:'#f1f6ff',black:'#243141',whiteOutline:'#2d3b4c',blackOutline:'#eef5ff',outline:1.5,pieceShadow:24,pieceFinish:'flat'}]
 ];
 let wsReady=false,wsUndo=[],wsPiecePresetIndex=0;
 const wsScrollKeys=new WeakMap(),wsBoardFrames=new WeakMap();
@@ -149,7 +153,23 @@ const WS_GOTHIC_SHAPES={
  b:'M24 3 L31 12 L28 20 L31 24 L28 33 L36 38 L35 41 H13 L12 38 L20 33 L17 24 L20 20 L17 12 Z M25 8 L21 18 L27 21',
  n:'M11 40 L15 32 L22 26 L14 24 L12 17 L19 10 L25 9 L29 3 L37 15 L34 29 L29 34 L38 39 L37 41 H11 Z M20 14 L24 16 L20 18 Z',
  q:'M9 11 L18 24 L24 7 L30 24 L39 11 L33 33 L38 38 L37 41 H11 L10 38 L15 33 Z M8 7 L14 10 L11 16 Z M24 2 L28 7 L24 12 L20 7 Z M40 7 L37 16 L34 10 Z',
- k:'M21 2 H27 V7 H32 V13 H27 V17 L35 23 L29 32 L38 38 L37 41 H11 L10 38 L19 32 L13 23 L21 17 V13 H16 V7 H21 Z'
+  k:'M21 2 H27 V7 H32 V13 H27 V17 L35 23 L29 32 L38 38 L37 41 H11 L10 38 L19 32 L13 23 L21 17 V13 H16 V7 H21 Z'
+};
+const WS_ACADEMY_SHAPES={
+ p:'M24 6 C29 6 32 10 31 15 C31 19 28 21 27 22 C28 27 29 31 31 34 L36 38 L35 41 H13 L12 38 L17 34 C19 31 20 27 21 22 C18 20 17 17 17 14 C17 9 20 6 24 6 Z',
+ r:'M12 7 H18 V13 H22 V7 H26 V13 H30 V7 H36 L34 20 C32 22 30 23 29 24 L31 34 L36 38 L35 41 H13 L12 38 L17 34 L19 24 C17 23 15 22 14 20 Z',
+ b:'M24 4 C30 9 33 14 30 20 C29 22 27 24 27 27 L30 34 L36 38 L35 41 H13 L12 38 L18 34 L21 27 C21 24 19 22 18 20 C15 14 18 9 24 4 Z M26 9 L21 19',
+ n:'M12 41 L14 36 L19 31 C22 28 23 24 23 20 L17 24 L11 21 L15 13 L22 10 L25 5 C32 8 37 15 36 23 C36 28 33 32 30 35 L37 38 L36 41 Z M20 15 A2 2 0 1 0 20 19',
+ q:'M10 13 L18 25 L24 8 L30 25 L38 13 L33 33 L37 38 L36 41 H12 L11 38 L15 33 Z M8 10 A3 3 0 1 0 14 10 A3 3 0 1 0 8 10 M21 6 A3 3 0 1 0 27 6 A3 3 0 1 0 21 6 M34 10 A3 3 0 1 0 40 10 A3 3 0 1 0 34 10',
+ k:'M22 3 H26 V8 H31 V12 H26 V16 C34 17 37 23 33 28 C32 30 29 31 28 33 L36 38 L35 41 H13 L12 38 L20 33 C19 31 16 30 15 28 C11 23 14 17 22 16 V12 H17 V8 H22 Z'
+};
+const WS_PIXEL_SHAPES={
+ p:'M19 6 H29 V9 H32 V18 H29 V22 H31 V32 H35 V36 H38 V41 H10 V36 H13 V32 H17 V22 H19 V19 H16 V9 H19 Z',
+ r:'M11 6 H18 V13 H21 V6 H27 V13 H30 V6 H37 V20 H33 V24 H30 V34 H36 V41 H12 V34 H18 V24 H15 V20 H11 Z',
+ b:'M21 4 H27 V8 H30 V12 H33 V19 H30 V24 H27 V28 H30 V34 H36 V41 H12 V34 H18 V28 H21 V24 H18 V19 H15 V12 H18 V8 H21 Z M24 10 V20 H28',
+ n:'M12 41 V34 H17 V29 H21 V24 H16 V27 H12 V18 H16 V13 H23 V9 H27 V4 H32 V9 H35 V14 H38 V27 H34 V34 H39 V41 Z M21 14 H25 V18 H21 Z',
+ q:'M9 10 H15 V16 H18 V22 H21 V10 H27 V22 H30 V16 H33 V10 H39 V19 H36 V32 H33 V35 H38 V41 H10 V35 H15 V32 H12 V19 H9 Z',
+ k:'M21 3 H27 V8 H32 V14 H27 V18 H33 V22 H36 V28 H32 V32 H29 V35 H38 V41 H10 V35 H19 V32 H16 V28 H12 V22 H15 V18 H21 V14 H16 V8 H21 Z'
 };
 function wsPaintPiece(element,symbol,set=null) {
   const prefs=wsPrefs(),white=Boolean(symbol) && symbol===symbol.toUpperCase();set=set || (white?prefs.whiteSet:prefs.blackSet) || prefs.pieceSet;
@@ -161,12 +181,14 @@ function wsPaintPiece(element,symbol,set=null) {
   if(set==='font'){element.textContent=PIECES[prefs.fontSymbols==='solid'?symbol.toLowerCase():symbol] || '';return;}
   const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
   svg.setAttribute('viewBox','0 0 48 48');svg.setAttribute('aria-hidden','true');svg.setAttribute('focusable','false');
-  const round=set==='letters' || set==='roundel',token=round || set==='shield' || set==='hex';
+  const round=set==='letters' || set==='roundel',token=round || ['shield','hex','diamond','tile'].includes(set);
   const shape=document.createElementNS(svg.namespaceURI,round?'circle':token?'polygon':'path');
   if(round) {shape.setAttribute('cx','24');shape.setAttribute('cy','24');shape.setAttribute('r',set==='roundel'?'20':'18');}
   else if(set==='shield')shape.setAttribute('points','24,4 40,10 37,31 24,42 11,31 8,10');
   else if(set==='hex')shape.setAttribute('points','14,6 34,6 43,24 34,42 14,42 5,24');
-  else shape.setAttribute('d',({neo:WS_NEO_SHAPES,staunton:WS_STAUNTON_SHAPES,minimal:WS_MINIMAL_SHAPES,geometric:WS_GEOMETRIC_SHAPES,slim:WS_SLIM_SHAPES,gothic:WS_GOTHIC_SHAPES}[set] || WS_SHAPES)[symbol.toLowerCase()]);
+  else if(set==='diamond')shape.setAttribute('points','24,3 45,24 24,45 3,24');
+  else if(set==='tile')shape.setAttribute('points','8,4 40,4 44,8 44,40 40,44 8,44 4,40 4,8');
+  else shape.setAttribute('d',({neo:WS_NEO_SHAPES,staunton:WS_STAUNTON_SHAPES,minimal:WS_MINIMAL_SHAPES,geometric:WS_GEOMETRIC_SHAPES,slim:WS_SLIM_SHAPES,gothic:WS_GOTHIC_SHAPES,academy:WS_ACADEMY_SHAPES,pixel:WS_PIXEL_SHAPES}[set] || WS_SHAPES)[symbol.toLowerCase()]);
   svg.append(shape);
   if(token) {
     const letter=document.createElementNS(svg.namespaceURI,'text');letter.setAttribute('x','24');letter.setAttribute('y','32');letter.setAttribute('text-anchor','middle');letter.textContent=symbol.toUpperCase();svg.append(letter);
@@ -176,7 +198,7 @@ function wsPaintPiece(element,symbol,set=null) {
 }
 function wsGallery() {
   const target=$('wsPieceGallery'),focused=target.contains(document.activeElement)?document.activeElement.dataset.wsSet:null;target.replaceChildren();
-  for(const [set,label] of [['font','Solid glyphs'],['vector','Sculpted'],['neo','Neo'],['staunton','Staunton'],['minimal','Minimal'],['geometric','Geometric'],['slim','Slim'],['gothic','Gothic'],['shield','Shield'],['roundel','Roundel'],['hex','Hex'],['letters','Letters']]) {
+  for(const [set,label] of [['font','Solid glyphs'],['vector','Sculpted'],['neo','Neo'],['staunton','Staunton'],['minimal','Minimal'],['geometric','Geometric'],['slim','Slim'],['gothic','Gothic'],['academy','Academy'],['pixel','Pixel'],['shield','Shield'],['roundel','Roundel'],['hex','Hex'],['diamond','Diamond'],['tile','Tile'],['letters','Letters']]) {
     const button=wbButton('',()=>wsSet({pieceSet:set,whiteSet:set,blackSet:set}),'ws-set-card');button.dataset.wsSet=set;button.setAttribute('aria-label',`Use ${label} pieces`);button.setAttribute('aria-pressed',String(wsPrefs().whiteSet===set && wsPrefs().blackSet===set));
     for(const symbol of ['K','Q','n']) {const piece=wbElement('span',undefined,'ws-gallery-piece');wsPaintPiece(piece,symbol,set);button.append(piece);}
     button.append(wbElement('small',label));target.append(button);if(focused===set)button.focus({preventScroll:true});

@@ -11,6 +11,8 @@ module.exports=async function workstationSmoke(window,waitFor) {
     check(document.querySelectorAll('#wbBoard .ws-art-piece svg').length===32,'Preview vector pieces missing');
     check(document.querySelectorAll('#board .ws-art-piece svg').length>0,'Live vector pieces missing');
     if(wbTree.result)check(document.querySelectorAll('#wbTreeBoard svg').length>0,'Tree vector pieces missing');
+    document.querySelector('[aria-label="Use Pixel pieces"]').click();const pixelPiece=document.querySelector('#wbBoard .white-piece');check(pixelPiece.querySelector('path').getAttribute('d')===WS_PIXEL_SHAPES[pixelPiece.dataset.piece.toLowerCase()],'Pixel piece set missing');
+    document.querySelector('[aria-label="Use Diamond pieces"]').click();check(document.querySelector('#wbBoard .white-piece polygon') && document.querySelector('#wbBoard .white-piece svg text'),'Diamond token set missing');
     wsSet({pieceSet:'letters'});check(document.querySelector('#wbBoard svg text').textContent==='R','Lettered piece set missing');
     change('whiteSet','letters');change('blackSet','vector');check(document.querySelector('#wbBoard .white-piece svg text') && !document.querySelector('#wbBoard .black-piece svg text'),'Independent side piece sets missing');
     change('whiteSet','neo');change('blackSet','neo');const neoPiece=document.querySelector('#wbBoard .white-piece');check(neoPiece.querySelector('path').getAttribute('d')===WS_NEO_SHAPES[neoPiece.dataset.piece.toLowerCase()],'Neo piece set missing');

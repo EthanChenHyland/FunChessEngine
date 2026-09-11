@@ -654,10 +654,10 @@ test('geometric and slim artwork extend the complete piece catalog',()=>{
   for(const family of [geometric,slim]){assert.deepEqual(Object.keys(family).sort(),['b','k','n','p','q','r']);for(const path of Object.values(family))assert.match(path,/^M/);}
   for(const set of ['geometric','slim','shield'])assert.equal(c.wsSanitize({whiteSet:set}).whiteSet,set);
 });
-test('gothic artwork and shaped tokens extend the catalog to twelve sets',()=>{
-  const c=loadWorkstation(),gothic=vm.runInContext('WS_GOTHIC_SHAPES',c),sets=vm.runInContext('WS_ENUMS.pieceSet',c);
-  assert.deepEqual(Object.keys(gothic).sort(),['b','k','n','p','q','r']);for(const path of Object.values(gothic))assert.match(path,/^M/);
-  assert.equal(sets.length,12);for(const set of ['gothic','roundel','hex'])assert.equal(c.wsSanitize({blackSet:set}).blackSet,set);
+test('gothic, academy and pixel artwork extend the complete piece catalog',()=>{
+  const c=loadWorkstation(),families=['WS_GOTHIC_SHAPES','WS_ACADEMY_SHAPES','WS_PIXEL_SHAPES'].map(name=>vm.runInContext(name,c)),sets=vm.runInContext('WS_ENUMS.pieceSet',c);
+  for(const family of families){assert.deepEqual(Object.keys(family).sort(),['b','k','n','p','q','r']);for(const path of Object.values(family))assert.match(path,/^M/);}
+  assert.equal(sets.length,16);for(const set of ['gothic','academy','pixel','roundel','hex','diamond','tile'])assert.equal(c.wsSanitize({blackSet:set}).blackSet,set);
 });
 test('automatic outlines maximize the weakest piece and square contrast',()=>{
   const c=loadWorkstation({display:{theme:'forest'}}),prefs=c.wsSanitize(null);
